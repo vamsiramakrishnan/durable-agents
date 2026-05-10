@@ -750,7 +750,7 @@ async def durable_click(target: Point, expected_view: ViewHash) -> ViewHash:
 
 6/ What the system needs. Action-level approval gates for destructive operations. Fresh-state verification before each significant action. Multi-agent coordination via shared environment state. A journal that doubles as audit.
 
-7/ The gate, in code (in full in Section VIII):
+7/ The gate, in code (in full in Section IX):
 
 ```python
 DESTRUCTIVE = {"restart_service", "scale_down", "drain_node", "delete_pv"}
@@ -806,7 +806,7 @@ async def respond(turn: Turn, account: Account) -> None:
 
 5/ What the system needs. Budget as a first-class workflow construct. Journaled provenance for every claim in the output. The recognition that *replay* for this class of agent means *resume the search tree from where it stopped*, not *reproduce the same outputs*.
 
-6/ The shape, in code (budget in full in Section VIII):
+6/ The shape, in code (budget in full in Section IX):
 
 ```python
 @workflow.defn
@@ -838,7 +838,7 @@ class ResearchAgent:
 
 5/ What the system needs. Lock-and-coordinate primitives at the prospect level. Irreversible-action gates with human approval. Explicit *do not contact* state that lives outside any single workflow run.
 
-6/ The guard, in code (coordination in full in Section VIII):
+6/ The guard, in code (coordination in full in Section IX):
 
 ```python
 async def send_outreach(prospect_id: str, draft: Email) -> Result:
@@ -971,7 +971,88 @@ def execute_sweep(state):
 
 ---
 
-## VII. What the New Layer Actually Does
+## VII. The Reactive Defence
+
+1/ The other reasonable objection, and it has gotten more reasonable as the tools have gotten better. *We do not write `await` chains. We write reactions. On a state-key change, if a condition holds, the next node fires. The state machine is the orchestration; the graph runs itself; there is no imperative flow to lose. Statecharts have done this for forty years; LangGraph does it now; we do not need a durable runtime — we need a good reactive one.*
+
+2/ The objection is right about something real. For a large class of agent work — multi-agent coordination, long-lived entities, "react to whatever happens" rather than "execute this plan" — the reactive shape *is* the better way to write it. The treasury walk's seven-point ceremony is imperative drudgery; an `onEvent` graph hides the drudgery behind declarations. And there is a genuine architectural gift in it: when the orchestration *is* the state, "where was I?" has an answer — *read the state* — that an imperative call stack does not.
+
+3/ But it is incomplete in exactly the way the idempotency defence was incomplete. The reactive model is a choice on one axis; durability is the other axis; choosing the first says nothing about the second. Seven questions do not go away because you wrote `onEvent`.
+
+#### ① Is the state itself durable?
+
+4/ "On state-key change" presupposes a place the state lives. If that place is process memory, a cache, or a graph object on the heap, a crash takes your program counter with it — and the whole appeal of the model (the state is where you resume) only holds if the state outlives the crash.
+
+```python
+graph = StateGraph(AgentState)
+graph.add_conditional_edges("plan", lambda s: "act" if s["ready"] else "wait")
+app = graph.compile()                                   # ← in memory. crash here and the run is gone.
+app = graph.compile(checkpointer=PostgresSaver(...))    # ← now it persists — at node boundaries
+```
+
+5/ So the floor of the reactive model is a durable state store. That is the easy ten per cent. Note where the checkpointer cuts: at *node* boundaries, not *effect* boundaries — the bolt-on granularity this treatise has flagged before — and the next six questions are why it matters.
+
+#### ② Does the trigger fire exactly once?
+
+6/ The process watching `state.x changed` crashes between observing the change and running the handler. Did the handler run? Will it run again on recovery? A reactive system needs a durable change feed with a cursor — an outbox, or change-data-capture with offsets — plus idempotent handlers, or it drops reactions and double-fires them. Postgres `LISTEN`/`NOTIFY` drops notifications when nobody is listening. "Poll the table for rows changed since my offset" *is* an outbox. "Exactly-once stream processing" is Flink and Kafka-Streams machinery. The seam did not vanish; it moved from *the workflow crashed mid-`await`* to *the trigger loop crashed mid-`react`* — and the second seam is the one the demo never shows.
+
+#### ③ Is the handler itself durable?
+
+7/ The "next node" does work — calls the model, calls the bank, books the flight. If that node is more than one step, it has the identical crash-in-the-middle problem the imperative version had: authorise succeeded, order did not, process died. The reactive shell relabelled the box; the problem is inside it. So the handler must be a journaled, resumable, idempotent unit of work — which is durable execution, one layer down, doing exactly what Section VIII shows it doing.
+
+#### ④ Where is the timer?
+
+8/ *If no approval within forty-eight hours, escalate.* That is a durable timer — it has to fire after deploys, restarts, the cluster rescheduling. A reactive system needs durable scheduled events for it. Inngest has `step.sleep`; that is not Inngest being reactive, that is Inngest being a durable execution engine with a reactive front end. A reactive system without durable timers can react to everything except the passage of time, which is half of what agents wait on.
+
+#### ⑤ Is the condition still true when the handler runs?
+
+9/ You evaluated `if state.x > threshold` and scheduled the next node; two more transitions land before it runs. That is the time-of-check-to-time-of-use race the coordination primitive in Section IX ⑥ is built to close — and the close (`@workflow.update`, an atomic check-and-set that returns whether you won) is a durable-execution primitive. Conditional triggers do not escape stale-read coordination; they are made of it.
+
+#### ⑥ Where is the journal?
+
+10/ A reactive store gives you, at best, a sequence of state versions. It does not give you *why* the transition happened, *what effects it fired*, *what the model decided and on what evidence*, *what obligation it created*. The decision, effect, and obligation ledgers from Section III do not fall out of an `onEvent` hook. You build them — or you have a state history where you wanted an audit, which is the difference between a log and a journal restated for the reactive paradigm.
+
+#### ⑦ Is the replay deterministic?
+
+11/ If the reactive system rebuilds state by replaying its transition log — and the durable ones do — the replay must be deterministic for the reasons Section XI spends a section on. And if the *condition*, or the *choice of next node*, is computed by the model rather than by `state.x > threshold`, the whole non-determinism problem is now living inside the reactive layer, in the place that looked declarative and safe.
+
+#### The shape of the answer
+
+12/ Same shape as the idempotency defence. The reactive model is right that there is a better *interface* for a lot of agent orchestration. It is incomplete as a *replacement* for durable execution, because durable state, plus reliable triggers, plus resumable handlers, plus durable timers, plus idempotency, plus a journal — that list *is* durable execution. Put the `onEvent` model on top of a durable runtime — Inngest, Convex, Restate's virtual objects, Temporal with signals and updates, DBOS — and you get the declarative surface and the guarantees. Put it on a plain database and a polling loop and you will re-derive the list one entry at a time, in the order the workflow community derived it, and you will not notice you are doing it until the second seam crashes in production.
+
+```text
+declarative is how you write it · durable is whether it survives
+```
+
+13/ Two axes. *Declarative versus imperative* is how the orchestration is expressed. *Durable versus ephemeral* is whether it survives a crash, a deploy, a forty-eight-hour wait. They are orthogonal. The reactive model picks a point on the first and is silent on the second.
+
+![Two axes, not one](14_two_axes.svg)
+
+```text
+                    EPHEMERAL                          DURABLE
+                    crash = gone                       survives crash · deploy · 48h wait
+                    -----------                        ---------------------------------
+IMPERATIVE          a script with @retry decorators    Temporal · Restate · DBOS ·
+await chains        — the developer rebuilds Temporal, Step Functions · Cloudflare Workflows
+                    badly, one integration at a time   — the imperative durable runtime
+
+DECLARATIVE         RxJS · vanilla actors · in-memory  Inngest · Convex · Restate virtual
+onEvent · graph     statecharts · LangGraph with no    objects · Temporal signals/updates ·
+                    checkpointer  ←  the tell          LangGraph + a durable engine underneath
+```
+
+*The reactive model picks a point on the first axis. It says nothing about the second. LangGraph is the case in the open — strong on axis one, thin on axis two — which is the configuration Section XII names as the one to put a durable engine* underneath*, not the one that replaces it.*
+
+14/ The one thing the reactive model genuinely buys, restated honestly: it makes durability *easier to achieve* once the substrate is there, because state-as-program-counter is a resumption-friendly design — the reason event-sourced and statechart systems sit so well on durable runtimes. But "read the *durable* state, run the *idempotent* handler, having survived on a *durable* timer" — every adjective in that sentence is the thing the objection hoped it would not need.
+
+```text
+state-as-program-counter is durable-friendly
+it is not durable
+```
+
+---
+
+## VIII. What the New Layer Actually Does
 
 1/ Read the documentation for any current agent runtime. Temporal. Restate. DBOS. The durability features being retrofitted into LangGraph and CrewAI. What they are converging on is a layer above the classical patterns, not a replacement for them.
 
@@ -1058,7 +1139,7 @@ execute_activity(execute_sweep)  ───►        ── not in history yet �
    ↑ the crash happened around here             this is where execution resumes
 ```
 
-This is event sourcing, and it is why "replay returns *this* object" — the sentence the next several sections lean on — is a guarantee rather than a hope. It also says exactly what you may not do: anything in workflow code whose value is *not* recorded in history must produce the same answer on every replay, or the function takes a different path than the one history describes and the engine raises a non-determinism error. That constraint is the whole subject of Section X — and it has two faces the section takes in turn: the language can betray you, and so can your own next deploy.
+This is event sourcing, and it is why "replay returns *this* object" — the sentence the next several sections lean on — is a guarantee rather than a hope. It also says exactly what you may not do: anything in workflow code whose value is *not* recorded in history must produce the same answer on every replay, or the function takes a different path than the one history describes and the engine raises a non-determinism error. That constraint is the whole subject of Section XI — and it has two faces the section takes in turn: the language can betray you, and so can your own next deploy.
 
 3/ Compare to the LangGraph version. What disappeared.
 
@@ -1130,9 +1211,9 @@ One word, many semantics.
 
 ---
 
-## VIII. Six Primitives of the Ceiling
+## IX. Six Primitives of the Ceiling
 
-1/ Section VII showed a runtime closing the floor — retries, idempotency at workflow scope, suspend-and-resume, the compensation stack folded into a `try`/`except`. The ceiling is not one thing. It is a handful of primitives, each with a naive form that demos cleanly and a durable form that survives the year. Six of them, in code. Assume the Temporal vocabulary from Section VII: `workflow.execute_activity`, `workflow.wait_condition`, `workflow.now`, `workflow.sleep`, `@workflow.signal`, `@workflow.query`, `activity.info`.
+1/ Section VIII showed a runtime closing the floor — retries, idempotency at workflow scope, suspend-and-resume, the compensation stack folded into a `try`/`except`. The ceiling is not one thing. It is a handful of primitives, each with a naive form that demos cleanly and a durable form that survives the year. Six of them, in code. Assume the Temporal vocabulary from Section VIII: `workflow.execute_activity`, `workflow.wait_condition`, `workflow.now`, `workflow.sleep`, `@workflow.signal`, `@workflow.query`, `activity.info`.
 
 ![Six primitives of the ceiling](12_six_primitives.svg)
 
@@ -1397,13 +1478,13 @@ await workflow.execute_activity(perform, action, ...)
 await incident.execute_update("record", me, action.completed())
 ```
 
-14/ An update, not a signal — and the distinction is the whole point of a coordination primitive. A signal is fire-and-forget; a check-and-set is only safe if the caller learns whether it *won*; and `signal("claim"); query("view")` is a race against another agent's signal arriving in between. The update returns the verdict atomically with the change. (One workflow serialising every claim from N agents is correct and, past a certain rate, slow — the coda in Section IX owes that an honest word.)
+14/ An update, not a signal — and the distinction is the whole point of a coordination primitive. A signal is fire-and-forget; a check-and-set is only safe if the caller learns whether it *won*; and `signal("claim"); query("view")` is a race against another agent's signal arriving in between. The update returns the verdict atomically with the change. (One workflow serialising every claim from N agents is correct and, past a certain rate, slow — the coda in Section X owes that an honest word.)
 
 15/ The entity's history is the coordination protocol *and* the incident timeline *and* the audit trail — one structure, three readers. That is the shape of every ceiling primitive: the journal you needed for correctness turns out to be the journal you needed for the dispute.
 
 ---
 
-## IX. The Loop, Made Durable
+## X. The Loop, Made Durable
 
 1/ Put the six primitives together and the agent loop — observe, decide, gate, verify, act, fold, judge, compensate — fits in about seventy lines, with the durability *underneath* the loop rather than threaded through every tool body.
 
@@ -1605,13 +1686,13 @@ class Agent:
 
 8/ `decision_id`-as-key assumes `perform` reaches a counterparty that accepts a key. Some effects have no key: a shell command, a UI click, a robot arm in a warehouse. There the journal is the *only* record, and *did it happen* is answered by re-observation, not by asking the other side. The end-to-end argument bites hardest exactly where there is no other end to ask.
 
-9/ Multi-agent coordination through a journaled entity (Section VIII ⑥) linearises effects but can become the bottleneck — every agent funnelling through one workflow's history. Sharding the entity, leasing sub-regions, reconciling shards: the same scaling problems the workflow community already has, now with agents as the clients.
+9/ Multi-agent coordination through a journaled entity (Section IX ⑥) linearises effects but can become the bottleneck — every agent funnelling through one workflow's history. Sharding the entity, leasing sub-regions, reconciling shards: the same scaling problems the workflow community already has, now with agents as the clients.
 
 10/ None of these are reasons to skip the loop. They are the shape of the work that is left once the loop is durable — which is the shape of the ceiling, still being built. And the next-to-last section says the rest of it plainly: what is missing is large.
 
 ---
 
-## X. On Substrate
+## XI. On Substrate
 
 1/ Most of these systems are written in Python. Python is structurally hostile to most of what they require. The problems compound rather than cancel.
 
@@ -1684,7 +1765,7 @@ async def run(self, run_date: str, policy: Policy) -> Summary:
 
 ---
 
-## XI. The Landscape
+## XII. The Landscape
 
 1/ The category has converged on a small set of architectural patterns implemented in different deployment models.
 
@@ -1712,9 +1793,9 @@ checkpointed state is not journaled consequence
 
 ---
 
-## XII. What This Treatise Is Glossing Over
+## XIII. What This Treatise Is Glossing Over
 
-Section IX named what is still hard *inside* the loop. This is what is still hard *around* it — the places this treatise, in the service of a clean argument, has quietly assumed away, smoothed over, or drawn as a cartoon. A treatise that does not do this is a brochure.
+Section X named what is still hard *inside* the loop. This is what is still hard *around* it — the places this treatise, in the service of a clean argument, has quietly assumed away, smoothed over, or drawn as a cartoon. A treatise that does not do this is a brochure.
 
 1/ "The floor is solved" is shorthand, and shorthand has a bill. What is actually solved is at-least-once delivery, *plus* idempotent receivers, *plus* a dedup store with a finite window, *plus* a key derivation that survives restart — four real systems with four sets of failure modes. The outbox pattern's relay crashes and re-emits. The dedup store fills and evicts. The window closes mid-flight — Section VI ④ named that and did not solve it, because for many APIs there is no clean recovery: you store the result object's id, not the key, and you hope you stored it before the crash. "Solved" here means what it means when someone says "the database handles concurrency": true, with a chapter of caveats you ignore at your peril.
 
@@ -1722,11 +1803,11 @@ Section IX named what is still hard *inside* the loop. This is what is still har
 exactly-once is at-least-once in a good coat
 ```
 
-2/ The journal does not own the truth; it owns *half* of it, and the essay's repeated "the merchant only keeps their half" is the half-true half. Section VIII ② said the reconciled version: the journal is the source of truth for *intent, decision, and order*; the counterparty is the source of truth for *outcome*; the `unknown` is precisely the gap between them. When the counterparty exposes a status query — retrieve the PaymentIntent, FIX `OrdStatus`, the PNR — that gap is narrow. When it does not, the gap is wide and the journal is genuinely all you have. The honest framing is not "the journal answers everything" but "build for the wide case; use the query when you can."
+2/ The journal does not own the truth; it owns *half* of it, and the essay's repeated "the merchant only keeps their half" is the half-true half. Section IX ② said the reconciled version: the journal is the source of truth for *intent, decision, and order*; the counterparty is the source of truth for *outcome*; the `unknown` is precisely the gap between them. When the counterparty exposes a status query — retrieve the PaymentIntent, FIX `OrdStatus`, the PNR — that gap is narrow. When it does not, the gap is wide and the journal is genuinely all you have. The honest framing is not "the journal answers everything" but "build for the wide case; use the query when you can."
 
-3/ The replay mechanism — event-sourced history, activity results read back instead of re-run — is the load-bearing wall. Section VII finally explains it; almost everything else in this treatise stands on the assumption that you poured it correctly. If the workflow function is not deterministic, none of the guarantees hold. "Deterministic" is harder than not calling `random()` (Section X), and harder than that again because the function changes when you deploy (Section X, the part that is really a migration problem). The category's central promise — *your code, re-runnable* — comes with a clause in small type: *provided your code is, and stays, replayable*.
+3/ The replay mechanism — event-sourced history, activity results read back instead of re-run — is the load-bearing wall. Section VIII finally explains it; almost everything else in this treatise stands on the assumption that you poured it correctly. If the workflow function is not deterministic, none of the guarantees hold. "Deterministic" is harder than not calling `random()` (Section XI), and harder than that again because the function changes when you deploy (Section XI, the part that is really a migration problem). The category's central promise — *your code, re-runnable* — comes with a clause in small type: *provided your code is, and stays, replayable*.
 
-4/ "Budget as a first-class workflow construct" is generous. In every runtime today it is workflow state that *your code* checks before a spend and charges after — no engine enforces a token cap, kills a workflow at a dollar ceiling, or surfaces spend as a runtime concept. That it lives in history, and so survives replay, is the real win; "first-class" is the slide, not the product. And the genuinely hard version — *N* agents drawing on one shared pool — is not the dataclass in Section VIII ④ at all; it is the coordination entity from Section VIII ⑥, with all of that entity's contention, back again.
+4/ "Budget as a first-class workflow construct" is generous. In every runtime today it is workflow state that *your code* checks before a spend and charges after — no engine enforces a token cap, kills a workflow at a dollar ceiling, or surfaces spend as a runtime concept. That it lives in history, and so survives replay, is the real win; "first-class" is the slide, not the product. And the genuinely hard version — *N* agents drawing on one shared pool — is not the dataclass in Section IX ④ at all; it is the coordination entity from Section IX ⑥, with all of that entity's contention, back again.
 
 5/ "Replay semantics tuned per agent class" launders patterns into features. The runtime gives you one generic mechanism: deterministic replay of recorded effects. "Re-verify the page," "restore the workspace," "resume the search tree" are things *you build on top of it* — the divergence check in Section V is application code; "resume the frontier" is just "the frontier is workflow state." The tuning is your code. Figure 10 is a menu of patterns, not a panel of knobs.
 
@@ -1744,7 +1825,7 @@ the property has a price · a treatise that hides it is selling
 
 ---
 
-## XIII. Floor and Ceiling
+## XIV. Floor and Ceiling
 
 ![Floor and ceiling](04_floor_and_ceiling.svg)
 
