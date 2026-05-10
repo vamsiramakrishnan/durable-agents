@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>Retry vs Resume</title>
+  <desc>Retry vs Resume — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">Retry vs Resume</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">Retry starts the story again. Resume remembers the story already written.</text>
+<text x="70" y="150" class="label" text-anchor="start">Naive retry</text>
+<rect x="70" y="175" width="140" height="65" class="box"/>
+<text x="140" y="214" class="small" text-anchor="middle">search</text>
+<rect x="245" y="175" width="140" height="65" class="box"/>
+<text x="315" y="214" class="small" text-anchor="middle">authorize</text>
+<rect x="420" y="175" width="140" height="65" class="red"/>
+<text x="490" y="205" class="label" text-anchor="middle">crash</text>
+<text x="490" y="225" class="tiny" text-anchor="middle">state lost</text>
+<rect x="595" y="175" width="140" height="65" class="box"/>
+<text x="665" y="214" class="small" text-anchor="middle">search</text>
+<rect x="770" y="175" width="140" height="65" class="box"/>
+<text x="840" y="214" class="small" text-anchor="middle">authorize</text>
+<rect x="945" y="175" width="140" height="65" class="red"/>
+<text x="1015" y="205" class="label" text-anchor="middle">duplicate?</text>
+<text x="1015" y="225" class="tiny" text-anchor="middle">merchant decides</text>
+<path d="M210,207 L245,207" class="line"/>
+<path d="M385,207 L420,207" class="line"/>
+<path d="M560,207 L595,207" class="line-red"/>
+<path d="M735,207 L770,207" class="line-red"/>
+<path d="M910,207 L945,207" class="line-red"/>
+<path d="M490,240 C490,285 665,285 665,240" class="line-red"/>
+<text x="540" y="300" class="tiny" text-anchor="start">restart from the top</text>
+<path d="M70,330 L1130,330" class="thin"/>
+<text x="70" y="385" class="label" text-anchor="start">Durable resume</text>
+<rect x="70" y="415" width="170" height="70" class="box"/>
+<text x="155" y="445" class="small" text-anchor="middle">workflow id</text>
+<text x="155" y="465" class="tiny" text-anchor="middle">stable identity</text>
+<rect x="285" y="415" width="170" height="70" class="box"/>
+<text x="370" y="445" class="small" text-anchor="middle">authorize</text>
+<text x="370" y="465" class="tiny" text-anchor="middle">key: wf/step</text>
+<rect x="500" y="415" width="170" height="70" class="red"/>
+<text x="585" y="445" class="label" text-anchor="middle">crash</text>
+<text x="585" y="465" class="tiny" text-anchor="middle">process dies</text>
+<rect x="715" y="390" width="200" height="120" class="green"/>
+<text x="815" y="420" class="label" text-anchor="middle">journal</text>
+<text x="735" y="450" class="mono" text-anchor="start">
+  <tspan x="735" dy="0">✓ authorization response</tspan>
+  <tspan x="735" dy="22">✓ idempotency key</tspan>
+  <tspan x="735" dy="22">○ order unfinished</tspan>
+</text>
+<rect x="965" y="415" width="170" height="70" class="box"/>
+<text x="1050" y="445" class="small" text-anchor="middle">order</text>
+<text x="1050" y="465" class="tiny" text-anchor="middle">first unfinished step</text>
+<path d="M240,450 L285,450" class="line"/>
+<path d="M455,450 L500,450" class="line"/>
+<path d="M670,450 C700,450 700,450 715,450" class="line"/>
+<path d="M915,450 L965,450" class="line-blue"/>
+<text x="700" y="565" class="small" text-anchor="start">The authorization is not retried. The workflow resumes at the unfinished mutation.</text>
+<text x="700" y="592" class="label" text-anchor="start">One charge. One order. One ledger.</text>
+</svg>

@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>The Floor and the Ceiling</title>
+  <desc>The Floor and the Ceiling — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">The Floor and the Ceiling</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">Microservice patterns solve the floor. LLM orchestration creates the ceiling.</text>
+<rect x="160" y="455" width="880" height="105" class="green"/>
+<text x="600" y="492" class="label" text-anchor="middle">THE FLOOR</text>
+<text x="600" y="520" class="small" text-anchor="middle">idempotency · sagas · outboxes · event sourcing · conditional writes · reconciliation</text>
+<rect x="160" y="170" width="880" height="190" class="amber"/>
+<text x="600" y="208" class="label" text-anchor="middle">THE CEILING</text>
+<text x="600" y="240" class="small" text-anchor="middle">
+  <tspan x="600" dy="0">decision journaling · adaptive compensation · action gates</tspan>
+  <tspan x="600" dy="23">multi-agent coordination · budget enforcement · provenance</tspan>
+  <tspan x="600" dy="23">fresh-state verification · workload-specific replay</tspan>
+</text>
+<rect x="250" y="360" width="70" height="95" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.4" rx="8"/>
+<text x="285" y="412" class="tiny" text-anchor="middle">old</text>
+<text x="285" y="432" class="tiny" text-anchor="middle">tools</text>
+<rect x="420" y="360" width="70" height="95" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.4" rx="8"/>
+<text x="455" y="412" class="tiny" text-anchor="middle">old</text>
+<text x="455" y="432" class="tiny" text-anchor="middle">tools</text>
+<rect x="590" y="360" width="70" height="95" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.4" rx="8"/>
+<text x="625" y="412" class="tiny" text-anchor="middle">old</text>
+<text x="625" y="432" class="tiny" text-anchor="middle">tools</text>
+<rect x="760" y="360" width="70" height="95" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.4" rx="8"/>
+<text x="795" y="412" class="tiny" text-anchor="middle">old</text>
+<text x="795" y="432" class="tiny" text-anchor="middle">tools</text>
+<rect x="930" y="360" width="70" height="95" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.4" rx="8"/>
+<text x="965" y="412" class="tiny" text-anchor="middle">old</text>
+<text x="965" y="432" class="tiny" text-anchor="middle">tools</text>
+<rect x="70" y="280" width="205" height="80" class="box"/>
+<text x="172" y="313" class="small" text-anchor="middle">“we already</text>
+<text x="172" y="336" class="small" text-anchor="middle">have sagas”</text>
+<path d="M275,320 C340,380 340,440 420,455" class="line"/>
+<rect x="925" y="280" width="205" height="80" class="box"/>
+<text x="1027" y="313" class="small" text-anchor="middle">“agents need</text>
+<text x="1027" y="336" class="small" text-anchor="middle">new runtimes”</text>
+<path d="M925,320 C845,300 760,235 735,260" class="line-blue"/>
+<rect x="330" y="595" width="540" height="40" class="soft"/>
+<text x="600" y="621" class="label" text-anchor="middle">Both are right. They are describing different levels.</text>
+</svg>

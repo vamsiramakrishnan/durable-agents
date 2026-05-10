@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>Answer vs Act</title>
+  <desc>Answer vs Act — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">Answer vs Act</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">A chatbot fails inside language. An agent fails in the world.</text>
+<path d="M600,130 L600,610" class="dash"/>
+<text x="600" y="128" class="tiny" text-anchor="middle">boundary</text>
+<text x="600" y="148" class="tiny" text-anchor="middle">conversation ↔ world</text>
+<rect x="70" y="155" width="430" height="105" class="blue"/>
+<text x="95" y="190" class="label" text-anchor="start">Chatbot</text>
+<text x="95" y="220" class="small" text-anchor="start">
+  <tspan x="95" dy="0">produces words</tspan>
+  <tspan x="95" dy="20">wrong answer → regenerate / correct</tspan>
+</text>
+<rect x="110" y="315" width="170" height="80" class="box"/>
+<text x="195" y="347" class="label" text-anchor="middle">User prompt</text>
+<text x="195" y="374" class="tiny" text-anchor="middle">question</text>
+<rect x="330" y="315" width="170" height="80" class="box"/>
+<text x="415" y="347" class="label" text-anchor="middle">Model</text>
+<text x="415" y="374" class="tiny" text-anchor="middle">language</text>
+<path d="M280,355 L330,355" class="line"/>
+<rect x="215" y="455" width="210" height="80" class="soft"/>
+<text x="320" y="487" class="label" text-anchor="middle">Transcript</text>
+<text x="320" y="514" class="tiny" text-anchor="middle">state remains local</text>
+<path d="M415,395 C415,430 340,430 320,455" class="line-blue"/>
+<text x="70" y="585" class="small" text-anchor="start">Failure mode: wrong sentence.</text>
+<text x="70" y="610" class="tiny" text-anchor="start">Repair: correction in the conversation.</text>
+<rect x="700" y="155" width="430" height="105" class="amber"/>
+<text x="725" y="190" class="label" text-anchor="start">Agent</text>
+<text x="725" y="220" class="small" text-anchor="start">
+  <tspan x="725" dy="0">produces acts</tspan>
+  <tspan x="725" dy="20">wrong act → dispute / rollback / apology</tspan>
+</text>
+<rect x="680" y="315" width="170" height="80" class="box"/>
+<text x="765" y="347" class="label" text-anchor="middle">User mandate</text>
+<text x="765" y="374" class="tiny" text-anchor="middle">authority</text>
+<rect x="910" y="315" width="170" height="80" class="box"/>
+<text x="995" y="347" class="label" text-anchor="middle">Model</text>
+<text x="995" y="374" class="tiny" text-anchor="middle">decision</text>
+<path d="M850,355 L910,355" class="line"/>
+<rect x="780" y="455" width="270" height="80" class="red"/>
+<text x="915" y="487" class="label" text-anchor="middle">External systems</text>
+<text x="915" y="514" class="tiny" text-anchor="middle">merchant · broker · customer · cloud</text>
+<path d="M995,395 C995,425 940,430 915,455" class="line-red"/>
+<text x="700" y="585" class="small" text-anchor="start">Failure mode: wrong charge, booking, trade, message.</text>
+<text x="700" y="610" class="tiny" text-anchor="start">Repair: reconciliation in the world.</text>
+</svg>

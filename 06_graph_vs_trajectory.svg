@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>When the Orchestrator Is Not Code</title>
+  <desc>When the Orchestrator Is Not Code — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">When the Orchestrator Is Not Code</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">Classical sagas assume a graph. LLM agents produce a trajectory.</text>
+<rect x="70" y="150" width="470" height="460" class="soft"/>
+<text x="305" y="190" class="label" text-anchor="middle">Classical orchestrator</text>
+<text x="305" y="218" class="tiny" text-anchor="middle">engineer writes the graph</text>
+<circle cx="140" cy="280" r="42" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.7"/>
+<text x="140" y="277" class="label" text-anchor="middle">A</text>
+<text x="140" y="302" class="tiny" text-anchor="middle">reserve</text>
+<circle cx="300" cy="280" r="42" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.7"/>
+<text x="300" y="277" class="label" text-anchor="middle">B</text>
+<text x="300" y="302" class="tiny" text-anchor="middle">charge</text>
+<circle cx="460" cy="280" r="42" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.7"/>
+<text x="460" y="277" class="label" text-anchor="middle">C</text>
+<text x="460" y="302" class="tiny" text-anchor="middle">book</text>
+<circle cx="300" cy="430" r="42" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.7"/>
+<text x="300" y="427" class="label" text-anchor="middle">¬B</text>
+<text x="300" y="452" class="tiny" text-anchor="middle">refund</text>
+<circle cx="140" cy="430" r="42" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.7"/>
+<text x="140" y="427" class="label" text-anchor="middle">¬A</text>
+<text x="140" y="452" class="tiny" text-anchor="middle">release</text>
+<path d="M182,280 L258,280" class="line"/>
+<path d="M342,280 L418,280" class="line"/>
+<path d="M460,322 C445,385 365,430 342,430" class="line-red"/>
+<path d="M258,430 L182,430" class="line-red"/>
+<text x="105" y="525" class="small" text-anchor="start">
+  <tspan x="105" dy="0">Forward path known.</tspan>
+  <tspan x="105" dy="22">Compensation path known.</tspan>
+  <tspan x="105" dy="22">Idempotency unit known.</tspan>
+</text>
+<rect x="660" y="150" width="470" height="460" class="amber"/>
+<text x="895" y="190" class="label" text-anchor="middle">LLM orchestrator</text>
+<text x="895" y="218" class="tiny" text-anchor="middle">trajectory sampled at runtime</text>
+<circle cx="735" cy="280" r="36" fill="#fffefa" stroke="#A36A28" stroke-width="1.7"/>
+<text x="735" y="285" class="label" text-anchor="middle">1</text>
+<text x="735" y="334" class="tiny" text-anchor="middle">observe</text>
+<circle cx="820" cy="235" r="36" fill="#fffefa" stroke="#A36A28" stroke-width="1.7"/>
+<text x="820" y="240" class="label" text-anchor="middle">2</text>
+<text x="820" y="289" class="tiny" text-anchor="middle">plan</text>
+<circle cx="905" cy="300" r="36" fill="#fffefa" stroke="#A36A28" stroke-width="1.7"/>
+<text x="905" y="305" class="label" text-anchor="middle">3</text>
+<text x="905" y="354" class="tiny" text-anchor="middle">act</text>
+<circle cx="1010" cy="260" r="36" fill="#fffefa" stroke="#A36A28" stroke-width="1.7"/>
+<text x="1010" y="265" class="label" text-anchor="middle">4</text>
+<text x="1010" y="314" class="tiny" text-anchor="middle">re-plan</text>
+<circle cx="960" cy="410" r="36" fill="#fffefa" stroke="#8A3C3C" stroke-width="1.7"/>
+<text x="960" y="415" class="label" text-anchor="middle">5</text>
+<text x="960" y="464" class="tiny" text-anchor="middle">compensate?</text>
+<circle cx="815" cy="455" r="36" fill="#fffefa" stroke="#8A3C3C" stroke-width="1.7"/>
+<text x="815" y="460" class="label" text-anchor="middle">6</text>
+<text x="815" y="509" class="tiny" text-anchor="middle">escalate</text>
+<path d="M760,280 C777.5,220 777.5,175 795,235" class="line-blue"/>
+<path d="M845,235 C862.5,295 862.5,360 880,300" class="line-blue"/>
+<path d="M930,300 C957.5,240 957.5,200 985,260" class="line-blue"/>
+<path d="M1035,260 C985.0,320 985.0,470 935,410" class="line-red"/>
+<path d="M985,410 C887.5,470 887.5,515 790,455" class="line-red"/>
+<ellipse cx="895" cy="350" rx="185" ry="135" fill="none" stroke="#8A3C3C" stroke-width="1.5" stroke-dasharray="6 7"/>
+<text x="895" y="353" class="tiny" text-anchor="middle">open action space</text>
+<text x="700" y="525" class="small" text-anchor="start">
+  <tspan x="700" dy="0">Forward path discovered.</tspan>
+  <tspan x="700" dy="22">Compensation may be decision-bearing.</tspan>
+  <tspan x="700" dy="22">Replay target must be declared.</tspan>
+</text>
+</svg>
