@@ -113,9 +113,9 @@
   <text x="318" y="676" class="tiny" text-anchor="start">two agents, two stale views, one race — one scales</text>
   <text x="318" y="693" class="tiny" text-anchor="start">up while the other scales down.</text>
   <rect x="710" y="628" width="430" height="88" class="green"/>
-  <text x="728" y="656" class="mono" text-anchor="start">entity.signal(claim); entity.query(view)</text>
-  <text x="728" y="676" class="tiny" text-anchor="start">a durable entity linearizes their effects; its history</text>
-  <text x="728" y="693" class="tiny" text-anchor="start">is the coordination log, the timeline, and the audit.</text>
+  <text x="728" y="656" class="mono" text-anchor="start">won = await entity.execute_update("claim")</text>
+  <text x="728" y="676" class="tiny" text-anchor="start">an update, not a signal — the caller learns whether it won;</text>
+  <text x="728" y="693" class="tiny" text-anchor="start">the entity's history is the coordination log and the audit.</text>
 
   <!-- footer -->
   <rect x="250" y="724" width="700" height="32" class="soft"/>

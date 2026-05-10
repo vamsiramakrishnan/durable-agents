@@ -108,7 +108,7 @@
 
   <rect x="620" y="500" width="528" height="64" class="red"/>
   <text x="884" y="526" class="label" text-anchor="middle">✗  compensate</text>
-  <text x="884" y="548" class="tiny"  text-anchor="middle">¬effects, LIFO — deterministic inverse where it exists, model-authored from the journaled <tspan class="mono">why</tspan> where it doesn't</text>
+  <text x="884" y="548" class="tiny"  text-anchor="middle">¬effects, LIFO — deterministic inverse where it exists; model-authored (gated) from the journaled <tspan class="mono">why</tspan> where it doesn't; a compensation that fails → stuck, and a page</text>
 
   <path d="M280,532 L358,532" class="line"/>
   <text x="319" y="523" class="tiny" text-anchor="middle">passed</text>

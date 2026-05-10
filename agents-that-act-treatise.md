@@ -6,8 +6,9 @@
 > beats, an argument built one stroke at a time — folds back the longer prose
 > where the long prose said it better, and then extends both with the working
 > code the argument was pointing at all along: the bug in each of the six
-> agent classes, the six primitives of the ceiling, and the whole agent loop
-> made durable end to end. Every figure appears twice: once as a diagram, once
+> agent classes, the six primitives of the ceiling, the whole agent loop
+> made durable end to end, and — last — an honest accounting of what it is
+> still glossing over. Every figure appears twice: once as a diagram, once
 > as a plain-text plate, so the argument survives whether you are reading the
 > rendered page or the raw source. The small monospace couplets set between
 > paragraphs are sentence-breakers; read them as breath marks.
@@ -1035,6 +1036,30 @@ class TreasuryEOD:
         return Summary(...)
 ```
 
+#### How replay actually works
+
+The Temporal version looks like ordinary `async` Python, and that is the trick: it is ordinary Python that gets *re-executed from the top* every time the workflow recovers. What makes that safe is the workflow's **history** — an append-only log of events, owned by the runtime, not by your code.
+
+On the first run, each `await workflow.execute_activity(...)` does what it looks like: it schedules the activity, a worker runs it, the *result* is appended to history as an event. On every run after that — after a crash, a deploy, a reschedule, a worker dying mid-step — the workflow function is replayed from the start, but now each `execute_activity` call returns *the recorded result from history* instead of running the activity again. The function re-derives its control flow; the side effects do not re-fire, because the second time through they are reads, not calls. Timers, signals, child workflows, `workflow.now()`, a `workflow.random()` draw — all recorded the first time, all replayed from history thereafter.
+
+```text
+the first run makes calls
+every replay makes reads
+```
+
+```text
+FIRST RUN                                   REPLAY (after crash / deploy)
+---------                                   -----------------------------
+execute_activity(read_balances)  ───►        read from history  ───►  Balances(...)
+   a worker runs it; result → history           (the activity is NOT re-run)
+execute_activity(decide_sweeps)  ───►        read from history  ───►  Plan(id="p-91", …)
+   a worker runs it; result → history           (the model is NOT re-sampled)
+execute_activity(execute_sweep)  ───►        ── not in history yet ──►  a worker runs it now
+   ↑ the crash happened around here             this is where execution resumes
+```
+
+This is event sourcing, and it is why "replay returns *this* object" — the sentence the next several sections lean on — is a guarantee rather than a hope. It also says exactly what you may not do: anything in workflow code whose value is *not* recorded in history must produce the same answer on every replay, or the function takes a different path than the one history describes and the engine raises a non-determinism error. That constraint is the whole subject of Section X — and it has two faces the section takes in turn: the language can betray you, and so can your own next deploy.
+
 3/ Compare to the LangGraph version. What disappeared.
 
 4/ The retry decorator. Temporal retries activities by configured policy.
@@ -1129,8 +1154,8 @@ PRIMITIVE                NAIVE — dies in production             DURABLE — su
 ⑤ compensation           try: ... except: git.reset_hard()      propose_compensation(effect, goal)
   the model writes ¬B    "undo" = throw it all away             ask the model, from the journaled why
 
-⑥ coordination           agent_a.send(agent_b, action)          entity.signal(claim); entity.query(view)
-  a journal, not messages two stale views, one race             a durable entity linearizes the effects
+⑥ coordination           agent_a.send(agent_b, action)          won = await entity.execute_update("claim")
+  a journal, not messages two stale views, one race             an update (not a signal) linearizes the effects
 ```
 
 *The journal you needed for correctness turns out to be the journal you needed for the dispute.*
@@ -1211,6 +1236,8 @@ class TreasuryEOD:
 ```
 
 6/ Two things here do real work a non-durable agent cannot. `maximum_attempts=0` — retry forever, across deploys, until the bank answers. And `workflow.sleep` — a multi-hour wait that holds no thread, no socket, no host, and survives the operator shipping a release in the middle of it. `time.sleep` in a worker process is a held resource and, if the worker dies, a lost wait.
+
+And notice what this loop *is* and is not. It is not the journal overruling the bank. It is the journal *asking* the bank — because outcomes are the bank's to know, and intents are the journal's. The journal owns *what the agent meant to do, in what order, and why*; the counterparty owns *what actually happened*; the `unknown` lives in the gap between them. A status query — retrieve the PaymentIntent, ask FIX for `OrdStatus`, pull the PNR — is how the gap closes when the API offers one. Many do. Some do not, and there the journal is genuinely all you have. Build for that case; use the query when you can. (This is the honest reading of "the merchant only keeps their half of the ledger": a claim about who is *obligated to remember*, not a claim that the counterparty has nothing to tell you.)
 
 ### ③ The action gate is a signal, not a flag
 
@@ -1345,30 +1372,34 @@ class IncidentEntity:                            # one per incident, long-lived
         self.lease: Lease | None = None
         self.log: list[tuple] = []
 
-    @workflow.signal
-    def claim(self, agent: str, ttl: timedelta) -> None:
+    @workflow.update                             # an update, not a signal — the caller must learn whether it won
+    def claim(self, agent: str, ttl: timedelta) -> bool:
         if self.lease is None or self.lease.deadline <= workflow.now():
             self.lease = Lease(holder=agent, deadline=workflow.now() + ttl)
+        return self.lease.holder == agent        # atomic check-and-set; the return value *is* the answer
 
-    @workflow.signal
-    def record(self, agent: str, action: Action) -> None:
-        if self.lease and self.lease.holder == agent:
-            self.log.append((workflow.now(), agent, action))
+    @workflow.update
+    def record(self, agent: str, action: Action) -> bool:
+        if not (self.lease and self.lease.holder == agent):
+            return False                         # you do not hold the lease — your record is rejected
+        self.log.append((workflow.now(), agent, action))
+        return True
 
     @workflow.query
     def view(self) -> IncidentView:
         return IncidentView(lease=self.lease, log=self.log)
 
 # an SRE agent, before anything destructive:
-v = await incident.query("view")
-if v.lease and v.lease.holder != me:
-    return Yield(to=v.lease.holder)              # someone else is driving — stand down
-await incident.signal("claim", me, timedelta(minutes=10))
-await incident.signal("record", me, action)
+if not await incident.execute_update("claim", me, timedelta(minutes=10)):
+    return Yield(to=(await incident.query("view")).lease.holder)   # someone else holds it — stand down
+await incident.execute_update("record", me, action.starting())
 await workflow.execute_activity(perform, action, ...)
+await incident.execute_update("record", me, action.completed())
 ```
 
-14/ The entity's history is the coordination protocol *and* the incident timeline *and* the audit trail — one structure, three readers. That is the shape of every ceiling primitive: the journal you needed for correctness turns out to be the journal you needed for the dispute.
+14/ An update, not a signal — and the distinction is the whole point of a coordination primitive. A signal is fire-and-forget; a check-and-set is only safe if the caller learns whether it *won*; and `signal("claim"); query("view")` is a race against another agent's signal arriving in between. The update returns the verdict atomically with the change. (One workflow serialising every claim from N agents is correct and, past a certain rate, slow — the coda in Section IX owes that an honest word.)
+
+15/ The entity's history is the coordination protocol *and* the incident timeline *and* the audit trail — one structure, three readers. That is the shape of every ceiling primitive: the journal you needed for correctness turns out to be the journal you needed for the dispute.
 
 ---
 
@@ -1395,9 +1426,12 @@ await workflow.execute_activity(perform, action, ...)
     never re-spends the budget.
    ═══════════════════════════════════════════════════════════════════════════════════════════════
 
-   when state.done →  judge ──passed──► ✓ Outcome.ok
-                        └──failed / over budget / error──► compensate  (¬effects, LIFO; known
-                                                           inverse, or model-authored from the why)
+   when state.done →  judge ──deterministic pass · or confident pass──► ✓ Outcome.ok
+                        ├──uncertain──► human review ──accept──► ✓ Outcome.ok
+                        │                            └──reject──┐
+                        └──failed / over budget / error─────────┴──► compensate
+                              ¬effects, LIFO — known inverse, or model-authored (gated) from the why;
+                              a compensation that itself fails ──► stuck, and a page
 ```
 
 *Six of the seven ceremony points fold into the runtime. What is left is the loop — observe, decide, gate, verify, act, fold — which was always yours.*
@@ -1422,6 +1456,10 @@ async def judge(ctx: JudgeCtx) -> Verdict: ...                  # the "did it ac
 async def notify_approver(a: Action) -> None: ...
 @activity.defn
 async def propose_compensation(c: CompIn) -> CompPlan: ...
+@activity.defn
+async def validate_compensation(c: ValidateIn) -> None: ...     # cheap guardrail before any model-authored undo
+@activity.defn
+async def alert_oncall(c: StuckCtx) -> None: ...                # a saga that cannot finish unwinding pages a human
 
 KNOWN_INVERSES: dict[str, object] = {...}
 
@@ -1429,12 +1467,17 @@ KNOWN_INVERSES: dict[str, object] = {...}
 @workflow.defn
 class Agent:
     def __init__(self) -> None:
-        self._approval: Verdict | None = None
+        self._approval: Verdict | None = None      # human verdict on a gated action
+        self._review:   Verdict | None = None      # human verdict on a low-confidence judge result
         self._effects: list[Effect] = []
 
     @workflow.signal
     def approve(self, v: Verdict) -> None:
         self._approval = v
+
+    @workflow.signal
+    def review(self, v: Verdict) -> None:
+        self._review = v
 
     @workflow.query
     def trace(self) -> list[dict]:                              # a live audit feed, no extra plumbing
@@ -1486,48 +1529,85 @@ class Agent:
                 # 6. fold the result back; loop
                 state = state.update(decision, result)
 
-            # 7. the oracle classical patterns assumed and agents have to build
+            # 7. the oracle classical patterns assumed and agents have to build —
+            #    but an LLM oracle is fallible in both directions, so do not let a
+            #    guess trigger an irreversible rollback.
             verdict = await workflow.execute_activity(
                 judge, JudgeCtx(goal, state, self._effects),
                 schedule_to_close_timeout=timedelta(minutes=2))
-            if not verdict.passed:
-                raise GoalNotMet(verdict.why)
-            return Outcome.ok(state, self._effects)
+            if verdict.confidence == "deterministic":
+                # tests passed / the API returned ok / an invariant holds: this is a `verify`,
+                # not a judgment — act on it. (Financial agents live here and need no LLM judge.)
+                if verdict.passed:
+                    return Outcome.ok(state, self._effects)
+            elif verdict.passed and verdict.confidence == "high":
+                return Outcome.ok(state, self._effects)
+            else:
+                # low confidence, or any failure an LLM judged: ask a human, the same
+                # way a gated action does. The judge proposes; a person disposes.
+                got = await workflow.wait_condition(lambda: self._review is not None,
+                                                    timeout=timedelta(hours=8))
+                if not got or self._review.outcome == "escalate":
+                    return Outcome.needs_review(state, self._effects, verdict)
+                if self._review.outcome == "accept":
+                    return Outcome.ok(state, self._effects)
+                # the human (or the next, more expensive judge) says it is broken → compensate
+            return await self._compensate(state, goal, policy, GoalNotMet(verdict.why))
 
-        except (GoalNotMet, BudgetExceeded, ActivityError) as failure:
-            # 8. compensation — deterministic inverse where we have one, model-authored where we don't
-            for e in reversed(self._effects):
+        except (BudgetExceeded, ActivityError) as failure:
+            return await self._compensate(state, goal, policy, failure)
+
+    async def _compensate(self, state, goal, policy, failure) -> Outcome:
+        # 8. compensation — a deterministic inverse where one exists; otherwise model-authored,
+        #    but every model-authored step runs through the same gate as a forward act, an
+        #    irreversible undo is escalated rather than improvised, and — because compensations
+        #    fail too — the honest end-state when one does is `stuck`, which pages a human.
+        stuck: list[Effect] = []
+        for e in reversed(self._effects):                          # LIFO, like a saga
+            try:
                 if e.kind in KNOWN_INVERSES:
                     await workflow.execute_activity(KNOWN_INVERSES[e.kind], e,
                         idempotency_key=f"comp/{e.decision_id}",
                         schedule_to_close_timeout=timedelta(minutes=5))
-                else:
-                    plan = await workflow.execute_activity(propose_compensation,
-                        CompIn(e, goal), schedule_to_close_timeout=timedelta(minutes=2))
-                    for step in plan.steps:
-                        await workflow.execute_activity(perform,
-                            ToolCmd(step, idempotency_key=f"comp/{e.decision_id}/{step.seq}"),
-                            schedule_to_close_timeout=timedelta(minutes=5))
-            return Outcome.compensated(state, self._effects, failure)
+                    continue
+                plan = await workflow.execute_activity(propose_compensation,
+                    CompIn(e, goal), schedule_to_close_timeout=timedelta(minutes=2))
+                await workflow.execute_activity(validate_compensation, ValidateIn(e, plan),
+                    schedule_to_close_timeout=timedelta(seconds=30))
+                if any(s.risk == "irreversible" or policy.is_gated(s) for s in plan.steps):
+                    stuck.append(e); continue                      # do not let the model improvise an irreversible undo
+                for s in plan.steps:
+                    await workflow.execute_activity(perform,
+                        ToolCmd(s, idempotency_key=f"comp/{e.decision_id}/{s.seq}"),
+                        schedule_to_close_timeout=timedelta(minutes=5))
+            except ActivityError:
+                stuck.append(e)                                    # the compensation itself failed
+        if stuck:
+            await workflow.execute_activity(alert_oncall, StuckCtx(stuck, failure),
+                schedule_to_close_timeout=timedelta(seconds=30))
+            return Outcome.stuck(state, self._effects, stuck, failure)
+        return Outcome.compensated(state, self._effects, failure)
 ```
 
-2/ Walk what each line bought. Step 2 — replay returns the same decision, because the decision is an activity result in history, not a fresh sample. Step 3 — the human gate survives a deploy, because it is a `wait_condition`, not a held connection. Step 5 — the idempotency key cannot drift, because it is the workflow's name for the decision, not a hash of recomputed figures; and the budget cannot reset, because it is workflow state. Step 7 — the judge is in history, so replay does not re-grade. Step 8 — the compensation is adaptive, because it has the journaled rationale to work from. The `trace` query is the audit, live, for free.
+2/ Walk what each line bought. Step 2 — replay returns the same decision, because the decision is an activity result in history, not a fresh sample. Step 3 — the human gate survives a deploy, because it is a `wait_condition`, not a held connection. Step 5 — the idempotency key cannot drift, because it is the workflow's name for the decision, not a hash of recomputed figures; and the budget cannot reset, because it is workflow state. Step 7 — the judge is in history, so replay does not re-grade; and because the judge is fallible, a deterministic verdict is acted on, a confident pass is taken, and anything weaker escalates to a human rather than triggering a blind rollback. Step 8 — compensation is adaptive where it has to be (the model writes the inverse from the journaled rationale) and gated where it must be (a model-authored, irreversible undo is escalated, never improvised); and when a compensation itself fails, the loop ends in `stuck` with a page, not a lie. The `trace` query is the audit, live, for free.
 
 3/ Seventy lines. Six of the treasury walk's seven ceremony points are gone — folded into `execute_activity`, `wait_condition`, and workflow state. The seventh — *why* — is the `decision` object, journaled because every activity input and output is journaled. What stays visible is the loop itself: observe, decide, gate, verify, act, fold, judge, compensate. That was always the part that was supposed to be yours.
 
 ### What is still hard, even here
 
-4/ The judge is an LLM. Journaling it makes replay *consistent* — the same verdict on every replay — but it does not make the verdict *correct*. The oracle classical patterns assumed (`response.ok is True`) has been replaced by a slower, fallibler oracle that is now load-bearing. Verification is the open frontier; the loop above does not close it, it just gives it a deterministic seat at the table.
+4/ The judge is an LLM, and journaling it makes replay *consistent* — the same verdict every replay — without making it *correct*. The loop above mitigates the asymmetry: a deterministic verdict is trusted, a confident pass is taken, anything weaker escalates to a human instead of unwinding the run. But mitigation is not a solution. A false fail still costs you a rollback of something that was fine; a false pass still ships something broken; the escalation still depends on a human noticing. Verification is the open frontier. Where you have a real oracle — tests, an API status, an invariant — use it and never reach for the model; that is what the treasury agent does, and it is why a treasury agent needs no `judge` at all.
 
-5/ Step 4 is a precondition check, not a divergence check. For a stateful environment — the browser, a half-edited workspace — you need more: did the observation at iteration *N+1* still match what the decision at iteration *N* assumed? When it does not, the right move is sometimes to re-decide and sometimes to abort, and knowing which means comparing journaled trajectory against live state, not just re-reading a version number.
+5/ Compensation is dirtier than `for e in reversed(effects)` makes it look. A model-authored undo can be wrong for the same reason the forward act was wrong, so it is bounded to reversible steps and gated like any other act. A compensation can itself fail, and then the honest state is `stuck` — a human and an alert, not a clever retry; a saga library with no `stuck` state has not finished modelling sagas. And some effects have no inverse at all — the sent email, the trade past settlement — so calling the result `compensated` is sometimes a lie. The treasury agent does not let an LLM author its wire reversal. Neither should yours, unless the stakes are small.
 
-6/ The journal is not free. A coding agent that owns a feature for a sprint accumulates a history that is large and mostly irrelevant on replay. `continue-as-new`, history pruning, summarising old segments into a checkpoint — these are real operational work, and they are the price of the property, not a bug in it.
+6/ Step 4 is a precondition check, not a divergence check. For a stateful environment — the browser, a half-edited workspace — you need more: did the observation at iteration *N+1* still match what the decision at iteration *N* assumed? When it does not, the right move is sometimes to re-decide and sometimes to abort, and knowing which means comparing journaled trajectory against live state, not just re-reading a version number.
 
-7/ `decision_id`-as-key assumes `perform` reaches a counterparty that accepts a key. Some effects have no key: a shell command, a UI click, a robot arm in a warehouse. There the journal is the *only* record, and *did it happen* is answered by re-observation, not by asking the other side. The end-to-end argument bites hardest exactly where there is no other end to ask.
+7/ The journal is not free. A coding agent that owns a feature for a sprint accumulates a history that is large and mostly irrelevant on replay. `continue-as-new`, history pruning, summarising old segments into a checkpoint — these are real operational work, and they are the price of the property, not a bug in it.
 
-8/ Multi-agent coordination through a journaled entity (Section VIII ⑥) linearises effects but can become the bottleneck — every agent funnelling through one workflow's history. Sharding the entity, leasing sub-regions, reconciling shards: the same scaling problems the workflow community already has, now with agents as the clients.
+8/ `decision_id`-as-key assumes `perform` reaches a counterparty that accepts a key. Some effects have no key: a shell command, a UI click, a robot arm in a warehouse. There the journal is the *only* record, and *did it happen* is answered by re-observation, not by asking the other side. The end-to-end argument bites hardest exactly where there is no other end to ask.
 
-9/ None of these are reasons to skip the loop. They are the shape of the work that is left once the loop is durable — which is the shape of the ceiling, still being built.
+9/ Multi-agent coordination through a journaled entity (Section VIII ⑥) linearises effects but can become the bottleneck — every agent funnelling through one workflow's history. Sharding the entity, leasing sub-regions, reconciling shards: the same scaling problems the workflow community already has, now with agents as the clients.
+
+10/ None of these are reasons to skip the loop. They are the shape of the work that is left once the loop is durable — which is the shape of the ceiling, still being built. And the next-to-last section says the rest of it plainly: what is missing is large.
 
 ---
 
@@ -1581,6 +1661,27 @@ The first version is not exotic. It is the obvious way to write it, and nothing 
 
 10/ The honest position. The next generation of agent infrastructure will probably not be Python at the runtime layer, even if it remains Python at the application layer. Python will write the agent. Something else will run it.
 
+#### When the workflow code changes under you
+
+11/ There is a determinism problem you cannot fix by being careful with `random`, and it is not about Python at all. The workflow code itself changes. You deploy version two while version-one instances are mid-flight — and a multi-day suspend guarantees that some are. Replay of a version-one history through version-two code reaches a branch the new code structures differently, takes the path history does not describe, and the engine refuses to proceed.
+
+```text
+every behavioural change to a long-running workflow is a migration
+```
+
+12/ Every durable runtime has an answer, and the answer is a discipline, not a switch. Temporal: `workflow.patched("v2-revalue-before-hedge")` — a marker that reads true in new code and false in replayed old code, so both paths stay consistent until every old instance has drained, after which you delete the marker, which is itself a versioned change. AWS Step Functions: version the state machine, pin executions. Restate, DBOS, the others: variations on the same idea.
+
+```python
+@workflow.run
+async def run(self, run_date: str, policy: Policy) -> Summary:
+    balances = await workflow.execute_activity(read_balances, run_date, ...)
+    if workflow.patched("v2-revalue-before-hedge"):
+        balances = await workflow.execute_activity(revalue, balances, ...)   # new in v2
+    # ...v1 replays skip the branch; v2 runs take it; both reach here with consistent history...
+```
+
+13/ The consequence is the part nobody prints on the box. Every behavioural change to a long-running workflow is a migration — a window where two versions of the logic coexist, a cleanup step you cannot skip, a test that replays old histories against new code. It is schema evolution for control flow, and it is the single most underweighted operational cost of the whole category: it does not show up in a demo and it does not go away in production.
+
 ---
 
 ## XI. The Landscape
@@ -1611,7 +1712,39 @@ checkpointed state is not journaled consequence
 
 ---
 
-## XII. Floor and Ceiling
+## XII. What This Treatise Is Glossing Over
+
+Section IX named what is still hard *inside* the loop. This is what is still hard *around* it — the places this treatise, in the service of a clean argument, has quietly assumed away, smoothed over, or drawn as a cartoon. A treatise that does not do this is a brochure.
+
+1/ "The floor is solved" is shorthand, and shorthand has a bill. What is actually solved is at-least-once delivery, *plus* idempotent receivers, *plus* a dedup store with a finite window, *plus* a key derivation that survives restart — four real systems with four sets of failure modes. The outbox pattern's relay crashes and re-emits. The dedup store fills and evicts. The window closes mid-flight — Section VI ④ named that and did not solve it, because for many APIs there is no clean recovery: you store the result object's id, not the key, and you hope you stored it before the crash. "Solved" here means what it means when someone says "the database handles concurrency": true, with a chapter of caveats you ignore at your peril.
+
+```text
+exactly-once is at-least-once in a good coat
+```
+
+2/ The journal does not own the truth; it owns *half* of it, and the essay's repeated "the merchant only keeps their half" is the half-true half. Section VIII ② said the reconciled version: the journal is the source of truth for *intent, decision, and order*; the counterparty is the source of truth for *outcome*; the `unknown` is precisely the gap between them. When the counterparty exposes a status query — retrieve the PaymentIntent, FIX `OrdStatus`, the PNR — that gap is narrow. When it does not, the gap is wide and the journal is genuinely all you have. The honest framing is not "the journal answers everything" but "build for the wide case; use the query when you can."
+
+3/ The replay mechanism — event-sourced history, activity results read back instead of re-run — is the load-bearing wall. Section VII finally explains it; almost everything else in this treatise stands on the assumption that you poured it correctly. If the workflow function is not deterministic, none of the guarantees hold. "Deterministic" is harder than not calling `random()` (Section X), and harder than that again because the function changes when you deploy (Section X, the part that is really a migration problem). The category's central promise — *your code, re-runnable* — comes with a clause in small type: *provided your code is, and stays, replayable*.
+
+4/ "Budget as a first-class workflow construct" is generous. In every runtime today it is workflow state that *your code* checks before a spend and charges after — no engine enforces a token cap, kills a workflow at a dollar ceiling, or surfaces spend as a runtime concept. That it lives in history, and so survives replay, is the real win; "first-class" is the slide, not the product. And the genuinely hard version — *N* agents drawing on one shared pool — is not the dataclass in Section VIII ④ at all; it is the coordination entity from Section VIII ⑥, with all of that entity's contention, back again.
+
+5/ "Replay semantics tuned per agent class" launders patterns into features. The runtime gives you one generic mechanism: deterministic replay of recorded effects. "Re-verify the page," "restore the workspace," "resume the search tree" are things *you build on top of it* — the divergence check in Section V is application code; "resume the frontier" is just "the frontier is workflow state." The tuning is your code. Figure 10 is a menu of patterns, not a panel of knobs.
+
+6/ The protocols in the code are cartoons, and they are cartoons in the direction that costs you. `bank.wire(...) -> wire_id` is not a treasury interface; real ones are ISO 20022 messages, host-to-host files, and settlement confirmations that arrive hours later on a *different channel* — which makes the durability problem harder, because now you are correlating asynchronous confirmations to initiations rather than awaiting a return value. `clOrdID` carries a FIX session's worth of sequencing, resend, and `OrigClOrdID`-chaining rules. Pre-trade compliance and regulatory filing are themselves stateful, slow, externally-arbitrated processes, not function calls. The patterns generalise; the surface area in the examples does not; production is messier in the direction that hurts.
+
+7/ Verification has no answer here, and the treatise has been honest about that, but it is worth saying flatly: there is no general oracle for "did the agent do a good job," the LLM judge is a stopgap that is fallible in both directions, and a great deal of agent reliability — maybe most of it — lives in a problem this category does not solve. Durable execution makes the agent *consistent* and *auditable*. It does not make the agent *right*.
+
+8/ What is outside the frame entirely. *Composition*: an agent that calls sub-agents is a workflow that starts child workflows, and durable agent composition — budgets and gates and provenance that compose across a tree of agents — is its own subject this treatise flattens into one loop. *The journal as liability*: it holds every input, every model response, every line of reasoning — which is PII, secrets, a retention question, a redaction question, an access-control question, and in some jurisdictions a disclosure obligation; the lone `redact(args)` call in the ADK example is not a treatment. *Streaming versus journaled*: the user wants live progress, the workflow is the source of truth, and "now" means different things to each — bridging them (queries, signals, side-channel event streams) is real work, unmentioned. *Human-in-the-loop richer than a boolean*: real HITL is the human editing the plan, supplying the missing field, taking over, handing back — not just clicking approve. *The tax*: every step is a round-trip to a persistence layer; every long workflow's replay is slow; every long history must eventually be pruned or continued-as-new — the property has a price, and a treatise that sells the property without naming the price is selling.
+
+```text
+the property has a price · a treatise that hides it is selling
+```
+
+9/ None of this unsays the argument. The orchestrator stopped being code; the runtime has to make up the difference; the floor is old and the ceiling is new — that holds. But "the runtime makes up the difference" describes a research programme with a few good products in it, not a finished thing with a vendor. The honest version of this treatise ends where the honest version of every systems treatise ends: here is the shape of it, here is what we know, here is the part that is still hard, build carefully.
+
+---
+
+## XIII. Floor and Ceiling
 
 ![Floor and ceiling](04_floor_and_ceiling.svg)
 
