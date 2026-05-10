@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title>Six Primitives of the Ceiling</title>
+  <desc>Six durable-execution primitives for agents — each shown as a naive form and a durable form.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .head { font: 700 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .label { font: 700 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #404040; }
+      .tiny { font: 400 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #303030; }
+      .num { font: 700 17px ui-serif, Georgia, serif; fill: #8a8a8a; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.2; rx: 12; }
+      .name { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.5; rx: 12; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.5; rx: 12; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.6; rx: 12; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="760"/>
+  <text x="60" y="64" class="title" text-anchor="start">Six Primitives of the Ceiling</text>
+  <text x="60" y="94" class="subtitle" text-anchor="start">Each has a form that demos cleanly — and a form that survives the year.</text>
+
+  <!-- column headers -->
+  <text x="175" y="126" class="head" text-anchor="middle">the primitive</text>
+  <text x="500" y="126" class="head" text-anchor="middle" fill="#8A3C3C">NAIVE — dies in production</text>
+  <text x="905" y="126" class="head" text-anchor="middle" fill="#4E745B">DURABLE — survives the year</text>
+
+  <!-- ROW 1 -->
+  <rect x="60"  y="138" width="230" height="88" class="name"/>
+  <text x="78"  y="160" class="num" text-anchor="start">①</text>
+  <text x="104" y="160" class="label" text-anchor="start">idempotency key</text>
+  <text x="78"  y="182" class="small" text-anchor="start">name the decision,</text>
+  <text x="78"  y="199" class="small" text-anchor="start">not its inputs</text>
+  <rect x="300" y="138" width="400" height="88" class="red"/>
+  <text x="318" y="166" class="mono" text-anchor="start">key = hash(run_date, amount)</text>
+  <text x="318" y="186" class="tiny" text-anchor="start">amount is a model output — it drifts on</text>
+  <text x="318" y="203" class="tiny" text-anchor="start">replay; the key changes; the bank wires twice.</text>
+  <rect x="710" y="138" width="430" height="88" class="green"/>
+  <text x="728" y="166" class="mono" text-anchor="start">key = f"{plan.id}/sweep/{i}"</text>
+  <text x="728" y="186" class="tiny" text-anchor="start">the decision is journaled once; the key is the</text>
+  <text x="728" y="203" class="tiny" text-anchor="start">workflow's name for it. Outbox: write intent, then act.</text>
+
+  <!-- ROW 2 -->
+  <rect x="60"  y="236" width="230" height="88" class="name"/>
+  <text x="78"  y="258" class="num" text-anchor="start">②</text>
+  <text x="104" y="258" class="label" text-anchor="start">the unknown ack</text>
+  <text x="78"  y="280" class="small" text-anchor="start">resolve it —</text>
+  <text x="78"  y="297" class="small" text-anchor="start">don't guess it</text>
+  <rect x="300" y="236" width="400" height="88" class="red"/>
+  <text x="318" y="264" class="mono" text-anchor="start">except UnknownAck: pass</text>
+  <text x="318" y="284" class="tiny" text-anchor="start">"reconciliation later" — the day closes with a</text>
+  <text x="318" y="301" class="tiny" text-anchor="start">trade that is neither sent nor not-sent.</text>
+  <rect x="710" y="236" width="430" height="88" class="green"/>
+  <text x="728" y="264" class="mono" text-anchor="start">while unknowns: ask_bank(); sleep(5m)</text>
+  <text x="728" y="284" class="tiny" text-anchor="start">retry-forever query + durable timer that survives</text>
+  <text x="728" y="301" class="tiny" text-anchor="start">deploys; re-issue with the same key — provably safe.</text>
+
+  <!-- ROW 3 -->
+  <rect x="60"  y="334" width="230" height="88" class="name"/>
+  <text x="78"  y="356" class="num" text-anchor="start">③</text>
+  <text x="104" y="356" class="label" text-anchor="start">the gate</text>
+  <text x="78"  y="378" class="small" text-anchor="start">authority,</text>
+  <text x="78"  y="395" class="small" text-anchor="start">not advice</text>
+  <rect x="300" y="334" width="400" height="88" class="red"/>
+  <text x="318" y="362" class="mono" text-anchor="start">if require_approval and not ok:</text>
+  <text x="318" y="382" class="tiny" text-anchor="start">a flag in RAM — the process dies, the flag dies,</text>
+  <text x="318" y="399" class="tiny" text-anchor="start">the question of who approved dies with it.</text>
+  <rect x="710" y="334" width="430" height="88" class="green"/>
+  <text x="728" y="362" class="mono" text-anchor="start">await wait_condition(approved, 8h)</text>
+  <text x="728" y="382" class="tiny" text-anchor="start">the workflow parks on a condition; the answer</text>
+  <text x="728" y="399" class="tiny" text-anchor="start">arrives as a signal — holding no thread, no host.</text>
+
+  <!-- ROW 4 -->
+  <rect x="60"  y="432" width="230" height="88" class="name"/>
+  <text x="78"  y="454" class="num" text-anchor="start">④</text>
+  <text x="104" y="454" class="label" text-anchor="start">the budget</text>
+  <text x="78"  y="476" class="small" text-anchor="start">a ledger,</text>
+  <text x="78"  y="493" class="small" text-anchor="start">not a fuel gauge</text>
+  <rect x="300" y="432" width="400" height="88" class="red"/>
+  <text x="318" y="460" class="mono" text-anchor="start">@cap_spend(usd=50)</text>
+  <text x="318" y="480" class="tiny" text-anchor="start">a counter in a decorator — the agent that crashed</text>
+  <text x="318" y="497" class="tiny" text-anchor="start">at $40 of $50 restarts at $0 and spends $50 more.</text>
+  <rect x="710" y="432" width="430" height="88" class="green"/>
+  <text x="728" y="460" class="mono" text-anchor="start">budget.admit(est); ...; budget.charge(real)</text>
+  <text x="728" y="480" class="tiny" text-anchor="start">workflow state, in history — check before the call,</text>
+  <text x="728" y="497" class="tiny" text-anchor="start">charge after; a crash mid-call cannot lose the charge.</text>
+
+  <!-- ROW 5 -->
+  <rect x="60"  y="530" width="230" height="88" class="name"/>
+  <text x="78"  y="552" class="num" text-anchor="start">⑤</text>
+  <text x="104" y="552" class="label" text-anchor="start">compensation</text>
+  <text x="78"  y="574" class="small" text-anchor="start">the model</text>
+  <text x="78"  y="591" class="small" text-anchor="start">writes ¬B</text>
+  <rect x="300" y="530" width="400" height="88" class="red"/>
+  <text x="318" y="558" class="mono" text-anchor="start">try: ... except: git.reset_hard()</text>
+  <text x="318" y="578" class="tiny" text-anchor="start">"undo" = throw it all away; but B was sampled,</text>
+  <text x="318" y="595" class="tiny" text-anchor="start">so a pre-written ¬B never existed.</text>
+  <rect x="710" y="530" width="430" height="88" class="green"/>
+  <text x="728" y="558" class="mono" text-anchor="start">propose_compensation(effect, goal)</text>
+  <text x="728" y="578" class="tiny" text-anchor="start">B was journaled with its why — hand the model what</text>
+  <text x="728" y="595" class="tiny" text-anchor="start">it did and why; ask for the undo. Provenance pays twice.</text>
+
+  <!-- ROW 6 -->
+  <rect x="60"  y="628" width="230" height="88" class="name"/>
+  <text x="78"  y="650" class="num" text-anchor="start">⑥</text>
+  <text x="104" y="650" class="label" text-anchor="start">coordination</text>
+  <text x="78"  y="672" class="small" text-anchor="start">a journal,</text>
+  <text x="78"  y="689" class="small" text-anchor="start">not messages</text>
+  <rect x="300" y="628" width="400" height="88" class="red"/>
+  <text x="318" y="656" class="mono" text-anchor="start">agent_a.send(agent_b, action)</text>
+  <text x="318" y="676" class="tiny" text-anchor="start">two agents, two stale views, one race — one scales</text>
+  <text x="318" y="693" class="tiny" text-anchor="start">up while the other scales down.</text>
+  <rect x="710" y="628" width="430" height="88" class="green"/>
+  <text x="728" y="656" class="mono" text-anchor="start">entity.signal(claim); entity.query(view)</text>
+  <text x="728" y="676" class="tiny" text-anchor="start">a durable entity linearizes their effects; its history</text>
+  <text x="728" y="693" class="tiny" text-anchor="start">is the coordination log, the timeline, and the audit.</text>
+
+  <!-- footer -->
+  <rect x="250" y="724" width="700" height="32" class="soft"/>
+  <text x="600" y="746" class="label" text-anchor="middle">The journal you needed for correctness is the journal you needed for the dispute.</text>
+</svg>

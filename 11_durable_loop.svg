@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>The Loop, Made Durable</title>
+  <desc>The agent loop — observe, decide, gate, verify, act, fold — on a durable execution runtime.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <marker id="arrow-grey" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8a8a8a" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 17px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 12.5px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #303030; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 16; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 14; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 16; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 16; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 16; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 16; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash-blue { stroke: #486A8F; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-blue); }
+      .thin { stroke: #8a8a8a; stroke-width: 1.3; fill: none; marker-end: url(#arrow-grey); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+  <text x="60" y="68" class="title" text-anchor="start">The Loop, Made Durable</text>
+  <text x="60" y="100" class="subtitle" text-anchor="start">Six of the seven ceremony points fold into the runtime. The loop is what is left — and the loop was always yours.</text>
+
+  <!-- human approver -->
+  <rect x="534" y="124" width="150" height="44" class="box"/>
+  <text x="609" y="151" class="small" text-anchor="middle">human approver</text>
+  <path d="M609,168 L609,228" class="dash-blue"/>
+  <text x="618" y="200" class="tiny" text-anchor="start">signal</text>
+
+  <!-- the loop row -->
+  <rect x="70"  y="230" width="150" height="86" class="blue"/>
+  <text x="145" y="262" class="label" text-anchor="middle">1 · observe</text>
+  <text x="145" y="284" class="tiny"  text-anchor="middle">fresh state of</text>
+  <text x="145" y="300" class="tiny"  text-anchor="middle">the world</text>
+
+  <rect x="302" y="230" width="150" height="86" class="amber"/>
+  <text x="377" y="262" class="label" text-anchor="middle">2 · decide</text>
+  <text x="377" y="284" class="tiny"  text-anchor="middle">llm — sampled</text>
+  <text x="377" y="300" class="tiny"  text-anchor="middle">once, then history</text>
+
+  <rect x="534" y="230" width="150" height="86" class="red"/>
+  <text x="609" y="262" class="label" text-anchor="middle">3 · gate</text>
+  <text x="609" y="284" class="tiny"  text-anchor="middle">irreversible →</text>
+  <text x="609" y="300" class="tiny"  text-anchor="middle">wait for a human</text>
+
+  <rect x="766" y="230" width="150" height="86" class="blue"/>
+  <text x="841" y="262" class="label" text-anchor="middle">4 · verify</text>
+  <text x="841" y="284" class="tiny"  text-anchor="middle">world moved?</text>
+  <text x="841" y="300" class="tiny"  text-anchor="middle">re-check, don't trust</text>
+
+  <rect x="998" y="230" width="150" height="86" class="green"/>
+  <text x="1073" y="262" class="label" text-anchor="middle">5 · act</text>
+  <text x="1073" y="284" class="tiny" text-anchor="middle">key = decision id</text>
+  <text x="1073" y="300" class="tiny" text-anchor="middle">not its inputs</text>
+
+  <!-- arrows along the loop -->
+  <path d="M222,273 L300,273" class="line"/>
+  <path d="M454,273 L532,273" class="line"/>
+  <path d="M686,273 L764,273" class="line"/>
+  <path d="M918,273 L996,273" class="line"/>
+
+  <!-- fold-back -->
+  <path d="M1073,230 C1095,178 1050,160 970,160 L240,160 C160,160 132,182 145,228" class="line"/>
+  <text x="605" y="150" class="small" text-anchor="middle">6 · fold the result into state — loop again, until <tspan class="mono">state.done</tspan></text>
+
+  <!-- durable runtime bar -->
+  <rect x="70" y="350" width="1078" height="98" class="soft"/>
+  <text x="609" y="382" class="label"  text-anchor="middle">DURABLE EXECUTION RUNTIME</text>
+  <text x="609" y="406" class="small"  text-anchor="middle">workflow identity · journal: every decision and every effect · timers · signals · retries · replay · suspend across deploys and days</text>
+  <text x="609" y="428" class="tiny"   text-anchor="middle">replay returns each journaled step — it never re-samples the model, never re-fires a confirmed effect, never re-spends the budget</text>
+
+  <!-- journaling tendrils -->
+  <path d="M145,316 L145,348"  class="thin"/>
+  <path d="M377,316 L377,348"  class="thin"/>
+  <path d="M609,316 L609,348"  class="thin"/>
+  <path d="M841,316 L841,348"  class="thin"/>
+  <path d="M1073,316 L1073,348" class="thin"/>
+  <text x="1140" y="336" class="tiny" text-anchor="end">↓ recorded</text>
+
+  <!-- epilogue: when the loop ends -->
+  <text x="70" y="488" class="tiny" text-anchor="start">when <tspan class="mono">state.done</tspan> — the oracle classical patterns assumed, that agents have to build:</text>
+
+  <rect x="70"  y="500" width="210" height="64" class="blue"/>
+  <text x="175" y="528" class="label" text-anchor="middle">judge</text>
+  <text x="175" y="549" class="tiny"  text-anchor="middle">did it actually work?</text>
+
+  <rect x="360" y="500" width="180" height="64" class="green"/>
+  <text x="450" y="528" class="label" text-anchor="middle">✓  Outcome.ok</text>
+  <text x="450" y="549" class="tiny"  text-anchor="middle">return the effects</text>
+
+  <rect x="620" y="500" width="528" height="64" class="red"/>
+  <text x="884" y="526" class="label" text-anchor="middle">✗  compensate</text>
+  <text x="884" y="548" class="tiny"  text-anchor="middle">¬effects, LIFO — deterministic inverse where it exists, model-authored from the journaled <tspan class="mono">why</tspan> where it doesn't</text>
+
+  <path d="M280,532 L358,532" class="line"/>
+  <text x="319" y="523" class="tiny" text-anchor="middle">passed</text>
+  <path d="M280,545 C440,600 470,600 620,560" class="line-red"/>
+  <text x="455" y="600" class="tiny" text-anchor="middle">failed · over budget · error</text>
+
+  <!-- footer -->
+  <rect x="250" y="624" width="700" height="38" class="soft"/>
+  <text x="600" y="649" class="label" text-anchor="middle">Seventy lines. The durability is underneath the loop — not threaded through every tool body.</text>
+</svg>

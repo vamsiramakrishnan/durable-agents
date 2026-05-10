@@ -634,6 +634,38 @@ idempotency unit known                idempotency unit must be chosen
 
 A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 
+![Six places the inherited toolkit runs out](13_six_breakages.svg)
+
+```text
+AGENT CLASS            WHERE THE TOOLKIT RUNS OUT             WHAT THE SYSTEM NEEDS
+-----------            --------------------------             ---------------------
+coding agent           plan sampled at runtime →              journaled decisions · cheap
+"a saga"               graph unknowable; revert undoes        fork/abandon · budgets ·
+                       code, not burned context              journal-as-memory replay
+
+browser agent          click@(x,y) not idempotent;            visual snapshots · action
+"idempotent retry"     the DOM has hidden locks;              verification · replay-divergence
+                       replay hits a later page              detection
+
+SRE agent              action space = the whole box;          per-action approval gates · fresh-
+"a runbook saga"       destructive acts; world moves          state checks · shared-state
+                       while you reason; agents fight        coordination · journal = audit
+
+support agent          commitments pile up across turns       commitments as data the language
+"request/response"     and days; no undo for an               renders · suspend across days ·
+                       empathetic sentence                   verify before promising
+
+research agent         branching non-enumerable; costs        budget as a workflow construct ·
+"fan-out / fan-in"     unbounded; citations unverifiable;     journaled provenance per claim ·
+                       replay re-runs the searches           replay = resume the search tree
+
+sales agent            sending is irreversible &              prospect-level locks · irreversible
+"a drip campaign"      reputation-bearing; plan must          gates with human approval ·
+                       adapt; two agents = damage            "do not contact" outside any run
+```
+
+*Classical microservice primitives handle the side-effect mechanics — idempotency on the call, durability on the write, compensation on the partial commit. Decision journaling, action-space management, multi-agent coordination, fresh-state verification, budget enforcement, non-deterministic replay — these are the gaps the new tools are filling.*
+
 ### The autonomous coding agent
 
 1/ The LLM reads a ticket, plans an implementation, edits files, runs tests, iterates, opens a pull request.
@@ -1077,6 +1109,32 @@ One word, many semantics.
 
 1/ Section VII showed a runtime closing the floor — retries, idempotency at workflow scope, suspend-and-resume, the compensation stack folded into a `try`/`except`. The ceiling is not one thing. It is a handful of primitives, each with a naive form that demos cleanly and a durable form that survives the year. Six of them, in code. Assume the Temporal vocabulary from Section VII: `workflow.execute_activity`, `workflow.wait_condition`, `workflow.now`, `workflow.sleep`, `@workflow.signal`, `@workflow.query`, `activity.info`.
 
+![Six primitives of the ceiling](12_six_primitives.svg)
+
+```text
+PRIMITIVE                NAIVE — dies in production             DURABLE — survives the year
+---------                --------------------------             ---------------------------
+① idempotency key        key = hash(run_date, amount)           key = f"{plan.id}/sweep/{i}"
+  name the decision      amount drifts on replay → two wires    decision journaled once; key names it
+
+② the unknown ack        except UnknownAck: pass                while unknowns: ask_bank(); sleep(5m)
+  resolve, don't guess   "reconciliation later"                 retry-forever query + durable timer
+
+③ the gate               if require_approval and not ok: ...    await wait_condition(approved, 8h)
+  authority, not advice  a flag in RAM — dies with the process  the answer arrives as a signal
+
+④ the budget             @cap_spend(usd=50)                     budget.admit(est); ...; budget.charge(real)
+  a ledger, not a gauge  resets to $0 on restart                workflow state — check before, charge after
+
+⑤ compensation           try: ... except: git.reset_hard()      propose_compensation(effect, goal)
+  the model writes ¬B    "undo" = throw it all away             ask the model, from the journaled why
+
+⑥ coordination           agent_a.send(agent_b, action)          entity.signal(claim); entity.query(view)
+  a journal, not messages two stale views, one race             a durable entity linearizes the effects
+```
+
+*The journal you needed for correctness turns out to be the journal you needed for the dispute.*
+
 ### ① The idempotency key must name the decision, not its inputs
 
 2/ Look again at the treasury key: `sha256(run_date, account_id, amount_minor, target)`. `amount_minor` is not an input. It is an *output* — the model computed it from the day's balances. And the day's balances can change between the original run and the replay: a late credit posts, a settlement clears an hour after cutoff.
@@ -1317,6 +1375,32 @@ await workflow.execute_activity(perform, action, ...)
 ## IX. The Loop, Made Durable
 
 1/ Put the six primitives together and the agent loop — observe, decide, gate, verify, act, fold, judge, compensate — fits in about seventy lines, with the durability *underneath* the loop rather than threaded through every tool body.
+
+![The loop, made durable](11_durable_loop.svg)
+
+```text
+        ┌────────────────── 6 · fold the result into state, loop until state.done ──────────────────┐
+        ▼                                                                                           │
+   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐                     │
+   │1 observe │──► │2 decide  │──► │3 gate    │──► │4 verify  │──► │5 act     │─────────────────────┘
+   │fresh     │    │llm: once,│    │human sig.│    │world     │    │key =     │
+   │state     │    │then hist.│    │if irrev. │    │moved?    │    │decision id│
+   └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘
+        └───────────────┴───────────────┴───────────────┴───────────────┘   every step → journaled
+                                        │
+   ═════════════════════════════════════▼══════════════════════════════════════════════════════════
+    DURABLE EXECUTION RUNTIME — workflow identity · journal (every decision + every effect) ·
+    timers · signals · retries · replay · suspend across deploys and days.
+    Replay returns each step: never re-samples the model, never re-fires a confirmed effect,
+    never re-spends the budget.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+   when state.done →  judge ──passed──► ✓ Outcome.ok
+                        └──failed / over budget / error──► compensate  (¬effects, LIFO; known
+                                                           inverse, or model-authored from the why)
+```
+
+*Six of the seven ceremony points fold into the runtime. What is left is the loop — observe, decide, gate, verify, act, fold — which was always yours.*
 
 ```python
 from datetime import timedelta
