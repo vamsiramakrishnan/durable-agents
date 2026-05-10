@@ -3,12 +3,14 @@
 *A treatise on agents that act*
 
 > This is the combined edition. It keeps the rhythmic spine — short numbered
-> beats, an argument built one stroke at a time — and folds back the longer
-> prose where the long prose said it better. Every figure appears twice: once
-> as a diagram, once as a plain-text plate, so the argument survives whether
-> you are reading the rendered page or the raw source. The small monospace
-> couplets set between paragraphs are sentence-breakers; read them as breath
-> marks.
+> beats, an argument built one stroke at a time — folds back the longer prose
+> where the long prose said it better, and then extends both with the working
+> code the argument was pointing at all along: the bug in each of the six
+> agent classes, the six primitives of the ceiling, and the whole agent loop
+> made durable end to end. Every figure appears twice: once as a diagram, once
+> as a plain-text plate, so the argument survives whether you are reading the
+> rendered page or the raw source. The small monospace couplets set between
+> paragraphs are sentence-breakers; read them as breath marks.
 
 ---
 
@@ -644,6 +646,37 @@ A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 
 5/ What the system actually needs. Journaled decisions, not just side effects. The ability to fork and abandon plans cheaply. Budget enforcement. Resumption that uses the journal as memory rather than as a transcript to replay verbatim.
 
+6/ The bug, in code. The plan lives nowhere durable — it is in the model's head and, half-applied, on disk:
+
+```python
+# naive — the plan is re-sampled on restart, and it comes back different
+async def coding_agent(ticket: str) -> None:
+    plan = await llm.plan(ticket)                   # sampled — non-deterministic
+    for step in plan.steps:
+        edit_files(step.patch)
+    if not run_tests().ok:
+        git.reset_hard()                            # "compensation" = throw it all away
+    open_pr()
+# Crash after edit 3 of 7. On restart llm.plan() returns a DIFFERENT plan.
+# The three edits already on disk belong to a plan that no longer exists.
+
+# durable — the plan is an activity result; replay returns *this* plan
+@workflow.defn
+class CodingAgent:
+    @workflow.run
+    async def run(self, ticket: str) -> PR:
+        plan = await workflow.execute_activity(plan_implementation, ticket, ...)
+        for i, step in enumerate(plan.steps):
+            await workflow.execute_activity(
+                apply_patch, PatchCmd(step, idempotency_key=f"{plan.id}/patch/{i}"), ...)
+        tests = await workflow.execute_activity(run_tests, ...)
+        if not tests.ok:
+            # not "reset" — "here is a half-applied plan and N failing tests: repair or abandon"
+            await workflow.execute_activity(
+                repair_or_abandon, RepairCtx(plan, applied=i + 1, tests=tests), ...)
+        return await workflow.execute_activity(open_pull_request, plan, ...)
+```
+
 ### The browser-use agent
 
 1/ The LLM looks at a screenshot, decides where to click, types text, navigates, fills forms.
@@ -655,6 +688,20 @@ A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 4/ Compensation is wildly contextual. *Undo this booking* is not a database revert. It is another agent run that must discover the booking, navigate to the cancellation flow, and confirm.
 
 5/ What the system needs. Visual state snapshots in the journal. Action verification — *did the click do what was intended*. The ability to detect when replay has diverged from the journaled trajectory.
+
+6/ The check, in code. A click is addressed by pixel; the journal records the pixel *and* a hash of the screen it was taken against; replay re-screenshots first:
+
+```python
+async def durable_click(target: Point, expected_view: ViewHash) -> ViewHash:
+    before = perceptual_hash(await screenshot())
+    if before != expected_view:
+        raise ReplayDiverged(expected=expected_view, found=before)   # this is not the page we planned against
+    await click(target)
+    after = perceptual_hash(await screenshot())
+    if after == before:
+        raise ActionHadNoEffect(target)                              # the click did nothing — do not proceed as if it did
+    return after                                                     # journaled; the next action plans against this
+```
 
 ### The SRE agent responding to a page
 
@@ -670,6 +717,22 @@ A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 
 6/ What the system needs. Action-level approval gates for destructive operations. Fresh-state verification before each significant action. Multi-agent coordination via shared environment state. A journal that doubles as audit.
 
+7/ The gate, in code (in full in Section VIII):
+
+```python
+DESTRUCTIVE = {"restart_service", "scale_down", "drain_node", "delete_pv"}
+
+async def run_action(a: Action) -> Result:
+    if a.name in DESTRUCTIVE:
+        ok = await workflow.wait_condition(lambda: approval_for(a.id) is not None,
+                                           timeout=timedelta(minutes=15))
+        if not ok or approval_for(a.id).verdict != "approve":
+            return Skipped(a)
+    if not await workflow.execute_activity(precondition_still_holds, a, ...):   # the box changed while we waited
+        return Stale(a)
+    return await workflow.execute_activity(execute_on_host, a, ...)
+```
+
 ### The customer support agent
 
 1/ The LLM reads messages, classifies intent, queries account state, decides actions, responds.
@@ -681,6 +744,22 @@ A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 4/ The LLM might commit, in language, to something the system cannot deliver. The gap between the language commitment and the system action is where the failure lives.
 
 5/ What the system needs. Structured commitment tracking that the conversational layer renders as language but the durable layer enforces as data. Conversation suspend across days. A verification step before any commitment is rendered to the customer.
+
+6/ The gap, in code. The model writes prose; the durable layer writes a claim — *before* the prose is sent:
+
+```python
+async def respond(turn: Turn, account: Account) -> None:
+    draft = await workflow.execute_activity(draft_reply, DraftCtx(turn, account), ...)
+    for promise in extract_commitments(draft):              # "$50 refund", "by Friday", "I'll escalate this"
+        if not policy.permits(promise, account):
+            draft = await workflow.execute_activity(redraft_without, RedraftCtx(draft, promise), ...)
+            continue
+        await workflow.execute_activity(record_obligation, Obligation.of(promise, turn), ...)   # data, not language
+    await workflow.execute_activity(send_message, draft,
+                                    idempotency_key=f"{turn.conversation_id}/{turn.n}")
+# Turn 5, two days later: the workflow is still alive (durable suspend); the
+# obligation recorded in turn 2 is in history; the fulfilment activity fires.
+```
 
 ### The deep-research agent
 
@@ -694,6 +773,26 @@ A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 
 5/ What the system needs. Budget as a first-class workflow construct. Journaled provenance for every claim in the output. The recognition that *replay* for this class of agent means *resume the search tree from where it stopped*, not *reproduce the same outputs*.
 
+6/ The shape, in code (budget in full in Section VIII):
+
+```python
+@workflow.defn
+class ResearchAgent:
+    @workflow.run
+    async def run(self, question: str) -> Report:
+        frontier: list[Query] = [Query.seed(question)]            # the frontier is workflow state — in history
+        findings: list[Finding] = []
+        while frontier:
+            q = frontier.pop()
+            hits = await workflow.execute_activity(search, q, ...)
+            for h in hits:
+                c = await workflow.execute_activity(extract_claim, h, ...)
+                findings.append(c.with_provenance(query=q, url=h.url, snippet=h.snippet))
+                frontier.extend(await workflow.execute_activity(followups, c, ...))
+        return await workflow.execute_activity(synthesize, findings, ...)
+        # replay resumes the frontier from history; it does not re-run a single search.
+```
+
 ### The sales or outbound agent
 
 1/ The LLM researches a prospect, drafts an outreach, sends, follows up, books meetings.
@@ -705,6 +804,23 @@ A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 4/ Cross-agent coordination is critical. Two agents working the same prospect is a serious failure.
 
 5/ What the system needs. Lock-and-coordinate primitives at the prospect level. Irreversible-action gates with human approval. Explicit *do not contact* state that lives outside any single workflow run.
+
+6/ The guard, in code (coordination in full in Section VIII):
+
+```python
+async def send_outreach(prospect_id: str, draft: Email) -> Result:
+    async with prospect_lock(prospect_id):                           # durable, journaled — outlives any one run
+        if await workflow.execute_activity(on_do_not_contact, prospect_id, ...):
+            return Suppressed(prospect_id)
+        if draft.is_first_touch:
+            ok = await workflow.wait_condition(lambda: approved(prospect_id),
+                                               timeout=timedelta(hours=24))
+            if not ok:
+                return AwaitingApproval(prospect_id)
+        await workflow.execute_activity(send_email, draft,           # no compensation exists — there is no unsend
+                                        idempotency_key=f"{prospect_id}/{draft.seq}")
+        await workflow.execute_activity(mark_contacted, prospect_id, ...)
+```
 
 ### The pattern across the six
 
@@ -957,11 +1073,413 @@ One word, many semantics.
 
 ---
 
-## VIII. On Substrate
+## VIII. Six Primitives of the Ceiling
+
+1/ Section VII showed a runtime closing the floor — retries, idempotency at workflow scope, suspend-and-resume, the compensation stack folded into a `try`/`except`. The ceiling is not one thing. It is a handful of primitives, each with a naive form that demos cleanly and a durable form that survives the year. Six of them, in code. Assume the Temporal vocabulary from Section VII: `workflow.execute_activity`, `workflow.wait_condition`, `workflow.now`, `workflow.sleep`, `@workflow.signal`, `@workflow.query`, `activity.info`.
+
+### ① The idempotency key must name the decision, not its inputs
+
+2/ Look again at the treasury key: `sha256(run_date, account_id, amount_minor, target)`. `amount_minor` is not an input. It is an *output* — the model computed it from the day's balances. And the day's balances can change between the original run and the replay: a late credit posts, a settlement clears an hour after cutoff.
+
+3/ So on replay the model recomputes `amount_minor`, gets a different number, the key changes, and the bank — correctly, by its own rules — treats the instruction as new. Two wires. The idempotency layer did its job. The key was the bug.
+
+```text
+the key must name the decision, not its inputs
+```
+
+```python
+# WRONG — the key is a function of values the model recomputes on replay.
+def execute_sweep(state):
+    amount = policy.sweep_amount(state.balances)             # recomputed on replay
+    key    = sha256(f"{state.run_date}:{state.account}:{amount}".encode()).hexdigest()
+    bank.wire(state.account, amount, idempotency_key=key)
+# A late credit lands; read_balances returns a higher figure on the retry;
+# `amount` changes; `key` changes; the bank sees a brand-new instruction. Two wires.
+
+# RIGHT — the decision is journaled once; the key names the journal entry.
+@workflow.defn
+class TreasuryEOD:
+    @workflow.run
+    async def run(self, run_date: str, policy: Policy) -> Summary:
+        balances = await workflow.execute_activity(read_balances, run_date, ...)
+        # decide ONCE. the result lives in history. replay returns *this* plan,
+        # not a fresh computation against possibly-changed balances.
+        plan = await workflow.execute_activity(decide_sweeps, DecideIn(balances, policy), ...)
+        for i, sweep in enumerate(plan.sweeps):
+            await workflow.execute_activity(
+                execute_sweep,
+                SweepCmd(sweep, decision_id=f"{plan.id}/sweep/{i}"),     # ← stable; cannot drift
+                ...,
+            )
+
+@activity.defn
+async def execute_sweep(cmd: SweepCmd) -> str:
+    # the key the bank sees is the workflow's name for this decision —
+    # not a hash of figures the model might recompute differently next time.
+    return await bank.wire(cmd.account, cmd.amount_minor, cmd.target,
+                           idempotency_key=cmd.decision_id)
+```
+
+4/ The unit of idempotency is the decision, and the decision has to be a durable record *before* it is an action. That is the outbox pattern — write the intent, then do the effect — the same pattern the treasury walk hand-rolled in point ③, now placed where it belongs: the decide step, not the act step.
+
+### ② The third outcome, and the loop that resolves it
+
+5/ Ceremony point ⑤ named a third status — `unknown` — for the wire whose acknowledgement was lost, then waved at it: *reconciliation will resolve this later*. Later is now. The bank is the end-to-end check; its record is the truth; the workflow cannot close the day until every `unknown` has been turned into a known.
+
+```python
+@workflow.defn
+class TreasuryEOD:
+    # ...read, decide, sweep, hedge as above, each appending to self.wires...
+
+    async def _settle_unknowns(self) -> None:
+        unresolved = [w for w in self.wires if w.status == "unknown"]
+        while unresolved:
+            for w in unresolved:
+                truth = await workflow.execute_activity(
+                    query_wire_status, w.decision_id,
+                    schedule_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=0),   # the bank owes us an answer; wait for it, across deploys
+                )
+                if truth.status == "confirmed":
+                    w.status, w.wire_id = "confirmed", truth.wire_id
+                elif truth.status == "absent":
+                    # it never landed. re-issue with the SAME key — provably safe.
+                    w.wire_id = await workflow.execute_activity(execute_sweep, w.cmd, ...)
+                    w.status = "confirmed"
+            unresolved = [w for w in self.wires if w.status == "unknown"]
+            if unresolved:
+                await workflow.sleep(timedelta(minutes=5))          # the bank is slow; sleep, durably
+        # only now: post GL, file the liquidity ratio, send the summary.
+```
+
+6/ Two things here do real work a non-durable agent cannot. `maximum_attempts=0` — retry forever, across deploys, until the bank answers. And `workflow.sleep` — a multi-hour wait that holds no thread, no socket, no host, and survives the operator shipping a release in the middle of it. `time.sleep` in a worker process is a held resource and, if the worker dies, a lost wait.
+
+### ③ The action gate is a signal, not a flag
+
+7/ A flag — `if require_approval and not approved` — lives in the process. The process dies; the flag dies; the question of whether anyone approved dies with it. The durable form parks the workflow on a *condition* and lets the answer arrive as a *signal*, possibly hours later, possibly after three deploys, while the workflow holds nothing.
+
+```text
+a flag dies with the process · a signal waits for it
+```
+
+```python
+@workflow.defn
+class GuardedAction:
+    def __init__(self) -> None:
+        self._verdict: Verdict | None = None
+
+    @workflow.signal
+    def decide(self, v: Verdict) -> None:        # arrives from Slack, an email link, an ops console
+        self._verdict = v
+
+    @workflow.run
+    async def run(self, action: Action) -> Result:
+        if action.risk == "irreversible":
+            await workflow.execute_activity(notify_approver, action,
+                                            schedule_to_close_timeout=timedelta(seconds=30))
+            got = await workflow.wait_condition(lambda: self._verdict is not None,
+                                                timeout=timedelta(hours=8))
+            if not got or self._verdict.outcome != "approve":
+                return Result.declined(action, self._verdict)
+        # the world may have moved during the wait — re-verify; do not trust the journal
+        if not await workflow.execute_activity(precondition_holds, action, ...):
+            return Result.stale(action)
+        return await workflow.execute_activity(perform, action, ...)
+```
+
+8/ The prompt is advice. The gate is authority. The model can *propose* the irreversible action all day; the gate is the only thing that lets it *happen*, and the gate is durable state, not a runtime boolean.
+
+### ④ Budget is a workflow object, not a wrapper
+
+9/ A budget enforced by a decorator is a counter in memory. The agent that crashed at $40 of a $50 cap restarts at $0 and spends $50 more. A real budget is workflow state — in history, surviving replay — checked *before* the spend and charged *after* it, so a crash mid-call cannot lose the charge and cannot double it.
+
+```text
+check before · charge after · the ledger is history
+```
+
+```python
+@dataclass
+class Budget:
+    usd_cap: float
+    token_cap: int
+    usd_spent: float = 0.0
+    tokens_spent: int = 0
+
+    def admit(self, est_usd: float, est_tokens: int) -> None:
+        if self.usd_spent + est_usd > self.usd_cap:         raise BudgetExceeded("usd")
+        if self.tokens_spent + est_tokens > self.token_cap: raise BudgetExceeded("tokens")
+
+    def charge(self, usd: float, tokens: int) -> None:
+        self.usd_spent += usd
+        self.tokens_spent += tokens
+
+@workflow.defn
+class ResearchAgent:
+    @workflow.run
+    async def run(self, question: str, budget: Budget) -> Report:
+        frontier: list[Query] = [Query.seed(question)]
+        findings: list[Finding] = []
+        while frontier:
+            budget.admit(est_usd=0.03, est_tokens=8_000)            # refuse BEFORE the call
+            q = frontier.pop()
+            hits = await workflow.execute_activity(search, q, ...)
+            budget.charge(hits.usd, hits.tokens)                    # recorded in history, exactly once
+            for h in hits:
+                claim = await workflow.execute_activity(extract_claim, h, ...)
+                findings.append(claim.with_provenance(query=q, url=h.url, snippet=h.snippet))
+                budget.charge(claim.usd, claim.tokens)
+                if budget.usd_spent < 0.8 * budget.usd_cap:         # chase follow-ups only while there's room
+                    frontier.extend(await workflow.execute_activity(followups, claim, ...))
+        # replay resumes the frontier *and* the spent counters from history.
+        # it does not re-run the searches, and it does not re-spend the budget.
+        return await workflow.execute_activity(synthesize, findings, ...)
+```
+
+10/ Note `with_provenance`. Every claim in the report carries the query that found it, the URL it came from, the snippet it was extracted from — all journaled at the moment the claim entered the report, not reconstructed afterward from logs that may not exist. That is the answer to *how do you know this is true*, recorded when the knowing happened.
+
+### ⑤ Adaptive compensation: the model writes the inverse
+
+11/ A pre-written ¬B does not exist when B was sampled rather than authored. But B was journaled — its request, its response, its rationale — and that is exactly enough context to ask the model to undo it.
+
+```text
+the why is for the auditor — and for the rollback
+```
+
+```python
+@dataclass
+class Effect:
+    kind: str
+    decision_id: str
+    request: dict
+    response: dict
+    rationale: str            # the model's why, journaled — now load-bearing twice
+
+KNOWN_INVERSES = {            # where a deterministic undo exists, prefer it
+    "wire":      reverse_wire,
+    "book_room": cancel_room,
+    "gl_post":   reverse_gl_entry,
+}
+
+async def unwind(effects: list[Effect], goal: str) -> None:
+    for e in reversed(effects):                                       # LIFO, like a saga
+        if e.kind in KNOWN_INVERSES:
+            await workflow.execute_activity(KNOWN_INVERSES[e.kind], e,
+                                            idempotency_key=f"comp/{e.decision_id}", ...)
+            continue
+        # no canned inverse — hand the model what it did and why; ask for the undo
+        plan = await workflow.execute_activity(propose_compensation, CompIn(effect=e, goal=goal), ...)
+        await workflow.execute_activity(validate_compensation, ValidateIn(e, plan), ...)   # cheap guardrail before any act
+        for step in plan.steps:
+            await workflow.execute_activity(
+                perform, ToolCmd(step, idempotency_key=f"comp/{e.decision_id}/{step.seq}"), ...)
+```
+
+12/ This is why the journal records *why* and not only *what*. The auditor needs the why; so does the rollback. Provenance is not overhead carried for the regulator — it is the input to your own recovery path.
+
+### ⑥ Coordination through journaled state, not messages
+
+13/ Two SRE agents on one incident. Two sales agents on one prospect. The failure is one acting on the other's stale view — one scales up while the other scales down, one emails while the other is mid-call. Do not let them message each other; that trades a stale view for a racing one. Mediate through a durable entity that linearises their effects and, in doing so, *is* the coordination log.
+
+```python
+@workflow.defn
+class IncidentEntity:                            # one per incident, long-lived
+    def __init__(self) -> None:
+        self.lease: Lease | None = None
+        self.log: list[tuple] = []
+
+    @workflow.signal
+    def claim(self, agent: str, ttl: timedelta) -> None:
+        if self.lease is None or self.lease.deadline <= workflow.now():
+            self.lease = Lease(holder=agent, deadline=workflow.now() + ttl)
+
+    @workflow.signal
+    def record(self, agent: str, action: Action) -> None:
+        if self.lease and self.lease.holder == agent:
+            self.log.append((workflow.now(), agent, action))
+
+    @workflow.query
+    def view(self) -> IncidentView:
+        return IncidentView(lease=self.lease, log=self.log)
+
+# an SRE agent, before anything destructive:
+v = await incident.query("view")
+if v.lease and v.lease.holder != me:
+    return Yield(to=v.lease.holder)              # someone else is driving — stand down
+await incident.signal("claim", me, timedelta(minutes=10))
+await incident.signal("record", me, action)
+await workflow.execute_activity(perform, action, ...)
+```
+
+14/ The entity's history is the coordination protocol *and* the incident timeline *and* the audit trail — one structure, three readers. That is the shape of every ceiling primitive: the journal you needed for correctness turns out to be the journal you needed for the dispute.
+
+---
+
+## IX. The Loop, Made Durable
+
+1/ Put the six primitives together and the agent loop — observe, decide, gate, verify, act, fold, judge, compensate — fits in about seventy lines, with the durability *underneath* the loop rather than threaded through every tool body.
+
+```python
+from datetime import timedelta
+from temporalio import workflow, activity
+from temporalio.common import RetryPolicy
+
+# ── activities: every boundary-crossing thing, and nothing else, is one ───────
+@activity.defn
+async def observe(handle: EnvHandle) -> Observation: ...        # fresh state of the world
+@activity.defn
+async def llm_decide(ctx: DecideCtx) -> Decision: ...           # the one non-determinism, captured in history
+@activity.defn
+async def precondition_holds(ctx: PreCtx) -> bool: ...          # did the world move since `observe`?
+@activity.defn
+async def perform(cmd: ToolCmd) -> ToolResult: ...              # carries cmd.idempotency_key to the counterparty
+@activity.defn
+async def judge(ctx: JudgeCtx) -> Verdict: ...                  # the "did it actually work" oracle
+@activity.defn
+async def notify_approver(a: Action) -> None: ...
+@activity.defn
+async def propose_compensation(c: CompIn) -> CompPlan: ...
+
+KNOWN_INVERSES: dict[str, object] = {...}
+
+# ── the workflow: the agent loop, durable end to end ──────────────────────────
+@workflow.defn
+class Agent:
+    def __init__(self) -> None:
+        self._approval: Verdict | None = None
+        self._effects: list[Effect] = []
+
+    @workflow.signal
+    def approve(self, v: Verdict) -> None:
+        self._approval = v
+
+    @workflow.query
+    def trace(self) -> list[dict]:                              # a live audit feed, no extra plumbing
+        return [e.public() for e in self._effects]
+
+    @workflow.run
+    async def run(self, goal: str, policy: Policy, budget: Budget) -> Outcome:
+        state = State.from_goal(goal)
+        try:
+            while not state.done:
+                # 1. observe — fresh, never carried over from the last iteration
+                obs = await workflow.execute_activity(
+                    observe, state.handle, schedule_to_close_timeout=timedelta(seconds=30))
+
+                # 2. decide — sampled once; from here on it is history
+                budget.admit(est_usd=0.04, est_tokens=12_000)
+                decision = await workflow.execute_activity(
+                    llm_decide, DecideCtx(goal, state, obs, policy),
+                    schedule_to_close_timeout=timedelta(minutes=2))
+                budget.charge(decision.usd, decision.tokens)
+                decision_id = f"{workflow.info().workflow_id}/{decision.seq}"
+                if decision.kind == "stop":
+                    break
+
+                # 3. gate — irreversible acts wait for a human, durably, holding nothing
+                if policy.is_gated(decision.action):
+                    await workflow.execute_activity(notify_approver, decision.action,
+                        schedule_to_close_timeout=timedelta(seconds=30))
+                    ok = await workflow.wait_condition(
+                        lambda: self._approval is not None
+                                and self._approval.decision_id == decision_id,
+                        timeout=timedelta(hours=8))
+                    if not ok or self._approval.outcome != "approve":
+                        state = state.note_declined(decision); continue
+
+                # 4. verify at consumption — the world may have moved since step 1
+                if not await workflow.execute_activity(precondition_holds,
+                        PreCtx(decision.action, obs.version),
+                        schedule_to_close_timeout=timedelta(seconds=30)):
+                    state = state.mark_stale(decision); continue
+
+                # 5. act — idempotency key = the decision's identity, not its inputs
+                result = await workflow.execute_activity(
+                    perform, ToolCmd(decision.action, idempotency_key=decision_id),
+                    schedule_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=RetryPolicy(maximum_attempts=8))
+                self._effects.append(Effect.of(decision, result))      # decision ⊕ effect ⊕ rationale
+
+                # 6. fold the result back; loop
+                state = state.update(decision, result)
+
+            # 7. the oracle classical patterns assumed and agents have to build
+            verdict = await workflow.execute_activity(
+                judge, JudgeCtx(goal, state, self._effects),
+                schedule_to_close_timeout=timedelta(minutes=2))
+            if not verdict.passed:
+                raise GoalNotMet(verdict.why)
+            return Outcome.ok(state, self._effects)
+
+        except (GoalNotMet, BudgetExceeded, ActivityError) as failure:
+            # 8. compensation — deterministic inverse where we have one, model-authored where we don't
+            for e in reversed(self._effects):
+                if e.kind in KNOWN_INVERSES:
+                    await workflow.execute_activity(KNOWN_INVERSES[e.kind], e,
+                        idempotency_key=f"comp/{e.decision_id}",
+                        schedule_to_close_timeout=timedelta(minutes=5))
+                else:
+                    plan = await workflow.execute_activity(propose_compensation,
+                        CompIn(e, goal), schedule_to_close_timeout=timedelta(minutes=2))
+                    for step in plan.steps:
+                        await workflow.execute_activity(perform,
+                            ToolCmd(step, idempotency_key=f"comp/{e.decision_id}/{step.seq}"),
+                            schedule_to_close_timeout=timedelta(minutes=5))
+            return Outcome.compensated(state, self._effects, failure)
+```
+
+2/ Walk what each line bought. Step 2 — replay returns the same decision, because the decision is an activity result in history, not a fresh sample. Step 3 — the human gate survives a deploy, because it is a `wait_condition`, not a held connection. Step 5 — the idempotency key cannot drift, because it is the workflow's name for the decision, not a hash of recomputed figures; and the budget cannot reset, because it is workflow state. Step 7 — the judge is in history, so replay does not re-grade. Step 8 — the compensation is adaptive, because it has the journaled rationale to work from. The `trace` query is the audit, live, for free.
+
+3/ Seventy lines. Six of the treasury walk's seven ceremony points are gone — folded into `execute_activity`, `wait_condition`, and workflow state. The seventh — *why* — is the `decision` object, journaled because every activity input and output is journaled. What stays visible is the loop itself: observe, decide, gate, verify, act, fold, judge, compensate. That was always the part that was supposed to be yours.
+
+### What is still hard, even here
+
+4/ The judge is an LLM. Journaling it makes replay *consistent* — the same verdict on every replay — but it does not make the verdict *correct*. The oracle classical patterns assumed (`response.ok is True`) has been replaced by a slower, fallibler oracle that is now load-bearing. Verification is the open frontier; the loop above does not close it, it just gives it a deterministic seat at the table.
+
+5/ Step 4 is a precondition check, not a divergence check. For a stateful environment — the browser, a half-edited workspace — you need more: did the observation at iteration *N+1* still match what the decision at iteration *N* assumed? When it does not, the right move is sometimes to re-decide and sometimes to abort, and knowing which means comparing journaled trajectory against live state, not just re-reading a version number.
+
+6/ The journal is not free. A coding agent that owns a feature for a sprint accumulates a history that is large and mostly irrelevant on replay. `continue-as-new`, history pruning, summarising old segments into a checkpoint — these are real operational work, and they are the price of the property, not a bug in it.
+
+7/ `decision_id`-as-key assumes `perform` reaches a counterparty that accepts a key. Some effects have no key: a shell command, a UI click, a robot arm in a warehouse. There the journal is the *only* record, and *did it happen* is answered by re-observation, not by asking the other side. The end-to-end argument bites hardest exactly where there is no other end to ask.
+
+8/ Multi-agent coordination through a journaled entity (Section VIII ⑥) linearises effects but can become the bottleneck — every agent funnelling through one workflow's history. Sharding the entity, leasing sub-regions, reconciling shards: the same scaling problems the workflow community already has, now with agents as the clients.
+
+9/ None of these are reasons to skip the loop. They are the shape of the work that is left once the loop is durable — which is the shape of the ceiling, still being built.
+
+---
+
+## X. On Substrate
 
 1/ Most of these systems are written in Python. Python is structurally hostile to most of what they require. The problems compound rather than cancel.
 
 2/ Determinism within workflow code. Python permits non-deterministic constructs — `time`, `random`, hash randomisation, dict iteration in some contexts, threading — anywhere. Sandboxes mitigate but cannot enforce. In a world where the LLM is already a non-determinism source, having a second non-determinism source in the runtime is a recipe for replay drift.
+
+```python
+# This compiles. This runs. This passes the demo. This is wrong.
+@workflow.defn
+class Pricer:
+    @workflow.run
+    async def run(self, order: Order) -> Quote:
+        jitter = random.uniform(0.98, 1.02)        # ← re-evaluated on replay → different value
+        asof   = datetime.now()                    # ← re-evaluated on replay → different value
+        if jitter < 1.0:
+            return await workflow.execute_activity(price_low, order, asof, ...)
+        return await workflow.execute_activity(price_high, order, asof, ...)
+        # On replay the workflow re-derives `jitter`, takes the *other* branch,
+        # expects a different activity result than the one already in history —
+        # and the engine raises a non-determinism panic, or, worse, silently diverges.
+
+# The fix: anything non-deterministic is a runtime call or an activity result.
+@workflow.defn
+class Pricer:
+    @workflow.run
+    async def run(self, order: Order) -> Quote:
+        jitter = await workflow.execute_activity(roll_jitter, ...)   # journaled — same on every replay
+        asof   = workflow.now()                                       # the runtime's deterministic clock
+        branch = price_low if jitter < 1.0 else price_high
+        return await workflow.execute_activity(branch, order, asof, ...)
+```
+
+The first version is not exotic. It is the obvious way to write it, and nothing in the language or the type checker objects. That is the point: in a system where the model is already one source of non-determinism, the substrate must not be a second — and Python is a second, unless you spend continuous effort fighting it. *Don't use `time.sleep` in workflow code* is not documentation. It is a load-bearing rule with no enforcement behind it.
 
 3/ Concurrency. Python's three concurrency models — sync, asyncio, threading — compose poorly with each other and with durable execution. Most agent libraries mix all three. Workflow engines have to constrain user code to one model, fighting the language.
 
@@ -981,7 +1499,7 @@ One word, many semantics.
 
 ---
 
-## IX. The Landscape
+## XI. The Landscape
 
 1/ The category has converged on a small set of architectural patterns implemented in different deployment models.
 
@@ -1009,7 +1527,7 @@ checkpointed state is not journaled consequence
 
 ---
 
-## X. Floor and Ceiling
+## XII. Floor and Ceiling
 
 ![Floor and ceiling](04_floor_and_ceiling.svg)
 
