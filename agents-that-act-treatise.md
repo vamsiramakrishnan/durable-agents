@@ -1833,6 +1833,25 @@ class Agent:
         return Outcome.compensated(state, self._effects, failure)
 ```
 
+![Step 3, on the clock](25_human_gate_timeline.svg)
+
+```text
+ t0 ─────────────── t0+6h ──────── t0+8h ──────────────── t0+2 days ──────────────►
+ reach a gated      deploy v1→v2   timeout would          approver clicks "approve"
+ action; notify     ships — the    fire here →            → `approve` signal
+ approver; SUSPEND  workflow        declined / escalate   → workflow wakes
+        │           doesn't care                                  │
+        └────────── SUSPENDED: no thread · no socket · no host held ┘
+                                                                   ▼
+                                          re-verify the precondition (the world moved in 2 days)
+                                            ├─ still valid → perform the action
+                                            └─ stale → mark stale, loop
+
+ A flag in RAM cannot do this: the process that set it is long gone — and so is the question of who approved.
+```
+
+*The gate is a signal, not a flag: the workflow parks on a condition, holds nothing, survives a deploy mid-wait, wakes when the signal arrives, re-verifies the world, and acts.*
+
 2/ Walk what each line bought. Step 2 — replay returns the same decision, because the decision is an activity result in history, not a fresh sample. Step 3 — the human gate survives a deploy, because it is a `wait_condition`, not a held connection. Step 5 — the idempotency key cannot drift, because it is the workflow's name for the decision, not a hash of recomputed figures; and the budget cannot reset, because it is workflow state. Step 7 — the judge is in history, so replay does not re-grade; and because the judge is fallible, a deterministic verdict is acted on, a confident pass is taken, and anything weaker escalates to a human rather than triggering a blind rollback. Step 8 — compensation is adaptive where it has to be (the model writes the inverse from the journaled rationale) and gated where it must be (a model-authored, irreversible undo is escalated, never improvised); and when a compensation itself fails, the loop ends in `stuck` with a page, not a lie. The `trace` query is the audit, live, for free.
 
 3/ Seventy lines. Six of the treasury walk's seven ceremony points are gone — folded into `execute_activity`, `wait_condition`, and workflow state. The seventh — *why* — is the `decision` object, journaled because every activity input and output is journaled. What stays visible is the loop itself: observe, decide, gate, verify, act, fold, judge, compensate. That was always the part that was supposed to be yours.
@@ -1889,6 +1908,21 @@ class Pricer:
 
 The first version is not exotic. It is the obvious way to write it, and nothing in the language or the type checker objects. That is the point: in a system where the model is already one source of non-determinism, the substrate must not be a second — and Python is a second, unless you spend continuous effort fighting it. *Don't use `time.sleep` in workflow code* is not documentation. It is a load-bearing rule with no enforcement behind it.
 
+![The language can drift you](26_replay_drift.svg)
+
+```text
+WRONG — random in workflow code                     RIGHT — a runtime call or an activity result
+ FIRST RUN  jitter = random.uniform(0.98,1.02)→0.99  FIRST RUN  jitter = await execute_activity(roll_jitter)→0.99
+            if jitter<1.0 → branch A → price_low                history ▸ 0.99 (recorded) → branch A → price_low
+            history ▸ price_low's result
+ REPLAY     jitter = random.uniform(...)→1.01  ← !   REPLAY     jitter = await execute_activity(roll_jitter)→reads 0.99
+            if jitter<1.0 → branch B → price_high               branch A → price_low → reads from history
+            expects price_high's result;                        ✓ same path — resumes forward
+            history has price_low's → ✗ NON-DETERMINISM PANIC   (also: workflow.now() not datetime.now(); workflow.random())
+```
+
+*Anything in workflow code whose value isn't recorded in history must produce the same answer on every replay. `random()` and `datetime.now()` don't — so they become `workflow.random()`, `workflow.now()`, or an activity result.*
+
 3/ Concurrency. Python's three concurrency models — sync, asyncio, threading — compose poorly with each other and with durable execution. Most agent libraries mix all three. Workflow engines have to constrain user code to one model, fighting the language.
 
 4/ State serialisation. `pickle` is fragile across Python versions and class definitions. The first deploy after a workflow goes long-running is the deploy where pickle breaks. Strongly typed alternatives like Pydantic help but are not pervasive.
@@ -1924,6 +1958,21 @@ async def run(self, run_date: str, policy: Policy) -> Summary:
     # ...v1 replays skip the branch; v2 runs take it; both reach here with consistent history...
 ```
 
+![Every behavioural change is a migration](27_patched_drain.svg)
+
+```text
+ deploy v2 ─────────────────── THE DRAIN WINDOW ─────────────────── last v1 instance drains ──►
+ adds, gated:                  two versions of the logic coexist —   all v1 drained → remove the
+   if workflow.patched(         you can't skip it; the test           marker (itself a versioned
+     "v2-revalue-before-hedge") replays old histories vs new code     change → now v3)
+   → revalue(...)
+              ┌─ v1 instances: hit the gate → patched()=FALSE in replay → SKIP the new branch
+              └─ v2 runs:      hit the gate → patched()=TRUE → TAKE the new branch
+                                                 ...both reach the next step with consistent history
+```
+
+*Schema evolution for control flow. `patched()` / `GetVersion` / worker versioning is the discipline — a discipline, not a switch: every behavioural change to a long-running workflow comes with a drain window and a cleanup step you cannot skip.*
+
 13/ The consequence is the part nobody prints on the box. Every behavioural change to a long-running workflow is a migration — a window where two versions of the logic coexist, a cleanup step you cannot skip, a test that replays old histories against new code. It is schema evolution for control flow, and it is the single most underweighted operational cost of the whole category: it does not show up in a demo and it does not go away in production.
 
 ---
@@ -1931,6 +1980,24 @@ async def run(self, run_date: str, policy: Policy) -> Summary:
 ## XII. The Landscape
 
 1/ The category has converged on a small set of architectural patterns implemented in different deployment models.
+
+![The landscape](28_landscape_map.svg)
+
+```text
+ scope ↑                                     Temporal (clustered · full scope)
+ long-running ·                Restate (single binary · Rust)        cloud-native:
+ sagas · multi-day                                                    Step Functions ·
+                                                                      Azure Durable Fns ·
+                                                                      Cloudflare Workflows
+ lightweight     DBOS (in-proc · Postgres)   Inngest · Hatchet (hosted · lightweight)
+ workflow rt     └──────────────────────────────────────────────────────────────────► operational footprint
+                 in-process library  single binary  clustered service  cloud-managed
+
+ ── Agent frameworks with bolted-on durability: LangGraph · CrewAI · ADK ──
+    checkpoints at node boundaries · patterns as user discipline  →  put a durable engine *underneath*
+```
+
+*Same architectural pattern, different deployment models. The runtime layer is being built; the agent-framework layer is increasingly an application of it — the realistic move is a durable engine beneath the framework, not the framework's own durability features.*
 
 2/ Temporal. The most mature. Built by the team behind Cadence at Uber. Workflows written as code in Go, Java, TypeScript, Python, .NET, Ruby. Self-hosted cluster or Temporal Cloud. Production users include Snap, Netflix, HashiCorp, Box, Datadog, JPMorgan Chase. Agent integrations announced across the OpenAI Agents SDK and the Vercel AI SDK in 2025. Strong on long-running workflows and complex saga patterns. Heavier operational footprint than alternatives.
 
@@ -1959,6 +2026,22 @@ checkpointed state is not journaled consequence
 ## XIII. What This Treatise Is Glossing Over
 
 Section X named what is still hard *inside* the loop. This is what is still hard *around* it — the places this treatise, in the service of a clean argument, has quietly assumed away, smoothed over, or drawn as a cartoon. A treatise that does not do this is a brochure.
+
+![Where the load-bearing claims sit](29_horizon.svg)
+
+```text
+SOLVED — with a chapter of caveats  │ idempotency · sagas · outboxes · timers/signals · long-running suspend ·
+                                    │ "exactly-once-effectively" (= at-least-once + idempotent receivers +
+                                    │ a finite-window dedup store + a restart-surviving key — four real systems)
+BEING BUILT                         │ decision journaling · action gates · budgets · multi-agent coordination ·
+                                    │ fresh-state verification · per-class replay semantics  (no runtime has the full set)
+OPEN FRONTIER                       │ verification — the LLM judge, fallible both ways · adaptive compensation —
+                                    │ a model undoing a model, bounded & gated, or escalated
+OUTSIDE THE FRAME                   │ agent composition (child workflows) · the journal as a PII/secrets liability ·
+                                    │ streaming UX vs the journaled backend · richer HITL · the performance tax
+```
+
+*Where the load-bearing claims actually sit. Durable execution makes the agent consistent and auditable — not right. None of this unsays the argument; "the runtime makes up the difference" describes a research programme with a few good products, not a finished thing with a vendor.*
 
 1/ "The floor is solved" is shorthand, and shorthand has a bill. What is actually solved is at-least-once delivery, *plus* idempotent receivers, *plus* a dedup store with a finite window, *plus* a key derivation that survives restart — four real systems with four sets of failure modes. The outbox pattern's relay crashes and re-emits. The dedup store fills and evicts. The window closes mid-flight — Section VI ④ named that and did not solve it, because for many APIs there is no clean recovery: you store the result object's id, not the key, and you hope you stored it before the crash. "Solved" here means what it means when someone says "the database handles concurrency": true, with a chapter of caveats you ignore at your peril.
 
@@ -2027,5 +2110,26 @@ the ceiling is not
 ```
 
 7/ The agent durable execution category, when it survives the marketing layer, is the ceiling.
+
+![An agent is a contract with the world](30_contract.svg)
+
+```text
+   AGENT ◄─────────────── commitments ───────────────► THE WORLD
+   (an LLM            placed · honoured · agreed-or-not    the merchant's inventory ·
+    choosing)                                              the airline's seat map ·
+       │ decisions · effects · why          outcomes ▲     the custodian's order book
+       ▼                                   recorded  │
+   ════════════════════════════════════════════════════════════════════════
+    DURABLE EXECUTION RUNTIME — the journal both sides can point to
+    every decision · every effect · the why · in order · timers · signals · replay
+   ════════════════════════════════════════════════════════════════════════
+                              │ reconstruct exactly what happened
+                              ▼
+                      auditor · the user
+
+   The chatbot was forgiven for forgetting.        The agent will not be.
+```
+
+*An agent is a contract with the world. The runtime is what keeps the contract honest — the journal is the binding both sides can point to.*
 
 8/ The chatbot was forgiven for forgetting. The agent will not be. An agent is a contract with the world. The runtime is what keeps the contract honest.
