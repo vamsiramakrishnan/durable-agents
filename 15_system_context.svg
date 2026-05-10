@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>An Agent Is a Contract With the World</title>
+  <desc>The agent in the middle, ringed by counterparties that each keep their own ledger, a human above, a durable runtime below, an auditor reading the journal.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-grey" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#8a8a8a"/></marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#486A8F"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .label{font:700 16px ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;fill:#1f1f1f}
+      .small{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .center{fill:#E8EEF5;stroke:#486A8F;stroke-width:2;rx:18}
+      .cp{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:14}
+      .ledger{fill:#EAE7DF;stroke:#8a8a8a;stroke-width:1;rx:8}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:12}
+      .amber{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.6;rx:14}
+      .line{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .line2{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow);marker-start:url(#arrow)}
+      .dash{stroke:#8a8a8a;stroke-width:1.6;fill:none;stroke-dasharray:6 5;marker-end:url(#arrow-grey)}
+      .blue{stroke:#486A8F;stroke-width:2;fill:none;marker-end:url(#arrow-blue)}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="58" class="title">An Agent Is a Contract With the World</text>
+  <text x="60" y="86" class="subtitle">A small program negotiating commitments with larger systems, each of which keeps its own books — and remembers only its own half.</text>
+
+  <!-- human -->
+  <rect x="500" y="120" width="200" height="48" class="cp"/>
+  <text x="600" y="149" class="label" text-anchor="middle">human principal</text>
+  <path d="M560,168 L560,278" class="line"/><text x="548" y="225" class="tiny" text-anchor="end">delegates authority</text><text x="548" y="240" class="tiny" text-anchor="end">to commit on my behalf</text>
+  <path d="M640,278 L640,168" class="dash"/><text x="652" y="225" class="tiny">escalates · asks</text><text x="652" y="240" class="tiny">for approval</text>
+
+  <!-- agent (center) -->
+  <rect x="490" y="282" width="220" height="96" class="center"/>
+  <text x="600" y="320" class="label" text-anchor="middle">AGENT</text>
+  <text x="600" y="342" class="tiny" text-anchor="middle">an LLM choosing actions</text>
+  <text x="600" y="358" class="tiny" text-anchor="middle">at runtime</text>
+
+  <!-- counterparties ring -->
+  <!-- payment (upper left) -->
+  <rect x="80" y="250" width="200" height="64" class="cp"/><text x="180" y="276" class="label" text-anchor="middle">payment processor</text><rect x="100" y="284" width="160" height="22" class="ledger"/><text x="180" y="300" class="tiny" text-anchor="middle">its own ledger · 24h key cache</text>
+  <path d="M280,295 C360,300 420,315 488,320" class="line2"/><text x="370" y="288" class="tiny" text-anchor="middle">authorize · capture</text>
+  <!-- broker (upper right) -->
+  <rect x="920" y="250" width="200" height="64" class="cp"/><text x="1020" y="276" class="label" text-anchor="middle">broker / custodian</text><rect x="940" y="284" width="160" height="22" class="ledger"/><text x="1020" y="300" class="tiny" text-anchor="middle">its own ledger · clOrdID</text>
+  <path d="M920,295 C840,300 780,315 712,320" class="line2"/><text x="830" y="288" class="tiny" text-anchor="middle">submit · fill</text>
+  <!-- airline/hotel (left) -->
+  <rect x="80" y="345" width="200" height="64" class="cp"/><text x="180" y="371" class="label" text-anchor="middle">airline / hotel</text><rect x="100" y="379" width="160" height="22" class="ledger"/><text x="180" y="395" class="tiny" text-anchor="middle">its own ledger · the PNR</text>
+  <path d="M280,375 C360,365 420,345 488,338" class="line2"/><text x="370" y="362" class="tiny" text-anchor="middle">hold · book · cancel</text>
+  <!-- browser (right) -->
+  <rect x="920" y="345" width="200" height="64" class="cp"/><text x="1020" y="371" class="label" text-anchor="middle">browser / web UI</text><rect x="940" y="379" width="160" height="22" class="ledger"/><text x="1020" y="395" class="tiny" text-anchor="middle">no ledger · re-observe to know</text>
+  <path d="M920,375 C840,365 780,345 712,338" class="line2"/><text x="830" y="362" class="tiny" text-anchor="middle">click · type · submit</text>
+  <!-- cloud (bottom left) -->
+  <rect x="180" y="445" width="200" height="64" class="cp"/><text x="280" y="471" class="label" text-anchor="middle">cloud / Linux box</text><rect x="200" y="479" width="160" height="22" class="ledger"/><text x="280" y="495" class="tiny" text-anchor="middle">its own state · changes as you act</text>
+  <path d="M380,460 C430,445 460,400 490,372" class="line2"/>
+  <!-- crm/email (bottom right) -->
+  <rect x="820" y="445" width="200" height="64" class="cp"/><text x="920" y="471" class="label" text-anchor="middle">CRM / email</text><rect x="840" y="479" width="160" height="22" class="ledger"/><text x="920" y="495" class="tiny" text-anchor="middle">irreversible · no unsend</text>
+  <path d="M820,460 C770,445 740,400 710,372" class="line2"/>
+
+  <!-- durable runtime bar -->
+  <rect x="120" y="538" width="960" height="58" class="soft"/>
+  <text x="600" y="563" class="label" text-anchor="middle">DURABLE EXECUTION RUNTIME — the journal underneath the agent</text>
+  <text x="600" y="583" class="tiny" text-anchor="middle">workflow identity · every decision and every effect recorded · timers · signals · replay · suspend across deploys and days</text>
+  <path d="M600,378 L600,536" class="blue"/><text x="612" y="460" class="tiny">every decision &amp; effect → journal</text>
+
+  <!-- auditor -->
+  <rect x="900" y="612" width="200" height="44" class="amber"/><text x="1000" y="640" class="label" text-anchor="middle">auditor / regulator</text>
+  <path d="M900,634 C840,630 780,612 700,597" class="dash"/><text x="800" y="628" class="tiny" text-anchor="middle">reconstructs exactly what happened</text>
+
+  <text x="60" y="650" class="small">The agent's job: keep its view of the commitments</text>
+  <text x="60" y="668" class="small">and the world's view of them in agreement —</text>
+  <text x="60" y="686" class="small">across crashes, deploys, and time.</text>
+</svg>

@@ -45,6 +45,28 @@ merchant ledger ≠ agent ledger
 
 12/ The chatbot was forgiven for forgetting. The agent will not be. An agent is a contract with the world. The runtime is what keeps the contract honest.
 
+![An agent is a contract with the world](15_system_context.svg)
+
+```text
+                          human principal
+                       (delegates · approves · escalates)
+                                   │
+                                   ▼
+   payment ─┐                  ┌───────┐                  ┌─ broker / custodian
+   airline ─┼─ commitments ───►│ AGENT │◄─── commitments ─┼─ browser (no ledger)
+   cloud ───┘                  └───┬───┘                  └─ CRM / email (no unsend)
+   each keeps its own                  │ every decision & effect
+   half of the ledger                  ▼
+   ════════════════════════════════════════════════════════════════════════
+    DURABLE EXECUTION RUNTIME — the journal underneath
+   ════════════════════════════════════════════════════════════════════════
+                                       │  reconstructs what happened
+                                       ▼
+                              auditor / regulator
+```
+
+*The agent is a small program negotiating commitments with larger systems, each of which keeps its own books — and remembers only its own half. Its job: keep its view of the commitments and the world's view of them in agreement, across crashes, deploys, and time.*
+
 ---
 
 ## I. The Asymmetry
@@ -61,6 +83,21 @@ acts fail in the ledger
 3/ Look at it from the system's side, not the user's. A chatbot returns text. The text is consumed by the user, who decides whether to act on it. The user is the integration point. The user catches errors. The user reconciles. The user is, in the language of distributed systems, the end-to-end check.
 
 4/ An agent removes the user from that role. The agent is the integration point. The agent catches errors. The agent reconciles. The agent is the end-to-end check. The user has delegated the role and gone to bed.
+
+![The user steps out of the loop](16_delegation.svg)
+
+```text
+CHATBOT     model ──► [text] ──►  USER  ──► world
+                                  (reads · reconciles · decides whether to act)
+                                  = the end-to-end check       failure stays in the conversation
+
+AGENT       model ──► [act] ──────────────────► world
+                                                              failure leaks into systems
+            USER (asleep — delegated the role) ┄┄┄┄┄┄┄┄┄┄┄┄┄┄ that don't know they're in a
+                                                              conversation — "finds out at 9 a.m."
+```
+
+*A chatbot returns text to a user who decides whether to act on it — the user is the end-to-end check. An agent removes the user from that loop and inherits the role: catching errors, reconciling, confirming. Nobody else is doing it.*
 
 5/ This is the move. The user has handed the agent authority to commit on their behalf. *Commit* is not a metaphor. It is the database word. It is the point at which a change becomes durable, becomes other people's truth, becomes something that can no longer be unsaid by deciding not to mean it.
 
@@ -153,6 +190,29 @@ workflow W
 ```
 
 *Retry repeats the story. Resume remembers the story.*
+
+![Crash, then resume](17_crash_and_resume.svg)
+
+```text
+user            workflow (durable)              card network        retailer
+ │  buy shoes ──►│
+ │               │ journal ▸ authorize: pending (key W/auth)
+ │               │ authorize $129 (key=W/auth) ──────►│
+ │               │◄────────────────── ✓ hold 4f2a ────┤
+ │               │ journal ▸ authorize: confirmed (4f2a)
+ │            ✗ CRASH — the process is gone
+ │            …restart… the engine replays the workflow from the top…
+ │               │ journal ▸ authorize already confirmed → don't re-call the card
+ │               │ place order (key=W/order) ─────────────────────────────►│
+ │               │◄─────────────────────────── ✓ order 7c3d, inv −1 ───────┤
+ │               │ journal ▸ order: confirmed (7c3d)
+ │  ◄── done ────┤   one hold, one order — however many times the host bounced
+
+Without durable execution: restart re-runs from the top → a second "authorize $129"
+→ a second hold; the card's 24-hour dedup window may or may not catch it.
+```
+
+*The same workflow id, the same idempotency keys, on either side of a crash. Retry repeats the story; resume reads the story and continues it.*
 
 ### The travel agent
 
@@ -516,6 +576,21 @@ checkpointed state is not journaled consequence
 
 1/ Distributed systems research has spent forty years saying things that turn out to apply to agent systems with the parameters adjusted.
 
+![Forty years of saying it already](18_lineage.svg)
+
+```text
+1978 ──── 1984 ────── 1986–87 ─────── ~2005–07 ───────── 2014–2020 ───────── 2024–2025
+Lamport   Saltzer et  sagas · the     event sourcing ·   microservices       durable agent
+no global al · end-   actor model:    Helland (grants,   refine it: idem-    runtimes —
+clock;    to-end:     compensate to   agreements,        potency keys,       the orchestrator
+partial   check at    undo; mailboxes apologies; store   outboxes, "effec-   is now an LLM
+order     the ends    + supervisors   events, replay     tively once")        → it breaks
+
+ALL of the above assumed: the orchestrator's behaviour can be characterised at design time.   …except now it can't.
+```
+
+*Each result is still true with the parameters adjusted — and each assumed the orchestrator was code an engineer wrote. Sagas have known forward and compensation graphs; event sourcing has deterministic transitions; the actor model has typed messages. The LLM-orchestrator pattern violates all of it, structurally.*
+
 2/ Lamport, 1978. *Time, Clocks, and the Ordering of Events*. There is no global clock. Events are ordered only by their causal relationships, and that order is partial, not total.
 
 3/ Helland. *Life Beyond Distributed Transactions*. ACID across services is not available. What you have are grants, agreements, and partial failures.
@@ -618,6 +693,17 @@ idempotency unit known                idempotency unit must be chosen
 *Classical orchestration is authored. Agent orchestration is discovered.*
 
 4/ Four consequences follow.
+
+![One change, four assumptions break](19_four_consequences.svg)
+
+```text
+                                ┌─ ① forward path:    a graph (A→B→C; ¬C→¬B→¬A)   →  a runtime trajectory you can only constrain
+   the orchestrator is an LLM ──┼─ ② compensation:    pre-written ¬B, ¬A           →  depends on what was sampled; often only the LLM can write it
+   (sampled, not authored)      ├─ ③ idempotency unit: a call → hash → key          →  a call is clear, a plan is fuzzy, "book me a trip" is no key
+                                └─ ④ verification:    an oracle said yes / no       →  no oracle; "did the report answer well?" is a slower judgment
+```
+
+*One change — the orchestrator's decisions are sampled, not written — and four classical assumptions stop holding. These are not problems classical patterns solve; they are problems classical patterns assume away, and the assumption was load-bearing.*
 
 5/ The forward path is not a graph the engineer can enumerate. It is a runtime trajectory the engineer can only constrain. Where the saga literature said *here is A → B → C and here is its compensation ¬C → ¬B → ¬A*, the agent literature has to say *the agent will choose actions from this space at runtime, and we will have to journal what it chose so we can compensate it*.
 
