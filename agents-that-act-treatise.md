@@ -949,6 +949,23 @@ async def send_outreach(prospect_id: str, draft: Email) -> Result:
 
 3/ These are the gaps the new tools are trying to fill.
 
+![Where the inherited toolkit runs out](20_action_space.svg)
+
+```text
+  reversibility ↑ (harder to undo)
+   no inverse      │ sales ●            ● support               ● SRE
+   exists          │ (no unsend)          (empathetic sentence)   (destructive, partial)
+   contextual undo │      ● coding              ● browser
+   (another run)   │      (revert code,           ("undo" = another run)
+                   │       not burned context)        ● research (replay ≠ reproduce)
+   DB revert ·     │ ┌───────────────────┐
+   idempotent retry│ │  the toolkit's box │  bounded · reversible — idempotency & revert handle it
+                   └─┴───────────────────┴──────────────────────────────────────────► action space
+                     bounded API calls   DOM clicks · shell      anything · reputation-bearing comms
+```
+
+*The toolkit handles the bounded, reversible corner — idempotency on the call, revert on the write. The six agents push out along both axes, and the toolkit runs out where the dots leave the box. That gap is the ceiling.*
+
 ---
 
 ## VI. The Idempotent-API Defence
@@ -1012,6 +1029,26 @@ def workflow():
 5/ On retry, the workflow has no record of having reached step one. `bank.wire` fires again with `k1` — the bank dedupes correctly and returns the original confirmation. But the workflow does not know this happened the first time. It sees no confirmation in its own books. It may abort. It may retry from elsewhere. It may falsely report failure to the user.
 
 6/ The journal answers this. Idempotency at the layer below the journal does not.
+
+![The bank did its job; the workflow still doesn't know](21_workflow_vs_integration.svg)
+
+```text
+workflow                          bank (dedups on key)        custodian
+ │ wire $50 (key=k1) ───────────────►│ ✓ stores k1
+ │◄────────────────── ✓ wire 0a17 ───┤
+ ✗ workflow crashes — the confirmation was never folded into its own books
+ …restart… replay — but no record of k1 ever firing…
+ │ wire $50 (key=k1) ───────────────►│ ✓ wire 0a17  (deduped — the bank did exactly right)
+ │◄────────────────── ✓ wire 0a17 ───┤
+ │ but: my own books have no record of k1's confirmation. did the first run succeed
+ │      and the response was lost? or did it never run? I can't tell from the reply.
+ │ custodian.book(...) — was after the wire; on retry, fires now, with no knowledge ───►│
+ │ → so the workflow may: abort · retry from the wrong place · falsely report failure
+
+The fix is not at the bank. It is the workflow's own journal: intent before the call, outcome after.
+```
+
+*Per-integration dedup is necessary; it is not workflow-level idempotency. The bank dedupes correctly and the workflow still cannot reconstruct what happened — because the bank only keeps the bank's half of the ledger.*
 
 #### ③ Compensation is not retry.
 
@@ -1081,6 +1118,24 @@ app = graph.compile(checkpointer=PostgresSaver(...))    # ← now it persists �
 #### ② Does the trigger fire exactly once?
 
 6/ The process watching `state.x changed` crashes between observing the change and running the handler. Did the handler run? Will it run again on recovery? A reactive system needs a durable change feed with a cursor — an outbox, or change-data-capture with offsets — plus idempotent handlers, or it drops reactions and double-fires them. Postgres `LISTEN`/`NOTIFY` drops notifications when nobody is listening. "Poll the table for rows changed since my offset" *is* an outbox. "Exactly-once stream processing" is Flink and Kafka-Streams machinery. The seam did not vanish; it moved from *the workflow crashed mid-`await`* to *the trigger loop crashed mid-`react`* — and the second seam is the one the demo never shows.
+
+![The reactive seam](22_reactive_crash.svg)
+
+```text
+NO DURABLE CURSOR                                 DURABLE CHANGE FEED + IDEMPOTENT HANDLER
+
+state ──notify: x changed──► trigger loop         log+offsets ──events since O──► poller ──run──► handler
+                              │ about to run…                                                   (idempotent,
+                            ✗ CRASH                            ✗ CRASH — offset not advanced     keyed on event id)
+                            …restart…                          …restart…
+state ──re-read: x still changed──► loop          log ──events since O (unchanged)──► poller ──run again──► handler
+                              │ run handler                                                (idempotent → no double effect)
+                                                                                    └─► advance offset to O+1
+DID IT RUN THE FIRST TIME?  no record →
+DOUBLE-FIRE  (or, on LISTEN/NOTIFY: dropped → NO-FIRE)         exactly-once-effectively — durable execution, one layer down
+```
+
+*The seam didn't vanish — it moved, from "the workflow crashed mid-`await`" to "the trigger loop crashed mid-`react`." Closing it needs a durable change feed with a cursor and an idempotent handler. Inngest has `step.sleep` because Inngest is a durable engine with a reactive front end.*
 
 #### ③ Is the handler itself durable?
 
@@ -1213,6 +1268,8 @@ On the first run, each `await workflow.execute_activity(...)` does what it looks
 the first run makes calls
 every replay makes reads
 ```
+
+![How replay actually works](23_replay_timeline.svg)
 
 ```text
 FIRST RUN                                   REPLAY (after crash / deploy)
@@ -1375,6 +1432,26 @@ async def execute_sweep(cmd: SweepCmd) -> str:
 ### ② The third outcome, and the loop that resolves it
 
 5/ Ceremony point ⑤ named a third status — `unknown` — for the wire whose acknowledgement was lost, then waved at it: *reconciliation will resolve this later*. Later is now. The bank is the end-to-end check; its record is the truth; the workflow cannot close the day until every `unknown` has been turned into a known.
+
+![The third outcome, resolved](24_unknown_ack.svg)
+
+```text
+workflow                                      bank
+ │ wire $1.2M (key=K) ─────────────────────────►│
+ │◄┄┄┄┄┄┄ …ack lost in the network… ┄┄┄┄┄┄┄┄┄┄┄┤   (the cutoff is 4 p.m. regardless)
+ │ journal ▸ status = UNKNOWN — record it; the day can't close on it
+ │ workflow.sleep(5m) — durable; survives deploys
+ │ ┌─ loop: until known ─────────────────────────────────────────────┐
+ │ │ query status (key=K)? ───────────────────────►│
+ │ │◄──── "confirmed — wire 88f3"  …or…  "absent" ──┤
+ │ │ if absent → wire $1.2M (key=K) again ─────────►│   (same key, provably safe)
+ │ │◄────────────────────────── ✓ wire 88f3 ───────┤
+ │ │ journal ▸ status = CONFIRMED (88f3)
+ │ └──────────────────────────────────────────────────────────────────┘
+ │ now: post GL · file the liquidity ratio · send the summary
+```
+
+*A lost ack is neither sent nor not-sent until the bank is asked. Query with the same key; re-issue with the same key; the durable timer carries the wait across deploys. `unknown` is a state the journal must hold — not a developer error.*
 
 ```python
 @workflow.defn
