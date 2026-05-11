@@ -60,7 +60,7 @@ async def _first_run() -> None:
     _summary("after first run")
 
 
-async def _recover() -> None:
+def _recover() -> None:
     runner = _build_runner()
     results = tape.recover_once(runner=runner, url=URL)
     print(f"[recover] re-drove {len(results)} run(s): {results}")
@@ -88,7 +88,7 @@ def main() -> None:
         reset_ledgers()
         print("[reset] cleared the example ledgers")
     if "--recover" in sys.argv:
-        asyncio.run(_recover())
+        _recover()
     else:
         asyncio.run(_first_run())
 

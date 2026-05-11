@@ -1,0 +1,50 @@
+# Tape — build · test · demo.   `just <recipe>`
+set shell := ["bash", "-uc"]
+
+server_dir := "server"
+sdk_py     := "sdk/python"
+examples   := "examples"
+db         := "/tmp/tape-demo.db"
+listen     := "127.0.0.1:7878"
+url        := "tape://127.0.0.1:7878"
+
+# Build the Rust server and install the Python SDK editable.
+build:
+    cd {{server_dir}} && cargo build --release
+    pip install -e {{sdk_py}}
+
+# Regenerate the Python gRPC stubs from proto/tape.proto.
+codegen-py:
+    {{sdk_py}}/regen_protos.sh
+
+# Run the Rust unit tests and the Python kill-and-resume integration test.
+test:
+    cd {{server_dir}} && cargo test
+    cd {{server_dir}} && cargo build      # ensure the debug binary the tests use exists
+    python -m pytest tests/ -q
+
+# Run the treasury example once against a fresh local server.
+demo:
+    cd {{server_dir}} && cargo build --release
+    rm -f {{db}}
+    ( ./{{server_dir}}/target/release/tape-server --listen {{listen}} --db {{db}} & echo $! > /tmp/tape-demo.pid ) ; sleep 1
+    cd {{examples}} && TAPE_URL={{url}} PYTHONPATH=../{{sdk_py}} python -m treasury.run --reset ; rc=$? ; kill "$(cat /tmp/tape-demo.pid)" 2>/dev/null ; exit $rc
+
+# Demonstrate crash-and-resume: run, kill mid-wire, recover, show one wire.
+demo-resume:
+    cd {{server_dir}} && cargo build --release
+    rm -f {{db}} ; rm -rf /tmp/tape-demo-ledgers
+    ( ./{{server_dir}}/target/release/tape-server --listen {{listen}} --db {{db}} & echo $! > /tmp/tape-demo.pid ) ; sleep 1
+    -cd {{examples}} && TAPE_URL={{url}} TAPE_LEASE_MS=1500 TAPE_EXAMPLE_DIR=/tmp/tape-demo-ledgers TAPE_CRASH_AFTER=execute_sweep PYTHONPATH=../{{sdk_py}} python -m treasury.run --reset
+    sleep 2
+    cd {{examples}} && TAPE_URL={{url}} TAPE_LEASE_MS=1500 TAPE_EXAMPLE_DIR=/tmp/tape-demo-ledgers PYTHONPATH=../{{sdk_py}} python -m treasury.run --recover
+    @echo "--- bank ledger (should hold ONE wire) ---" ; cat /tmp/tape-demo-ledgers/bank.json
+    kill "$(cat /tmp/tape-demo.pid)" 2>/dev/null || true
+
+# Start a long-lived local server (Ctrl-C to stop).
+serve:
+    cd {{server_dir}} && cargo run -- --listen {{listen}} --db {{db}}
+
+clean:
+    cd {{server_dir}} && cargo clean
+    rm -f {{db}} {{db}}-wal {{db}}-shm
