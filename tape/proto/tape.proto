@@ -1,0 +1,388 @@
+// Tape — the wire contract.
+//
+// A durable-execution substrate for ADK agents. See ../../design-principles/tape.md.
+//
+// Flexible payloads (model requests/responses, tool args/results, event content,
+// state values, compensation payloads) are carried as JSON strings. This keeps
+// the contract small and the cross-language SDKs honest: the server treats them
+// as opaque blobs; only the agent's own code interprets them.
+//
+// Every mutating RPC carries (run_id, seq) — or, for BeginEffect, (run_id,
+// decision_seq, attempt) — and is idempotent: replaying it returns the recorded
+// result instead of acting twice. That is what makes the SDK and the recovery
+// loop safe to retry freely.
+
+syntax = "proto3";
+
+package tape.v1;
+
+service Tape {
+  // ── run lifecycle ─────────────────────────────────────────────────────────
+  rpc BeginRun        (BeginRunRequest)        returns (BeginRunResponse);
+  rpc ResumeRun       (ResumeRunRequest)       returns (ResumeRunResponse);
+  rpc EndRun          (EndRunRequest)          returns (EndRunResponse);
+  rpc GetRun          (GetRunRequest)          returns (RunState);
+  rpc ListRunsToRecover (ListRunsToRecoverRequest) returns (ListRunsToRecoverResponse);
+  rpc SubscribeRun    (SubscribeRunRequest)    returns (stream JournalEntry);
+
+  // ── decision ledger ───────────────────────────────────────────────────────
+  rpc RecordDecision  (RecordDecisionRequest)  returns (DecisionRecord);
+  rpc GetDecision     (GetDecisionRequest)     returns (GetDecisionResponse);   // re-drive replay
+
+  // ── effect ledger ─────────────────────────────────────────────────────────
+  rpc BeginEffect     (BeginEffectRequest)     returns (BeginEffectResponse);   // writes pending, commits, returns key
+  rpc CompleteEffect  (CompleteEffectRequest)  returns (EffectRecord);
+  rpc GetEffect       (GetEffectRequest)       returns (GetEffectResponse);      // re-drive short-circuit
+  rpc ReconcileEffect (ReconcileEffectRequest) returns (EffectRecord);
+
+  // ── obligations / compensation ────────────────────────────────────────────
+  rpc RegisterCompensation (RegisterCompensationRequest) returns (ObligationRecord);
+  rpc ListObligations      (ListObligationsRequest)      returns (ListObligationsResponse); // LIFO order
+  rpc ResolveObligation    (ResolveObligationRequest)    returns (ObligationRecord);
+
+  // ── budget ────────────────────────────────────────────────────────────────
+  rpc SetBudget       (SetBudgetRequest)       returns (BudgetState);
+  rpc AdmitBudget     (AdmitBudgetRequest)     returns (AdmitBudgetResponse);    // refuse if over
+  rpc ChargeBudget    (ChargeBudgetRequest)    returns (BudgetState);
+
+  // ── gates / signals ───────────────────────────────────────────────────────
+  rpc AwaitSignal     (AwaitSignalRequest)     returns (AwaitSignalResponse);    // parks the run, or returns a delivered signal
+  rpc SendSignal      (SendSignalRequest)      returns (SendSignalResponse);     // resumes a waiting run
+
+  // ── ADK SessionService shim ───────────────────────────────────────────────
+  rpc CreateSession   (CreateSessionRequest)   returns (Session);
+  rpc GetSession      (GetSessionRequest)      returns (GetSessionResponse);
+  rpc ListSessions    (ListSessionsRequest)    returns (ListSessionsResponse);
+  rpc DeleteSession   (DeleteSessionRequest)   returns (DeleteSessionResponse);
+  rpc AppendEvent     (AppendEventRequest)     returns (AppendEventResponse);    // event + state_delta + tape projections, ONE txn
+}
+
+// ── run lifecycle ───────────────────────────────────────────────────────────
+
+message BeginRunRequest {
+  string app_name = 1;
+  string user_id = 2;
+  string session_id = 3;
+  string invocation_id = 4;
+  string lease_owner = 5;       // who is driving this run right now
+  int64  lease_ttl_ms = 6;
+}
+message BeginRunResponse {
+  string run_id = 1;
+  bool   resumed = 2;           // true => a run with this invocation_id already existed
+  int64  next_seq = 3;          // the seq the re-drive should expect to reach next (0 if fresh)
+  RunStatus status = 4;
+}
+
+message ResumeRunRequest {
+  string run_id = 1;
+  string lease_owner = 2;
+  int64  lease_ttl_ms = 3;
+}
+message ResumeRunResponse {
+  RunState run = 1;
+}
+
+message EndRunRequest {
+  string run_id = 1;
+  RunStatus status = 2;         // TERMINAL | FAILED | STUCK
+  string detail_json = 3;
+}
+message EndRunResponse { RunState run = 1; }
+
+message GetRunRequest { string run_id = 1; }
+
+message ListRunsToRecoverRequest {
+  int64 limit = 1;
+  int64 now_ms = 2;
+}
+message ListRunsToRecoverResponse {
+  repeated RunState runs = 1;
+}
+
+message SubscribeRunRequest {
+  string run_id = 1;
+  int64  from_seq = 2;
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_RUNNABLE = 1;
+  RUN_STATUS_RUNNING = 2;
+  RUN_STATUS_WAITING = 3;       // parked on a gate
+  RUN_STATUS_TERMINAL = 4;      // completed normally
+  RUN_STATUS_FAILED = 5;
+  RUN_STATUS_COMPENSATING = 6;
+  RUN_STATUS_STUCK = 7;         // a compensation failed; needs a human
+}
+
+message RunState {
+  string run_id = 1;
+  string app_name = 2;
+  string user_id = 3;
+  string session_id = 4;
+  string invocation_id = 5;
+  RunStatus status = 6;
+  int64  seq_cursor = 7;
+  string lease_owner = 8;
+  int64  lease_expires_at_ms = 9;
+  int64  started_at_ms = 10;
+  int64  ended_at_ms = 11;
+  string waiting_on_gate = 12;     // set iff status == WAITING
+}
+
+message JournalEntry {
+  int64 seq = 1;
+  string kind = 2;                 // "decision" | "effect" | "obligation" | "gate" | "state" | "event"
+  string payload_json = 3;
+  int64  ts_ms = 4;
+}
+
+// ── decision ledger ─────────────────────────────────────────────────────────
+
+message RecordDecisionRequest {
+  string run_id = 1;
+  int64  decision_index = 2;       // ordinal of the model call within the run, 0-based
+  string model = 3;
+  string request_json = 4;
+  string response_json = 5;
+  string rationale = 6;
+  string policy_version = 7;
+}
+message DecisionRecord {
+  string run_id = 1;
+  int64  seq = 2;                  // global journal seq
+  int64  decision_index = 3;
+  string model = 4;
+  string request_json = 5;
+  string response_json = 6;
+  string rationale = 7;
+  string policy_version = 8;
+  int64  ts_ms = 9;
+}
+
+message GetDecisionRequest {
+  string run_id = 1;
+  int64  decision_index = 2;
+}
+message GetDecisionResponse {
+  bool found = 1;                  // false => no record at this index; the re-drive must call the model for real
+  DecisionRecord decision = 2;
+}
+
+// ── effect ledger ───────────────────────────────────────────────────────────
+
+enum EffectStatus {
+  EFFECT_STATUS_UNSPECIFIED = 0;
+  EFFECT_STATUS_PENDING = 1;     // intent written, the act may or may not have happened
+  EFFECT_STATUS_CONFIRMED = 2;   // the act happened, result recorded
+  EFFECT_STATUS_FAILED = 3;      // the act definitively did not happen
+  EFFECT_STATUS_UNKNOWN = 4;     // the act may have happened; the ack was lost — the reconciler will resolve it
+}
+
+message BeginEffectRequest {
+  string run_id = 1;
+  int64  decision_index = 2;       // which decision authorized this effect (-1 if none)
+  string tool_name = 3;
+  int32  call_index = 4;           // distinguish multiple calls of the same tool under one decision
+  string request_json = 5;
+  string custom_key = 6;           // if set, used verbatim instead of the decision-derived key
+}
+message BeginEffectResponse {
+  int64  seq = 1;
+  string idempotency_key = 2;      // = "<run_id>/decision-<i>/<tool>/<call_index>" unless custom_key was given
+  EffectStatus status = 3;         // PENDING (fresh) | CONFIRMED/FAILED/UNKNOWN (already on file -> short-circuit)
+  string response_json = 4;        // populated iff status == CONFIRMED
+  string error_json = 5;           // populated iff status == FAILED/UNKNOWN
+}
+
+message CompleteEffectRequest {
+  string run_id = 1;
+  string idempotency_key = 2;
+  EffectStatus status = 3;         // CONFIRMED | FAILED | UNKNOWN
+  string response_json = 4;
+  string error_json = 5;
+}
+message GetEffectRequest {
+  string run_id = 1;
+  string idempotency_key = 2;
+}
+message GetEffectResponse {
+  bool found = 1;
+  EffectRecord effect = 2;
+}
+message ReconcileEffectRequest {
+  string run_id = 1;
+  string idempotency_key = 2;
+  EffectStatus resolved_status = 3;   // CONFIRMED | FAILED
+  string response_json = 4;
+  string error_json = 5;
+}
+message EffectRecord {
+  string run_id = 1;
+  int64  seq = 2;
+  int64  decision_index = 3;
+  string tool_name = 4;
+  string idempotency_key = 5;
+  EffectStatus status = 6;
+  string request_json = 7;
+  string response_json = 8;
+  string error_json = 9;
+  int64  ts_ms = 10;
+}
+
+// ── obligations / compensation ──────────────────────────────────────────────
+
+enum ObligationStatus {
+  OBLIGATION_STATUS_UNSPECIFIED = 0;
+  OBLIGATION_STATUS_PENDING = 1;        // registered, not yet needed
+  OBLIGATION_STATUS_COMMITTED = 2;      // the effect it unwinds is confirmed
+  OBLIGATION_STATUS_COMPENSATED = 3;    // the inverse ran successfully
+  OBLIGATION_STATUS_STUCK = 4;          // the inverse failed — needs a human
+}
+
+message RegisterCompensationRequest {
+  string run_id = 1;
+  string effect_key = 2;         // the idempotency_key of the effect this unwinds
+  string kind = 3;               // e.g. "reverse_wire"
+  string payload_json = 4;
+}
+message ListObligationsRequest {
+  string run_id = 1;
+  bool   only_unresolved = 2;
+}
+message ListObligationsResponse {
+  repeated ObligationRecord obligations = 1;   // newest-first (LIFO)
+}
+message ResolveObligationRequest {
+  string run_id = 1;
+  int64  obligation_seq = 2;
+  ObligationStatus status = 3;   // OBLIGATION_COMPENSATED | OBLIGATION_STUCK
+  string result_json = 4;
+}
+message ObligationRecord {
+  string run_id = 1;
+  int64  seq = 2;
+  string effect_key = 3;
+  string kind = 4;
+  string payload_json = 5;
+  ObligationStatus status = 6;
+  int64  ts_ms = 7;
+}
+
+// ── budget ──────────────────────────────────────────────────────────────────
+
+message SetBudgetRequest {
+  string run_id = 1;
+  double usd_cap = 2;            // <= 0 means "no cap"
+  int64  token_cap = 3;          // <= 0 means "no cap"
+}
+message AdmitBudgetRequest {
+  string run_id = 1;
+  double usd_estimate = 2;
+  int64  token_estimate = 3;
+}
+message AdmitBudgetResponse {
+  bool admitted = 1;
+  string reason = 2;             // populated iff !admitted
+  BudgetState budget = 3;
+}
+message ChargeBudgetRequest {
+  string run_id = 1;
+  double usd = 2;
+  int64  tokens = 3;
+}
+message BudgetState {
+  string run_id = 1;
+  double usd_cap = 2;
+  int64  token_cap = 3;
+  double usd_spent = 4;
+  int64  tokens_spent = 5;
+}
+
+// ── gates / signals ─────────────────────────────────────────────────────────
+
+message AwaitSignalRequest {
+  string run_id = 1;
+  string gate_name = 2;
+  string payload_json = 3;       // the gate's own context (e.g. what is being approved)
+}
+message AwaitSignalResponse {
+  bool   delivered = 1;          // true => the signal was already sent; resolution_json is the answer
+  string resolution_json = 2;
+}
+message SendSignalRequest {
+  string run_id = 1;             // optional; if empty, app_name+user_id+session_id route it
+  string app_name = 2;
+  string user_id = 3;
+  string session_id = 4;
+  string gate_name = 5;
+  string resolution_json = 6;
+}
+message SendSignalResponse {
+  bool   accepted = 1;
+  string run_id = 2;
+  RunStatus run_status = 3;       // RUNNABLE if the run was waiting and is now released
+}
+
+// ── ADK SessionService shim ─────────────────────────────────────────────────
+
+message Session {
+  string app_name = 1;
+  string user_id = 2;
+  string session_id = 3;
+  string state_json = 4;          // the merged session state (run-scoped keys)
+  repeated EventRecord events = 5;
+  int64  last_update_time_ms = 6;
+}
+message EventRecord {
+  string id = 1;
+  string invocation_id = 2;
+  string author = 3;
+  string branch = 4;
+  string content_json = 5;
+  string actions_json = 6;
+  int64  timestamp_ms = 7;
+}
+
+message CreateSessionRequest {
+  string app_name = 1;
+  string user_id = 2;
+  string session_id = 3;          // optional; server generates if empty
+  string state_json = 4;
+}
+message GetSessionRequest {
+  string app_name = 1;
+  string user_id = 2;
+  string session_id = 3;
+  int64  max_events = 4;          // 0 => all
+}
+message GetSessionResponse {
+  bool found = 1;
+  Session session = 2;
+}
+message ListSessionsRequest {
+  string app_name = 1;
+  string user_id = 2;
+}
+message ListSessionsResponse {
+  repeated Session sessions = 1;  // metadata only; events omitted
+}
+message DeleteSessionRequest {
+  string app_name = 1;
+  string user_id = 2;
+  string session_id = 3;
+}
+message DeleteSessionResponse { bool deleted = 1; }
+
+message AppendEventRequest {
+  string app_name = 1;
+  string user_id = 2;
+  string session_id = 3;
+  EventRecord event = 4;
+  string state_delta_json = 5;    // applied to session state in the same txn
+}
+message AppendEventResponse {
+  EventRecord event = 1;
+  int64  last_update_time_ms = 2;
+}
