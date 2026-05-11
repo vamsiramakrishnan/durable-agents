@@ -36,7 +36,7 @@ the day's book closes **once**.
 
 ```bash
 # start a server
-( cd ../../server && cargo run -- --listen 127.0.0.1:7878 --db /tmp/tape.db ) &
+( cd ../../server && cargo run -- --listen 127.0.0.1:7878 --store sqlite:/tmp/tape.db ) &
 
 # one clean run
 PYTHONPATH=../../sdk/python TAPE_URL=tape://127.0.0.1:7878 python -m treasury.run --reset

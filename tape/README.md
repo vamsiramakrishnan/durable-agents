@@ -28,9 +28,9 @@ tape/
 ## Quick start
 
 ```bash
-# 1. build & start the server
+# 1. build & start the server (the store is chosen by URL — that's the whole "wiring")
 cd tape/server && cargo build --release
-./target/release/tape-server --listen 127.0.0.1:7878 --db ./tape.db &
+./target/release/tape-server --listen 127.0.0.1:7878 --store sqlite:./tape.db &
 
 # 2. install the Python SDK
 pip install -e ../sdk/python
@@ -44,8 +44,28 @@ Or, with [`just`](https://github.com/casey/just):
 ```bash
 just build      # cargo build + pip install -e
 just demo       # start the server, run the treasury example
+just demo-resume  # run, kill mid-wire, recover — see one wire, not two
 just test       # cargo test + the kill-and-resume integration test
 ```
+
+## Choose your store — and scale out
+
+The backend is a URL in `TAPE_STORE` (or `--store`). Nothing above the server
+changes when you switch it:
+
+| `TAPE_STORE` | backend |
+|---|---|
+| `sqlite:./tape.db` *(default)* | file-backed SQLite (pooled, WAL) — single node, dev, small prod |
+| `sqlite::memory:` / `memory` | ephemeral in-process — tests, demos |
+| `postgres://user:pass@host:5432/db` | pooled PostgreSQL — production / horizontally scalable |
+| `bigtable://…` | *reserved for v2* — the `Store` trait in `server/src/store/` is the seam |
+
+With Postgres, the server is **stateless between requests** — run *N* replicas
+behind a load balancer (`docker compose up --scale tape-server=3`,
+`tape/deploy/k8s/tape.yaml`, an HPA). It's safe with no extra coordination:
+"one driver per run at a time" is the per-run lease in `tape_runs`, and every
+mutating RPC is idempotent, so two recovery workers racing is harmless — the
+loser short-circuits. See [`design-principles/tape.md`](../design-principles/tape.md) §12.
 
 ## Wiring Tape into your agent (two lines)
 

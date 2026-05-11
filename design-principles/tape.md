@@ -680,7 +680,74 @@ in the treatise house style (`tape_*.svg`):
 
 ---
 
-## 12. Relationship to the treatise, in one table
+## 12. Pluggable stores and horizontal scaling
+
+The store is chosen by **URL at deploy time** — that is the whole "wiring". The
+server reads `TAPE_STORE` (or `--store`), parses the scheme, builds the matching
+`Store`, runs migrations, serves. Nothing above the server moves: the gRPC
+contract, the SDKs, the agents are all unaffected.
+
+| `TAPE_STORE` | backend | use |
+|---|---|---|
+| `sqlite:./tape.db` | file-backed SQLite (pooled, WAL) | the default; single-node, dev, small prod |
+| `sqlite::memory:` / `memory` | ephemeral in-process SQLite | tests, demos |
+| `postgres://user:pass@host:5432/db` | pooled PostgreSQL | production / horizontally scalable |
+| `bigtable://project/instance/table` | *reserved (v2)* — the trait is the seam | very-high-scale / GCP-native (see "the async substrate" below) |
+
+A `Store` is a tiny surface — `exec` / `query` / `query_opt` / `tx` over the
+portable SQL the service writes once (`?N` placeholders; the Postgres store
+rewrites them to `$N`; the schemas differ only in int/float type names). Both the
+SQLite and the Postgres impls run blocking DB work on a blocking thread, behind
+an `r2d2` connection pool. Adding a backend = implementing four methods.
+
+**Horizontal scaling.** With a network store (Postgres), the Tape server is
+**stateless between requests** — so you run *N* replicas behind a load balancer
+and scale freely (`kubectl scale deploy/tape --replicas=N`, an HPA, `docker
+compose up --scale tape-server=N`; see `tape/deploy/k8s/tape.yaml` and
+`tape/docker-compose.yml`). Three properties make that safe with no extra
+coordination:
+
+1. **The lease.** `tape_runs` carries `lease_owner` + `lease_expires_at_ms`.
+   `BeginRun`/`ResumeRun` take the lease with a conditional `UPDATE`; the
+   recovery loop only re-drives a run whose lease is stale. So "one driver per
+   run at a time" holds across replicas — and if a replica dies mid-drive, the
+   lease expires and another picks it up.
+2. **Idempotent RPCs.** Every mutating RPC carries `(run_id, seq)` (or the
+   decision-derived effect key) and a replay returns the recorded row. So even if
+   two recovery workers race and both re-drive a run, the loser short-circuits —
+   no double wire, no double GL record. (This is the same property that makes the
+   *re-drive* safe; it's reused here for free.)
+3. **Single-step writes commit independently.** Each journal step is its own
+   committed write (intent-before-effect is just an `INSERT` that commits before
+   the tool runs); the only multi-row transaction is `AppendEvent` (the ADK
+   event + the session state delta), which the `Store::tx` method does in one
+   transaction on whichever backend.
+
+The lease is the *only* coordination primitive, and it lives in the store, not
+in the server — so the servers don't talk to each other.
+
+### …and where this goes next — the async substrate (v2)
+
+The reactors that drive recovery and reconciliation are, today, pollers
+(`ListRunsToRecover`, periodic reconcile). The v2 axis turns them into
+**event-driven reactors**: every mutating RPC also publishes to a topic (run
+became RUNNABLE, effect went UNKNOWN, signal delivered) on a `EventBus` —
+in-process by default, **Pub/Sub** in prod — and the recovery loop, the
+reconciler, and the compensator become independent at-least-once subscribers
+(idempotent already, by the property above). Paired with that, a **Bigtable**
+`Store` (row key `run_id#seq`, one atomic single-row mutation per step;
+`CheckAndMutate` for the effect-key dedup; the materialized current-state view
+maintained by a reactor, or a small Spanner table for the read-your-writes hot
+spots — run status, lease, budget admission), Cloud Tasks for the "wake me when
+this lease/timer expires" delays, and an `grpc.aio` SDK that `await`s Tape on the
+right side of the line (sync on the floor — `BeginEffect`, `AdmitBudget` — async
+and batched everywhere else). `tape.proto` is frozen through all of this; the
+`Store` trait and an `EventBus` trait are the seams. (`SubscribeRun`, already in
+the proto, is the same fan-out, externalized.)
+
+---
+
+## 13. Relationship to the treatise, in one table
 
 | Treatise | This spec |
 |---|---|

@@ -4,7 +4,7 @@ set shell := ["bash", "-uc"]
 server_dir := "server"
 sdk_py     := "sdk/python"
 examples   := "examples"
-db         := "/tmp/tape-demo.db"
+db         := "/tmp/tape-demo.db"  # or e.g. postgres://tape:tape@localhost:5432/tape
 listen     := "127.0.0.1:7878"
 url        := "tape://127.0.0.1:7878"
 
@@ -27,14 +27,14 @@ test:
 demo:
     cd {{server_dir}} && cargo build --release
     rm -f {{db}}
-    ( ./{{server_dir}}/target/release/tape-server --listen {{listen}} --db {{db}} & echo $! > /tmp/tape-demo.pid ) ; sleep 1
+    ( ./{{server_dir}}/target/release/tape-server --listen {{listen}} --store sqlite:{{db}} & echo $! > /tmp/tape-demo.pid ) ; sleep 1
     cd {{examples}} && TAPE_URL={{url}} PYTHONPATH=../{{sdk_py}} python -m treasury.run --reset ; rc=$? ; kill "$(cat /tmp/tape-demo.pid)" 2>/dev/null ; exit $rc
 
 # Demonstrate crash-and-resume: run, kill mid-wire, recover, show one wire.
 demo-resume:
     cd {{server_dir}} && cargo build --release
     rm -f {{db}} ; rm -rf /tmp/tape-demo-ledgers
-    ( ./{{server_dir}}/target/release/tape-server --listen {{listen}} --db {{db}} & echo $! > /tmp/tape-demo.pid ) ; sleep 1
+    ( ./{{server_dir}}/target/release/tape-server --listen {{listen}} --store sqlite:{{db}} & echo $! > /tmp/tape-demo.pid ) ; sleep 1
     -cd {{examples}} && TAPE_URL={{url}} TAPE_LEASE_MS=1500 TAPE_EXAMPLE_DIR=/tmp/tape-demo-ledgers TAPE_CRASH_AFTER=execute_sweep PYTHONPATH=../{{sdk_py}} python -m treasury.run --reset
     sleep 2
     cd {{examples}} && TAPE_URL={{url}} TAPE_LEASE_MS=1500 TAPE_EXAMPLE_DIR=/tmp/tape-demo-ledgers PYTHONPATH=../{{sdk_py}} python -m treasury.run --recover
@@ -43,7 +43,7 @@ demo-resume:
 
 # Start a long-lived local server (Ctrl-C to stop).
 serve:
-    cd {{server_dir}} && cargo run -- --listen {{listen}} --db {{db}}
+    cd {{server_dir}} && cargo run -- --listen {{listen}} --store sqlite:{{db}}
 
 clean:
     cd {{server_dir}} && cargo clean

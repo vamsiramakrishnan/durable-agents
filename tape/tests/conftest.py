@@ -53,16 +53,22 @@ def tape_server(tmp_path_factory):
         pytest.skip(f"tape-server binary not built — run `cargo build` in {SERVER_BIN.parent.parent}")
     d = tmp_path_factory.mktemp("tape")
     db = d / "tape.db"
+    # The store is chosen by URL — that's the whole "wiring". Default: a SQLite
+    # file (the dev/test backend). Set TAPE_TEST_STORE=postgres://… to point the
+    # server at Postgres instead (the assertion helpers in test_resume.py read
+    # SQLite directly, so the detailed-ledger asserts are SQLite-only; the
+    # behavioural asserts go through gRPC and work against any store).
+    store_url = os.environ.get("TAPE_TEST_STORE", f"sqlite:{db}")
     port = _free_port()
     url = f"tape://127.0.0.1:{port}"
     env = dict(os.environ)
     env["RUST_LOG"] = env.get("RUST_LOG", "tape_server=warn")
     proc = subprocess.Popen(
-        [str(SERVER_BIN), "--listen", f"127.0.0.1:{port}", "--db", str(db)],
+        [str(SERVER_BIN), "--listen", f"127.0.0.1:{port}", "--store", store_url],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     try:
         _wait_up(url)
-        yield {"url": url, "db": str(db), "port": port, "proc": proc}
+        yield {"url": url, "db": str(db), "store": store_url, "port": port, "proc": proc}
     finally:
         proc.terminate()
         try:

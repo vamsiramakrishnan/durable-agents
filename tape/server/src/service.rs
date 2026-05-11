@@ -1,39 +1,45 @@
-//! The Tape gRPC service — every RPC in `tape.proto`, backed by the SQLite store.
+//! The Tape gRPC service — every RPC in `tape.proto`, over the pluggable `Store`.
 //!
-//! The shape to keep in mind while reading:
+//! The shape to keep in mind:
 //!   * a *run* is one row in `tape_runs`, keyed by (app, user, session, invocation_id);
 //!   * its *journal* is `tape_journal` ordered by `seq`, with typed detail in
 //!     `tape_decisions` / `tape_effects` / `tape_obligations`;
 //!   * `seq` is a per-run monotonic counter (`tape_runs.seq_cursor`) — the anchor
 //!     the re-drive aligns against;
-//!   * mutating RPCs are idempotent: a replay returns the recorded row.
+//!   * mutating RPCs are idempotent: a replay returns the recorded row. (That is
+//!     also what makes N server replicas safe — a double-drive short-circuits.)
+//!
+//! All SQL is written once here, in the portable subset both stores speak (`?N`
+//! placeholders; the Postgres store rewrites to `$N`).
 
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusqlite::{params, OptionalExtension};
 use tokio_stream::{wrappers::ReceiverStream, Stream};
 use tonic::{Request, Response, Status};
 
 use crate::pb::tape_server::Tape;
 use crate::pb::*;
-use crate::store::{now_ms, Store};
+use crate::store::{now_ms, RowExt, Store, StoreError, Val};
 
 pub struct TapeService {
-    store: Arc<Store>,
+    store: Arc<dyn Store>,
 }
 
 impl TapeService {
-    pub fn new(store: Arc<Store>) -> Self {
+    pub fn new(store: Arc<dyn Store>) -> Self {
         Self { store }
+    }
+    fn s(&self) -> &dyn Store {
+        self.store.as_ref()
     }
 }
 
-// ── small helpers ───────────────────────────────────────────────────────────
+// ── helpers ─────────────────────────────────────────────────────────────────
 
-fn db(e: rusqlite::Error) -> Status {
-    Status::internal(format!("tape store: {e}"))
+fn db(e: StoreError) -> Status {
+    Status::internal(e.to_string())
 }
 
 fn effect_status(i: i32) -> EffectStatus {
@@ -48,112 +54,159 @@ fn derive_key(run_id: &str, decision_index: i64, tool: &str, call_index: i32) ->
     }
 }
 
-/// Bump the run's seq cursor and return the new value.
-fn next_seq(conn: &rusqlite::Connection, run_id: &str) -> rusqlite::Result<i64> {
-    conn.execute(
-        "UPDATE tape_runs SET seq_cursor = seq_cursor + 1 WHERE run_id = ?1",
-        params![run_id],
-    )?;
-    conn.query_row(
-        "SELECT seq_cursor FROM tape_runs WHERE run_id = ?1",
-        params![run_id],
-        |r| r.get(0),
-    )
+async fn next_seq(store: &dyn Store, run_id: &str) -> Result<i64, StoreError> {
+    store
+        .exec(
+            "UPDATE tape_runs SET seq_cursor = seq_cursor + 1 WHERE run_id = ?1",
+            vec![run_id.into()],
+        )
+        .await?;
+    let row = store
+        .query_opt(
+            "SELECT seq_cursor FROM tape_runs WHERE run_id = ?1",
+            vec![run_id.into()],
+        )
+        .await?;
+    Ok(row.map(|r| r.i64(0)).unwrap_or(0))
 }
 
-fn journal(
-    conn: &rusqlite::Connection,
+async fn journal(
+    store: &dyn Store,
     run_id: &str,
     seq: i64,
     kind: &str,
     payload_json: &str,
     ts: i64,
-) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT INTO tape_journal (run_id, seq, kind, payload_json, ts_ms) VALUES (?1,?2,?3,?4,?5)",
-        params![run_id, seq, kind, payload_json, ts],
-    )?;
-    Ok(())
+) -> Result<(), StoreError> {
+    store
+        .exec(
+            "INSERT INTO tape_journal (run_id, seq, kind, payload_json, ts_ms) VALUES (?1,?2,?3,?4,?5)",
+            vec![run_id.into(), seq.into(), kind.into(), payload_json.into(), ts.into()],
+        )
+        .await
+        .map(|_| ())
 }
 
-fn read_run(conn: &rusqlite::Connection, run_id: &str) -> rusqlite::Result<Option<RunState>> {
-    conn.query_row(
-        "SELECT run_id, app_name, user_id, session_id, invocation_id, status, seq_cursor, \
-         lease_owner, lease_expires_at_ms, started_at_ms, ended_at_ms, waiting_on_gate \
-         FROM tape_runs WHERE run_id = ?1",
-        params![run_id],
-        |r| {
-            Ok(RunState {
-                run_id: r.get(0)?,
-                app_name: r.get(1)?,
-                user_id: r.get(2)?,
-                session_id: r.get(3)?,
-                invocation_id: r.get(4)?,
-                status: r.get::<_, i32>(5)?,
-                seq_cursor: r.get(6)?,
-                lease_owner: r.get(7)?,
-                lease_expires_at_ms: r.get(8)?,
-                started_at_ms: r.get(9)?,
-                ended_at_ms: r.get(10)?,
-                waiting_on_gate: r.get(11)?,
-            })
-        },
-    )
-    .optional()
+fn run_state_of(r: &Vec<Val>) -> RunState {
+    RunState {
+        run_id: r.str(0),
+        app_name: r.str(1),
+        user_id: r.str(2),
+        session_id: r.str(3),
+        invocation_id: r.str(4),
+        status: r.i32(5),
+        seq_cursor: r.i64(6),
+        lease_owner: r.str(7),
+        lease_expires_at_ms: r.i64(8),
+        started_at_ms: r.i64(9),
+        ended_at_ms: r.i64(10),
+        waiting_on_gate: r.str(11),
+    }
+}
+const RUN_COLS: &str = "run_id, app_name, user_id, session_id, invocation_id, status, seq_cursor, \
+    lease_owner, lease_expires_at_ms, started_at_ms, ended_at_ms, waiting_on_gate";
+
+async fn read_run(store: &dyn Store, run_id: &str) -> Result<Option<RunState>, StoreError> {
+    let sql = format!("SELECT {RUN_COLS} FROM tape_runs WHERE run_id = ?1");
+    Ok(store
+        .query_opt(&sql, vec![run_id.into()])
+        .await?
+        .map(|r| run_state_of(&r)))
 }
 
-fn read_effect(
-    conn: &rusqlite::Connection,
-    run_id: &str,
-    key: &str,
-) -> rusqlite::Result<Option<EffectRecord>> {
-    conn.query_row(
-        "SELECT run_id, seq, decision_index, tool_name, idempotency_key, status, \
-         request_json, response_json, error_json, ts_ms \
-         FROM tape_effects WHERE run_id = ?1 AND idempotency_key = ?2",
-        params![run_id, key],
-        |r| {
-            Ok(EffectRecord {
-                run_id: r.get(0)?,
-                seq: r.get(1)?,
-                decision_index: r.get(2)?,
-                tool_name: r.get(3)?,
-                idempotency_key: r.get(4)?,
-                status: r.get::<_, i32>(5)?,
-                request_json: r.get(6)?,
-                response_json: r.get(7)?,
-                error_json: r.get(8)?,
-                ts_ms: r.get(9)?,
-            })
-        },
-    )
-    .optional()
+fn effect_of(r: &Vec<Val>) -> EffectRecord {
+    EffectRecord {
+        run_id: r.str(0),
+        seq: r.i64(1),
+        decision_index: r.i64(2),
+        tool_name: r.str(3),
+        idempotency_key: r.str(4),
+        status: r.i32(5),
+        request_json: r.str(6),
+        response_json: r.str(7),
+        error_json: r.str(8),
+        ts_ms: r.i64(9),
+    }
+}
+const EFFECT_COLS: &str = "run_id, seq, decision_index, tool_name, idempotency_key, status, \
+    request_json, response_json, error_json, ts_ms";
+
+async fn read_effect(store: &dyn Store, run_id: &str, key: &str) -> Result<Option<EffectRecord>, StoreError> {
+    let sql = format!("SELECT {EFFECT_COLS} FROM tape_effects WHERE run_id = ?1 AND idempotency_key = ?2");
+    Ok(store
+        .query_opt(&sql, vec![run_id.into(), key.into()])
+        .await?
+        .map(|r| effect_of(&r)))
 }
 
-fn budget_state(conn: &rusqlite::Connection, run_id: &str) -> rusqlite::Result<BudgetState> {
-    conn.query_row(
-        "SELECT usd_cap, token_cap, usd_spent, tokens_spent FROM tape_budget WHERE run_id = ?1",
-        params![run_id],
-        |r| {
-            Ok(BudgetState {
-                run_id: run_id.to_string(),
-                usd_cap: r.get(0)?,
-                token_cap: r.get(1)?,
-                usd_spent: r.get(2)?,
-                tokens_spent: r.get(3)?,
-            })
+fn decision_of(r: &Vec<Val>) -> DecisionRecord {
+    DecisionRecord {
+        run_id: r.str(0),
+        seq: r.i64(1),
+        decision_index: r.i64(2),
+        model: r.str(3),
+        request_json: r.str(4),
+        response_json: r.str(5),
+        rationale: r.str(6),
+        policy_version: r.str(7),
+        ts_ms: r.i64(8),
+    }
+}
+const DECISION_COLS: &str =
+    "run_id, seq, decision_index, model, request_json, response_json, rationale, policy_version, ts_ms";
+
+fn obligation_of(r: &Vec<Val>) -> ObligationRecord {
+    ObligationRecord {
+        run_id: r.str(0),
+        seq: r.i64(1),
+        effect_key: r.str(2),
+        kind: r.str(3),
+        payload_json: r.str(4),
+        status: r.i32(5),
+        ts_ms: r.i64(6),
+    }
+}
+const OBLIGATION_COLS: &str = "run_id, seq, effect_key, kind, payload_json, status, ts_ms";
+
+async fn budget_state(store: &dyn Store, run_id: &str) -> Result<BudgetState, StoreError> {
+    let row = store
+        .query_opt(
+            "SELECT usd_cap, token_cap, usd_spent, tokens_spent FROM tape_budget WHERE run_id = ?1",
+            vec![run_id.into()],
+        )
+        .await?;
+    Ok(match row {
+        Some(r) => BudgetState {
+            run_id: run_id.to_string(),
+            usd_cap: r.f64(0),
+            token_cap: r.i64(1),
+            usd_spent: r.f64(2),
+            tokens_spent: r.i64(3),
         },
-    )
-    .optional()
-    .map(|o| {
-        o.unwrap_or(BudgetState {
+        None => BudgetState {
             run_id: run_id.to_string(),
             usd_cap: 0.0,
             token_cap: 0,
             usd_spent: 0.0,
             tokens_spent: 0,
-        })
+        },
     })
+}
+
+/// Shallow-merge `delta` (a JSON object) into `base`; a `null` value deletes.
+fn merge_json(base: &str, delta: &str) -> String {
+    let mut b: serde_json::Value = serde_json::from_str(base).unwrap_or(serde_json::json!({}));
+    let d: serde_json::Value = serde_json::from_str(delta).unwrap_or(serde_json::json!({}));
+    if let (Some(bo), Some(dobj)) = (b.as_object_mut(), d.as_object()) {
+        for (k, v) in dobj {
+            if v.is_null() {
+                bo.remove(k);
+            } else {
+                bo.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    b.to_string()
 }
 
 // ── the service ─────────────────────────────────────────────────────────────
@@ -167,38 +220,45 @@ impl Tape for TapeService {
         request: Request<BeginRunRequest>,
     ) -> Result<Response<BeginRunResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
         let ts = now_ms();
         let lease_exp = ts + r.lease_ttl_ms.max(0);
 
-        // Already a run for this invocation_id? -> this is a re-drive.
-        let existing: Option<(String, i32, i64)> = conn
-            .query_row(
-                "SELECT run_id, status, seq_cursor FROM tape_runs \
+        let existing = self
+            .s()
+            .query_opt(
+                "SELECT run_id, seq_cursor FROM tape_runs \
                  WHERE app_name=?1 AND user_id=?2 AND session_id=?3 AND invocation_id=?4",
-                params![r.app_name, r.user_id, r.session_id, r.invocation_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(db)?;
-
-        if let Some((run_id, _status, seq_cursor)) = existing {
-            // Take the lease, flip to RUNNING — unless the run already finished,
-            // in which case leave it TERMINAL and let the caller short-circuit.
-            conn.execute(
-                "UPDATE tape_runs SET status=?2, lease_owner=?3, lease_expires_at_ms=?4 \
-                 WHERE run_id=?1 AND status NOT IN (?5, ?6)",
-                params![
-                    run_id,
-                    RunStatus::Running as i32,
-                    r.lease_owner,
-                    lease_exp,
-                    RunStatus::Terminal as i32,
-                    RunStatus::Stuck as i32
+                vec![
+                    r.app_name.clone().into(),
+                    r.user_id.clone().into(),
+                    r.session_id.clone().into(),
+                    r.invocation_id.clone().into(),
                 ],
             )
+            .await
             .map_err(db)?;
-            let cur = read_run(&conn, &run_id).map_err(db)?.unwrap();
+
+        if let Some(row) = existing {
+            let run_id = row.str(0);
+            let seq_cursor = row.i64(1);
+            // Take the lease, flip to RUNNING — unless the run already finished
+            // or is stuck (then leave it; the caller short-circuits).
+            self.s()
+                .exec(
+                    "UPDATE tape_runs SET status=?2, lease_owner=?3, lease_expires_at_ms=?4 \
+                     WHERE run_id=?1 AND status NOT IN (?5, ?6)",
+                    vec![
+                        run_id.clone().into(),
+                        (RunStatus::Running as i32).into(),
+                        r.lease_owner.clone().into(),
+                        lease_exp.into(),
+                        (RunStatus::Terminal as i32).into(),
+                        (RunStatus::Stuck as i32).into(),
+                    ],
+                )
+                .await
+                .map_err(db)?;
+            let cur = read_run(self.s(), &run_id).await.map_err(db)?.unwrap();
             return Ok(Response::new(BeginRunResponse {
                 run_id,
                 resumed: true,
@@ -208,23 +268,25 @@ impl Tape for TapeService {
         }
 
         let run_id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO tape_runs (run_id, app_name, user_id, session_id, invocation_id, \
-             status, seq_cursor, lease_owner, lease_expires_at_ms, started_at_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,0,?7,?8,?9)",
-            params![
-                run_id,
-                r.app_name,
-                r.user_id,
-                r.session_id,
-                r.invocation_id,
-                RunStatus::Running as i32,
-                r.lease_owner,
-                lease_exp,
-                ts
-            ],
-        )
-        .map_err(db)?;
+        self.s()
+            .exec(
+                "INSERT INTO tape_runs (run_id, app_name, user_id, session_id, invocation_id, \
+                 status, seq_cursor, lease_owner, lease_expires_at_ms, started_at_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,0,?7,?8,?9)",
+                vec![
+                    run_id.clone().into(),
+                    r.app_name.into(),
+                    r.user_id.into(),
+                    r.session_id.into(),
+                    r.invocation_id.into(),
+                    (RunStatus::Running as i32).into(),
+                    r.lease_owner.into(),
+                    lease_exp.into(),
+                    ts.into(),
+                ],
+            )
+            .await
+            .map_err(db)?;
         Ok(Response::new(BeginRunResponse {
             run_id,
             resumed: false,
@@ -238,19 +300,21 @@ impl Tape for TapeService {
         request: Request<ResumeRunRequest>,
     ) -> Result<Response<ResumeRunResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
         let ts = now_ms();
-        conn.execute(
-            "UPDATE tape_runs SET status=?2, lease_owner=?3, lease_expires_at_ms=?4 WHERE run_id=?1",
-            params![
-                r.run_id,
-                RunStatus::Running as i32,
-                r.lease_owner,
-                ts + r.lease_ttl_ms.max(0)
-            ],
-        )
-        .map_err(db)?;
-        let run = read_run(&conn, &r.run_id)
+        self.s()
+            .exec(
+                "UPDATE tape_runs SET status=?2, lease_owner=?3, lease_expires_at_ms=?4 WHERE run_id=?1",
+                vec![
+                    r.run_id.clone().into(),
+                    (RunStatus::Running as i32).into(),
+                    r.lease_owner.into(),
+                    (ts + r.lease_ttl_ms.max(0)).into(),
+                ],
+            )
+            .await
+            .map_err(db)?;
+        let run = read_run(self.s(), &r.run_id)
+            .await
             .map_err(db)?
             .ok_or_else(|| Status::not_found("no such run"))?;
         Ok(Response::new(ResumeRunResponse { run: Some(run) }))
@@ -261,14 +325,15 @@ impl Tape for TapeService {
         request: Request<EndRunRequest>,
     ) -> Result<Response<EndRunResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        conn.execute(
-            "UPDATE tape_runs SET status=?2, ended_at_ms=?3, detail_json=?4, lease_owner='' \
-             WHERE run_id=?1",
-            params![r.run_id, r.status, now_ms(), r.detail_json],
-        )
-        .map_err(db)?;
-        let run = read_run(&conn, &r.run_id)
+        self.s()
+            .exec(
+                "UPDATE tape_runs SET status=?2, ended_at_ms=?3, detail_json=?4, lease_owner='' WHERE run_id=?1",
+                vec![r.run_id.clone().into(), r.status.into(), now_ms().into(), r.detail_json.into()],
+            )
+            .await
+            .map_err(db)?;
+        let run = read_run(self.s(), &r.run_id)
+            .await
             .map_err(db)?
             .ok_or_else(|| Status::not_found("no such run"))?;
         Ok(Response::new(EndRunResponse { run: Some(run) }))
@@ -276,8 +341,8 @@ impl Tape for TapeService {
 
     async fn get_run(&self, request: Request<GetRunRequest>) -> Result<Response<RunState>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let run = read_run(&conn, &r.run_id)
+        let run = read_run(self.s(), &r.run_id)
+            .await
             .map_err(db)?
             .ok_or_else(|| Status::not_found("no such run"))?;
         Ok(Response::new(run))
@@ -290,51 +355,32 @@ impl Tape for TapeService {
         let r = request.into_inner();
         let now = if r.now_ms > 0 { r.now_ms } else { now_ms() };
         let limit = if r.limit > 0 { r.limit } else { 100 };
-        let conn = self.store.conn();
-        // Recoverable = RUNNABLE, or RUNNING with a stale lease, or WAITING with
-        // a delivered-but-unconsumed signal.
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.run_id, r.app_name, r.user_id, r.session_id, r.invocation_id, r.status, \
-                    r.seq_cursor, r.lease_owner, r.lease_expires_at_ms, r.started_at_ms, r.ended_at_ms, r.waiting_on_gate \
-                 FROM tape_runs r \
-                 WHERE r.status = ?1 \
-                    OR (r.status = ?2 AND r.lease_expires_at_ms < ?3) \
-                    OR (r.status = ?4 AND EXISTS ( \
-                          SELECT 1 FROM tape_signals s \
-                          WHERE s.run_id = r.run_id AND s.delivered = 1 AND s.consumed = 0)) \
-                 LIMIT ?5",
-            )
-            .map_err(db)?;
-        let rows = stmt
-            .query_map(
-                params![
-                    RunStatus::Runnable as i32,
-                    RunStatus::Running as i32,
-                    now,
-                    RunStatus::Waiting as i32,
-                    limit
+        let sql = format!(
+            "SELECT {RUN_COLS} FROM tape_runs r \
+             WHERE status = ?1 \
+                OR (status = ?2 AND lease_expires_at_ms < ?3) \
+                OR (status = ?4 AND EXISTS ( \
+                      SELECT 1 FROM tape_signals s \
+                      WHERE s.run_id = r.run_id AND s.delivered = 1 AND s.consumed = 0)) \
+             LIMIT ?5"
+        );
+        let rows = self
+            .s()
+            .query(
+                &sql,
+                vec![
+                    (RunStatus::Runnable as i32).into(),
+                    (RunStatus::Running as i32).into(),
+                    now.into(),
+                    (RunStatus::Waiting as i32).into(),
+                    limit.into(),
                 ],
-                |r| {
-                    Ok(RunState {
-                        run_id: r.get(0)?,
-                        app_name: r.get(1)?,
-                        user_id: r.get(2)?,
-                        session_id: r.get(3)?,
-                        invocation_id: r.get(4)?,
-                        status: r.get::<_, i32>(5)?,
-                        seq_cursor: r.get(6)?,
-                        lease_owner: r.get(7)?,
-                        lease_expires_at_ms: r.get(8)?,
-                        started_at_ms: r.get(9)?,
-                        ended_at_ms: r.get(10)?,
-                        waiting_on_gate: r.get(11)?,
-                    })
-                },
             )
+            .await
             .map_err(db)?;
-        let runs: Vec<RunState> = rows.collect::<rusqlite::Result<_>>().map_err(db)?;
-        Ok(Response::new(ListRunsToRecoverResponse { runs }))
+        Ok(Response::new(ListRunsToRecoverResponse {
+            runs: rows.iter().map(run_state_of).collect(),
+        }))
     }
 
     type SubscribeRunStream =
@@ -350,31 +396,26 @@ impl Tape for TapeService {
         tokio::spawn(async move {
             let mut from = r.from_seq;
             loop {
-                let batch: Vec<JournalEntry> = {
-                    let conn = store.conn();
-                    let mut stmt = match conn.prepare(
+                let batch = match store
+                    .query(
                         "SELECT seq, kind, payload_json, ts_ms FROM tape_journal \
                          WHERE run_id=?1 AND seq>=?2 ORDER BY seq",
-                    ) {
-                        Ok(s) => s,
-                        Err(_) => break,
-                    };
-                    let mapped = stmt.query_map(params![r.run_id, from], |row| {
-                        Ok(JournalEntry {
-                            seq: row.get(0)?,
-                            kind: row.get(1)?,
-                            payload_json: row.get(2)?,
-                            ts_ms: row.get(3)?,
-                        })
-                    });
-                    match mapped {
-                        Ok(it) => it.filter_map(|x| x.ok()).collect(),
-                        Err(_) => break,
-                    }
+                        vec![r.run_id.clone().into(), from.into()],
+                    )
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(_) => break,
                 };
-                for e in &batch {
-                    from = e.seq + 1;
-                    if tx.send(Ok(e.clone())).await.is_err() {
+                for row in &batch {
+                    let entry = JournalEntry {
+                        seq: row.i64(0),
+                        kind: row.str(1),
+                        payload_json: row.str(2),
+                        ts_ms: row.i64(3),
+                    };
+                    from = entry.seq + 1;
+                    if tx.send(Ok(entry)).await.is_err() {
                         return;
                     }
                 }
@@ -391,37 +432,39 @@ impl Tape for TapeService {
         request: Request<RecordDecisionRequest>,
     ) -> Result<Response<DecisionRecord>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
         let ts = now_ms();
-        // Already recorded? -> idempotent replay.
-        if let Some(rec) = conn
-            .query_row(
-                "SELECT run_id, seq, decision_index, model, request_json, response_json, rationale, policy_version, ts_ms \
-                 FROM tape_decisions WHERE run_id=?1 AND decision_index=?2",
-                params![r.run_id, r.decision_index],
-                |row| Ok(DecisionRecord {
-                    run_id: row.get(0)?, seq: row.get(1)?, decision_index: row.get(2)?,
-                    model: row.get(3)?, request_json: row.get(4)?, response_json: row.get(5)?,
-                    rationale: row.get(6)?, policy_version: row.get(7)?, ts_ms: row.get(8)?,
-                }),
-            )
-            .optional()
+        let sql = format!(
+            "SELECT {DECISION_COLS} FROM tape_decisions WHERE run_id=?1 AND decision_index=?2"
+        );
+        if let Some(row) = self
+            .s()
+            .query_opt(&sql, vec![r.run_id.clone().into(), r.decision_index.into()])
+            .await
             .map_err(db)?
         {
-            return Ok(Response::new(rec));
+            return Ok(Response::new(decision_of(&row)));
         }
-        let seq = next_seq(&conn, &r.run_id).map_err(db)?;
-        conn.execute(
-            "INSERT INTO tape_decisions (run_id, seq, decision_index, model, request_json, response_json, rationale, policy_version, ts_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![r.run_id, seq, r.decision_index, r.model, r.request_json, r.response_json, r.rationale, r.policy_version, ts],
-        ).map_err(db)?;
+        let seq = next_seq(self.s(), &r.run_id).await.map_err(db)?;
+        self.s()
+            .exec(
+                "INSERT INTO tape_decisions (run_id, seq, decision_index, model, request_json, response_json, rationale, policy_version, ts_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                vec![
+                    r.run_id.clone().into(), seq.into(), r.decision_index.into(),
+                    r.model.clone().into(), r.request_json.clone().into(), r.response_json.clone().into(),
+                    r.rationale.clone().into(), r.policy_version.clone().into(), ts.into(),
+                ],
+            )
+            .await
+            .map_err(db)?;
         let payload = serde_json::json!({
-            "decision_index": r.decision_index, "model": r.model.clone(),
-            "policy_version": r.policy_version.clone(), "rationale": r.rationale.clone()
+            "decision_index": r.decision_index, "model": r.model,
+            "policy_version": r.policy_version, "rationale": r.rationale
         })
         .to_string();
-        journal(&conn, &r.run_id, seq, "decision", &payload, ts).map_err(db)?;
+        journal(self.s(), &r.run_id, seq, "decision", &payload, ts)
+            .await
+            .map_err(db)?;
         Ok(Response::new(DecisionRecord {
             run_id: r.run_id,
             seq,
@@ -440,20 +483,15 @@ impl Tape for TapeService {
         request: Request<GetDecisionRequest>,
     ) -> Result<Response<GetDecisionResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let rec = conn
-            .query_row(
-                "SELECT run_id, seq, decision_index, model, request_json, response_json, rationale, policy_version, ts_ms \
-                 FROM tape_decisions WHERE run_id=?1 AND decision_index=?2",
-                params![r.run_id, r.decision_index],
-                |row| Ok(DecisionRecord {
-                    run_id: row.get(0)?, seq: row.get(1)?, decision_index: row.get(2)?,
-                    model: row.get(3)?, request_json: row.get(4)?, response_json: row.get(5)?,
-                    rationale: row.get(6)?, policy_version: row.get(7)?, ts_ms: row.get(8)?,
-                }),
-            )
-            .optional()
-            .map_err(db)?;
+        let sql = format!(
+            "SELECT {DECISION_COLS} FROM tape_decisions WHERE run_id=?1 AND decision_index=?2"
+        );
+        let rec = self
+            .s()
+            .query_opt(&sql, vec![r.run_id.into(), r.decision_index.into()])
+            .await
+            .map_err(db)?
+            .map(|row| decision_of(&row));
         Ok(Response::new(GetDecisionResponse {
             found: rec.is_some(),
             decision: rec,
@@ -472,11 +510,8 @@ impl Tape for TapeService {
         } else {
             r.custom_key.clone()
         };
-        let conn = self.store.conn();
 
-        // Already on file? -> short-circuit (this is the re-drive skipping a
-        // confirmed effect, or a retry of BeginEffect for a still-pending one).
-        if let Some(e) = read_effect(&conn, &r.run_id, &key).map_err(db)? {
+        if let Some(e) = read_effect(self.s(), &r.run_id, &key).await.map_err(db)? {
             return Ok(Response::new(BeginEffectResponse {
                 seq: e.seq,
                 idempotency_key: key,
@@ -486,21 +521,28 @@ impl Tape for TapeService {
             }));
         }
 
-        // Fresh: write the intent and (autocommit) commit it before returning,
-        // so the tool body runs only once the intent is durable.
         let ts = now_ms();
-        let seq = next_seq(&conn, &r.run_id).map_err(db)?;
-        conn.execute(
-            "INSERT INTO tape_effects (run_id, seq, decision_index, tool_name, idempotency_key, status, request_json, response_json, error_json, ts_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8)",
-            params![r.run_id, seq, r.decision_index, r.tool_name, key, EffectStatus::Pending as i32, r.request_json, ts],
-        ).map_err(db)?;
+        let seq = next_seq(self.s(), &r.run_id).await.map_err(db)?;
+        self.s()
+            .exec(
+                "INSERT INTO tape_effects (run_id, seq, decision_index, tool_name, idempotency_key, status, request_json, response_json, error_json, ts_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8)",
+                vec![
+                    r.run_id.clone().into(), seq.into(), r.decision_index.into(),
+                    r.tool_name.clone().into(), key.clone().into(),
+                    (EffectStatus::Pending as i32).into(), r.request_json.into(), ts.into(),
+                ],
+            )
+            .await
+            .map_err(db)?;
         let payload = serde_json::json!({
-            "tool": r.tool_name.clone(), "decision_index": r.decision_index,
-            "idempotency_key": key.clone(), "status": "pending"
+            "tool": r.tool_name, "decision_index": r.decision_index,
+            "idempotency_key": key, "status": "pending"
         })
         .to_string();
-        journal(&conn, &r.run_id, seq, "effect", &payload, ts).map_err(db)?;
+        journal(self.s(), &r.run_id, seq, "effect", &payload, ts)
+            .await
+            .map_err(db)?;
         Ok(Response::new(BeginEffectResponse {
             seq,
             idempotency_key: key,
@@ -515,34 +557,39 @@ impl Tape for TapeService {
         request: Request<CompleteEffectRequest>,
     ) -> Result<Response<EffectRecord>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let existing = read_effect(&conn, &r.run_id, &r.idempotency_key)
+        let existing = read_effect(self.s(), &r.run_id, &r.idempotency_key)
+            .await
             .map_err(db)?
             .ok_or_else(|| Status::failed_precondition("complete_effect before begin_effect"))?;
-        // Already terminal? leave it (idempotent). Only PENDING -> {CONFIRMED|FAILED|UNKNOWN}.
         if existing.status != EffectStatus::Pending as i32 {
             return Ok(Response::new(existing));
         }
         let ts = now_ms();
-        conn.execute(
-            "UPDATE tape_effects SET status=?3, response_json=?4, error_json=?5, ts_ms=?6 \
-             WHERE run_id=?1 AND idempotency_key=?2",
-            params![r.run_id, r.idempotency_key, r.status, r.response_json, r.error_json, ts],
-        )
-        .map_err(db)?;
-        let seq = next_seq(&conn, &r.run_id).map_err(db)?;
+        self.s()
+            .exec(
+                "UPDATE tape_effects SET status=?3, response_json=?4, error_json=?5, ts_ms=?6 \
+                 WHERE run_id=?1 AND idempotency_key=?2",
+                vec![
+                    r.run_id.clone().into(), r.idempotency_key.clone().into(),
+                    r.status.into(), r.response_json.clone().into(), r.error_json.clone().into(), ts.into(),
+                ],
+            )
+            .await
+            .map_err(db)?;
+        let seq = next_seq(self.s(), &r.run_id).await.map_err(db)?;
         let label = match effect_status(r.status) {
             EffectStatus::Confirmed => "confirmed",
             EffectStatus::Failed => "failed",
             EffectStatus::Unknown => "unknown",
             _ => "completed",
         };
-        let tool_name = existing.tool_name.clone();
         let payload = serde_json::json!({
-            "tool": tool_name, "idempotency_key": r.idempotency_key.clone(), "status": label
+            "tool": existing.tool_name, "idempotency_key": r.idempotency_key, "status": label
         })
         .to_string();
-        journal(&conn, &r.run_id, seq, "effect", &payload, ts).map_err(db)?;
+        journal(self.s(), &r.run_id, seq, "effect", &payload, ts)
+            .await
+            .map_err(db)?;
         Ok(Response::new(EffectRecord {
             status: r.status,
             response_json: r.response_json,
@@ -557,8 +604,9 @@ impl Tape for TapeService {
         request: Request<GetEffectRequest>,
     ) -> Result<Response<GetEffectResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let e = read_effect(&conn, &r.run_id, &r.idempotency_key).map_err(db)?;
+        let e = read_effect(self.s(), &r.run_id, &r.idempotency_key)
+            .await
+            .map_err(db)?;
         Ok(Response::new(GetEffectResponse {
             found: e.is_some(),
             effect: e,
@@ -570,31 +618,34 @@ impl Tape for TapeService {
         request: Request<ReconcileEffectRequest>,
     ) -> Result<Response<EffectRecord>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let existing = read_effect(&conn, &r.run_id, &r.idempotency_key)
+        let existing = read_effect(self.s(), &r.run_id, &r.idempotency_key)
+            .await
             .map_err(db)?
             .ok_or_else(|| Status::not_found("no such effect"))?;
-        // Only PENDING/UNKNOWN are reconcilable; a CONFIRMED/FAILED stays.
-        if existing.status == EffectStatus::Confirmed as i32
-            || existing.status == EffectStatus::Failed as i32
-        {
+        if existing.status == EffectStatus::Confirmed as i32 || existing.status == EffectStatus::Failed as i32 {
             return Ok(Response::new(existing));
         }
         let ts = now_ms();
-        conn.execute(
-            "UPDATE tape_effects SET status=?3, response_json=?4, error_json=?5, ts_ms=?6 \
-             WHERE run_id=?1 AND idempotency_key=?2",
-            params![r.run_id, r.idempotency_key, r.resolved_status, r.response_json, r.error_json, ts],
-        )
-        .map_err(db)?;
-        let seq = next_seq(&conn, &r.run_id).map_err(db)?;
-        let tool_name = existing.tool_name.clone();
+        self.s()
+            .exec(
+                "UPDATE tape_effects SET status=?3, response_json=?4, error_json=?5, ts_ms=?6 \
+                 WHERE run_id=?1 AND idempotency_key=?2",
+                vec![
+                    r.run_id.clone().into(), r.idempotency_key.clone().into(),
+                    r.resolved_status.into(), r.response_json.clone().into(), r.error_json.clone().into(), ts.into(),
+                ],
+            )
+            .await
+            .map_err(db)?;
+        let seq = next_seq(self.s(), &r.run_id).await.map_err(db)?;
         let payload = serde_json::json!({
-            "tool": tool_name, "idempotency_key": r.idempotency_key.clone(),
+            "tool": existing.tool_name, "idempotency_key": r.idempotency_key,
             "status": "reconciled", "resolved_to": r.resolved_status
         })
         .to_string();
-        journal(&conn, &r.run_id, seq, "effect", &payload, ts).map_err(db)?;
+        journal(self.s(), &r.run_id, seq, "effect", &payload, ts)
+            .await
+            .map_err(db)?;
         Ok(Response::new(EffectRecord {
             status: r.resolved_status,
             response_json: r.response_json,
@@ -611,34 +662,38 @@ impl Tape for TapeService {
         request: Request<RegisterCompensationRequest>,
     ) -> Result<Response<ObligationRecord>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        // Idempotent on (run_id, effect_key, kind).
-        if let Some(rec) = conn
-            .query_row(
-                "SELECT run_id, seq, effect_key, kind, payload_json, status, ts_ms FROM tape_obligations \
-                 WHERE run_id=?1 AND effect_key=?2 AND kind=?3",
-                params![r.run_id, r.effect_key, r.kind],
-                |row| Ok(ObligationRecord {
-                    run_id: row.get(0)?, seq: row.get(1)?, effect_key: row.get(2)?,
-                    kind: row.get(3)?, payload_json: row.get(4)?, status: row.get::<_, i32>(5)?, ts_ms: row.get(6)?,
-                }),
+        let sql = format!(
+            "SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND effect_key=?2 AND kind=?3"
+        );
+        if let Some(row) = self
+            .s()
+            .query_opt(
+                &sql,
+                vec![r.run_id.clone().into(), r.effect_key.clone().into(), r.kind.clone().into()],
             )
-            .optional()
+            .await
             .map_err(db)?
         {
-            return Ok(Response::new(rec));
+            return Ok(Response::new(obligation_of(&row)));
         }
         let ts = now_ms();
-        let seq = next_seq(&conn, &r.run_id).map_err(db)?;
+        let seq = next_seq(self.s(), &r.run_id).await.map_err(db)?;
         let status = ObligationStatus::Committed as i32;
-        conn.execute(
-            "INSERT INTO tape_obligations (run_id, seq, effect_key, kind, payload_json, status, ts_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![r.run_id, seq, r.effect_key, r.kind, r.payload_json, status, ts],
-        ).map_err(db)?;
-        let payload =
-            serde_json::json!({"effect_key": r.effect_key.clone(), "kind": r.kind.clone()}).to_string();
-        journal(&conn, &r.run_id, seq, "obligation", &payload, ts).map_err(db)?;
+        self.s()
+            .exec(
+                "INSERT INTO tape_obligations (run_id, seq, effect_key, kind, payload_json, status, ts_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                vec![
+                    r.run_id.clone().into(), seq.into(), r.effect_key.clone().into(),
+                    r.kind.clone().into(), r.payload_json.clone().into(), status.into(), ts.into(),
+                ],
+            )
+            .await
+            .map_err(db)?;
+        let payload = serde_json::json!({"effect_key": r.effect_key, "kind": r.kind}).to_string();
+        journal(self.s(), &r.run_id, seq, "obligation", &payload, ts)
+            .await
+            .map_err(db)?;
         Ok(Response::new(ObligationRecord {
             run_id: r.run_id,
             seq,
@@ -655,30 +710,26 @@ impl Tape for TapeService {
         request: Request<ListObligationsRequest>,
     ) -> Result<Response<ListObligationsResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
         let sql = if r.only_unresolved {
-            "SELECT run_id, seq, effect_key, kind, payload_json, status, ts_ms FROM tape_obligations \
-             WHERE run_id=?1 AND status NOT IN (3,4) ORDER BY seq DESC"
+            format!(
+                "SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND status NOT IN (?2, ?3) ORDER BY seq DESC"
+            )
         } else {
-            "SELECT run_id, seq, effect_key, kind, payload_json, status, ts_ms FROM tape_obligations \
-             WHERE run_id=?1 ORDER BY seq DESC"
+            format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 ORDER BY seq DESC")
         };
-        let mut stmt = conn.prepare(sql).map_err(db)?;
-        let rows = stmt
-            .query_map(params![r.run_id], |row| {
-                Ok(ObligationRecord {
-                    run_id: row.get(0)?,
-                    seq: row.get(1)?,
-                    effect_key: row.get(2)?,
-                    kind: row.get(3)?,
-                    payload_json: row.get(4)?,
-                    status: row.get::<_, i32>(5)?,
-                    ts_ms: row.get(6)?,
-                })
-            })
-            .map_err(db)?;
-        let obligations: Vec<ObligationRecord> = rows.collect::<rusqlite::Result<_>>().map_err(db)?;
-        Ok(Response::new(ListObligationsResponse { obligations }))
+        let params: Vec<Val> = if r.only_unresolved {
+            vec![
+                r.run_id.into(),
+                (ObligationStatus::Compensated as i32).into(),
+                (ObligationStatus::Stuck as i32).into(),
+            ]
+        } else {
+            vec![r.run_id.into()]
+        };
+        let rows = self.s().query(&sql, params).await.map_err(db)?;
+        Ok(Response::new(ListObligationsResponse {
+            obligations: rows.iter().map(obligation_of).collect(),
+        }))
     }
 
     async fn resolve_obligation(
@@ -686,25 +737,20 @@ impl Tape for TapeService {
         request: Request<ResolveObligationRequest>,
     ) -> Result<Response<ObligationRecord>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let ts = now_ms();
-        conn.execute(
-            "UPDATE tape_obligations SET status=?3, ts_ms=?4 WHERE run_id=?1 AND seq=?2",
-            params![r.run_id, r.obligation_seq, r.status, ts],
-        )
-        .map_err(db)?;
-        let rec = conn
-            .query_row(
-                "SELECT run_id, seq, effect_key, kind, payload_json, status, ts_ms FROM tape_obligations \
-                 WHERE run_id=?1 AND seq=?2",
-                params![r.run_id, r.obligation_seq],
-                |row| Ok(ObligationRecord {
-                    run_id: row.get(0)?, seq: row.get(1)?, effect_key: row.get(2)?,
-                    kind: row.get(3)?, payload_json: row.get(4)?, status: row.get::<_, i32>(5)?, ts_ms: row.get(6)?,
-                }),
+        self.s()
+            .exec(
+                "UPDATE tape_obligations SET status=?3, ts_ms=?4 WHERE run_id=?1 AND seq=?2",
+                vec![r.run_id.clone().into(), r.obligation_seq.into(), r.status.into(), now_ms().into()],
             )
-            .optional()
+            .await
+            .map_err(db)?;
+        let sql = format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND seq=?2");
+        let rec = self
+            .s()
+            .query_opt(&sql, vec![r.run_id.into(), r.obligation_seq.into()])
+            .await
             .map_err(db)?
+            .map(|row| obligation_of(&row))
             .ok_or_else(|| Status::not_found("no such obligation"))?;
         Ok(Response::new(rec))
     }
@@ -716,15 +762,16 @@ impl Tape for TapeService {
         request: Request<SetBudgetRequest>,
     ) -> Result<Response<BudgetState>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        conn.execute(
-            "INSERT INTO tape_budget (run_id, usd_cap, token_cap, usd_spent, tokens_spent) \
-             VALUES (?1,?2,?3,0,0) \
-             ON CONFLICT(run_id) DO UPDATE SET usd_cap=excluded.usd_cap, token_cap=excluded.token_cap",
-            params![r.run_id, r.usd_cap, r.token_cap],
-        )
-        .map_err(db)?;
-        Ok(Response::new(budget_state(&conn, &r.run_id).map_err(db)?))
+        self.s()
+            .exec(
+                "INSERT INTO tape_budget (run_id, usd_cap, token_cap, usd_spent, tokens_spent) \
+                 VALUES (?1,?2,?3,0,0) \
+                 ON CONFLICT(run_id) DO UPDATE SET usd_cap=excluded.usd_cap, token_cap=excluded.token_cap",
+                vec![r.run_id.clone().into(), r.usd_cap.into(), r.token_cap.into()],
+            )
+            .await
+            .map_err(db)?;
+        Ok(Response::new(budget_state(self.s(), &r.run_id).await.map_err(db)?))
     }
 
     async fn admit_budget(
@@ -732,8 +779,7 @@ impl Tape for TapeService {
         request: Request<AdmitBudgetRequest>,
     ) -> Result<Response<AdmitBudgetResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let b = budget_state(&conn, &r.run_id).map_err(db)?;
+        let b = budget_state(self.s(), &r.run_id).await.map_err(db)?;
         let mut admitted = true;
         let mut reason = String::new();
         if b.usd_cap > 0.0 && b.usd_spent + r.usd_estimate > b.usd_cap {
@@ -762,14 +808,15 @@ impl Tape for TapeService {
         request: Request<ChargeBudgetRequest>,
     ) -> Result<Response<BudgetState>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        conn.execute(
-            "INSERT INTO tape_budget (run_id, usd_spent, tokens_spent) VALUES (?1,?2,?3) \
-             ON CONFLICT(run_id) DO UPDATE SET usd_spent = usd_spent + ?2, tokens_spent = tokens_spent + ?3",
-            params![r.run_id, r.usd, r.tokens],
-        )
-        .map_err(db)?;
-        Ok(Response::new(budget_state(&conn, &r.run_id).map_err(db)?))
+        self.s()
+            .exec(
+                "INSERT INTO tape_budget (run_id, usd_spent, tokens_spent) VALUES (?1,?2,?3) \
+                 ON CONFLICT(run_id) DO UPDATE SET usd_spent = tape_budget.usd_spent + ?2, tokens_spent = tape_budget.tokens_spent + ?3",
+                vec![r.run_id.clone().into(), r.usd.into(), r.tokens.into()],
+            )
+            .await
+            .map_err(db)?;
+        Ok(Response::new(budget_state(self.s(), &r.run_id).await.map_err(db)?))
     }
 
     // ─── gates / signals ────────────────────────────────────────────────────
@@ -779,50 +826,56 @@ impl Tape for TapeService {
         request: Request<AwaitSignalRequest>,
     ) -> Result<Response<AwaitSignalResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
         let ts = now_ms();
-        // Was the signal already delivered (a re-drive after SendSignal)? -> hand it over.
-        let delivered: Option<(i32, i32, String)> = conn
-            .query_row(
-                "SELECT delivered, consumed, resolution_json FROM tape_signals WHERE run_id=?1 AND gate_name=?2",
-                params![r.run_id, r.gate_name],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        let delivered = self
+            .s()
+            .query_opt(
+                "SELECT delivered, resolution_json FROM tape_signals WHERE run_id=?1 AND gate_name=?2",
+                vec![r.run_id.clone().into(), r.gate_name.clone().into()],
             )
-            .optional()
+            .await
             .map_err(db)?;
-        if let Some((1, _, resolution)) = delivered {
-            conn.execute(
-                "UPDATE tape_signals SET consumed=1 WHERE run_id=?1 AND gate_name=?2",
-                params![r.run_id, r.gate_name],
-            )
-            .map_err(db)?;
-            return Ok(Response::new(AwaitSignalResponse {
-                delivered: true,
-                resolution_json: resolution,
-            }));
+        if let Some(row) = delivered {
+            if row.i64(0) == 1 {
+                self.s()
+                    .exec(
+                        "UPDATE tape_signals SET consumed=1 WHERE run_id=?1 AND gate_name=?2",
+                        vec![r.run_id.clone().into(), r.gate_name.clone().into()],
+                    )
+                    .await
+                    .map_err(db)?;
+                return Ok(Response::new(AwaitSignalResponse {
+                    delivered: true,
+                    resolution_json: row.str(1),
+                }));
+            }
         }
-        // Otherwise: park the run on this gate.
-        conn.execute(
-            "INSERT INTO tape_signals (run_id, gate_name, context_json, awaited, created_at_ms) \
-             VALUES (?1,?2,?3,1,?4) \
-             ON CONFLICT(run_id, gate_name) DO UPDATE SET awaited=1, context_json=excluded.context_json",
-            params![r.run_id, r.gate_name, r.payload_json, ts],
-        )
-        .map_err(db)?;
-        let seq = next_seq(&conn, &r.run_id).map_err(db)?;
-        conn.execute(
-            "UPDATE tape_runs SET status=?2, waiting_on_gate=?3, lease_owner='' WHERE run_id=?1",
-            params![r.run_id, RunStatus::Waiting as i32, r.gate_name],
-        )
-        .map_err(db)?;
+        self.s()
+            .exec(
+                "INSERT INTO tape_signals (run_id, gate_name, context_json, awaited, created_at_ms) \
+                 VALUES (?1,?2,?3,1,?4) \
+                 ON CONFLICT(run_id, gate_name) DO UPDATE SET awaited=1, context_json=excluded.context_json",
+                vec![r.run_id.clone().into(), r.gate_name.clone().into(), r.payload_json.into(), ts.into()],
+            )
+            .await
+            .map_err(db)?;
+        let seq = next_seq(self.s(), &r.run_id).await.map_err(db)?;
+        self.s()
+            .exec(
+                "UPDATE tape_runs SET status=?2, waiting_on_gate=?3, lease_owner='' WHERE run_id=?1",
+                vec![r.run_id.clone().into(), (RunStatus::Waiting as i32).into(), r.gate_name.clone().into()],
+            )
+            .await
+            .map_err(db)?;
         journal(
-            &conn,
+            self.s(),
             &r.run_id,
             seq,
             "gate",
             &serde_json::json!({"gate": r.gate_name, "status": "waiting"}).to_string(),
             ts,
         )
+        .await
         .map_err(db)?;
         Ok(Response::new(AwaitSignalResponse {
             delivered: false,
@@ -835,56 +888,60 @@ impl Tape for TapeService {
         request: Request<SendSignalRequest>,
     ) -> Result<Response<SendSignalResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
         let ts = now_ms();
-        // Resolve the run.
         let run_id = if !r.run_id.is_empty() {
             r.run_id.clone()
         } else {
-            conn.query_row(
-                "SELECT run_id FROM tape_runs WHERE app_name=?1 AND user_id=?2 AND session_id=?3 \
-                 ORDER BY started_at_ms DESC LIMIT 1",
-                params![r.app_name, r.user_id, r.session_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(db)?
-            .ok_or_else(|| Status::not_found("no run for that session"))?
+            self.s()
+                .query_opt(
+                    "SELECT run_id FROM tape_runs WHERE app_name=?1 AND user_id=?2 AND session_id=?3 \
+                     ORDER BY started_at_ms DESC LIMIT 1",
+                    vec![r.app_name.into(), r.user_id.into(), r.session_id.into()],
+                )
+                .await
+                .map_err(db)?
+                .map(|row| row.str(0))
+                .ok_or_else(|| Status::not_found("no run for that session"))?
         };
-        conn.execute(
-            "INSERT INTO tape_signals (run_id, gate_name, resolution_json, delivered, created_at_ms) \
-             VALUES (?1,?2,?3,1,?4) \
-             ON CONFLICT(run_id, gate_name) DO UPDATE SET resolution_json=excluded.resolution_json, delivered=1",
-            params![run_id, r.gate_name, r.resolution_json, ts],
-        )
-        .map_err(db)?;
-        // If the run is parked on this gate, release it.
-        let mut run_status = RunStatus::Unspecified;
-        let waiting_on: Option<String> = conn
-            .query_row(
-                "SELECT waiting_on_gate FROM tape_runs WHERE run_id=?1 AND status=?2",
-                params![run_id, RunStatus::Waiting as i32],
-                |row| row.get(0),
+        self.s()
+            .exec(
+                "INSERT INTO tape_signals (run_id, gate_name, resolution_json, delivered, created_at_ms) \
+                 VALUES (?1,?2,?3,1,?4) \
+                 ON CONFLICT(run_id, gate_name) DO UPDATE SET resolution_json=excluded.resolution_json, delivered=1",
+                vec![run_id.clone().into(), r.gate_name.clone().into(), r.resolution_json.into(), ts.into()],
             )
-            .optional()
+            .await
             .map_err(db)?;
+        let mut run_status = RunStatus::Unspecified;
+        let waiting_on = self
+            .s()
+            .query_opt(
+                "SELECT waiting_on_gate FROM tape_runs WHERE run_id=?1 AND status=?2",
+                vec![run_id.clone().into(), (RunStatus::Waiting as i32).into()],
+            )
+            .await
+            .map_err(db)?
+            .map(|row| row.str(0));
         if let Some(gate) = waiting_on {
             if gate == r.gate_name {
-                conn.execute(
-                    "UPDATE tape_runs SET status=?2, waiting_on_gate='' WHERE run_id=?1",
-                    params![run_id, RunStatus::Runnable as i32],
-                )
-                .map_err(db)?;
+                self.s()
+                    .exec(
+                        "UPDATE tape_runs SET status=?2, waiting_on_gate='' WHERE run_id=?1",
+                        vec![run_id.clone().into(), (RunStatus::Runnable as i32).into()],
+                    )
+                    .await
+                    .map_err(db)?;
                 run_status = RunStatus::Runnable;
-                if let Ok(seq) = next_seq(&conn, &run_id) {
+                if let Ok(seq) = next_seq(self.s(), &run_id).await {
                     let _ = journal(
-                        &conn,
+                        self.s(),
                         &run_id,
                         seq,
                         "gate",
                         &serde_json::json!({"gate": r.gate_name, "status": "released"}).to_string(),
                         ts,
-                    );
+                    )
+                    .await;
                 }
             }
         }
@@ -902,7 +959,6 @@ impl Tape for TapeService {
         request: Request<CreateSessionRequest>,
     ) -> Result<Response<Session>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
         let ts = now_ms();
         let session_id = if r.session_id.is_empty() {
             uuid::Uuid::new_v4().to_string()
@@ -910,12 +966,15 @@ impl Tape for TapeService {
             r.session_id.clone()
         };
         let state = if r.state_json.is_empty() { "{}".to_string() } else { r.state_json.clone() };
-        conn.execute(
-            "INSERT INTO tape_sessions (app_name, user_id, session_id, state_json, last_update_time_ms) \
-             VALUES (?1,?2,?3,?4,?5) \
-             ON CONFLICT(app_name, user_id, session_id) DO UPDATE SET state_json=excluded.state_json, last_update_time_ms=excluded.last_update_time_ms",
-            params![r.app_name, r.user_id, session_id, state, ts],
-        ).map_err(db)?;
+        self.s()
+            .exec(
+                "INSERT INTO tape_sessions (app_name, user_id, session_id, state_json, last_update_time_ms) \
+                 VALUES (?1,?2,?3,?4,?5) \
+                 ON CONFLICT(app_name, user_id, session_id) DO UPDATE SET state_json=excluded.state_json, last_update_time_ms=excluded.last_update_time_ms",
+                vec![r.app_name.clone().into(), r.user_id.clone().into(), session_id.clone().into(), state.clone().into(), ts.into()],
+            )
+            .await
+            .map_err(db)?;
         Ok(Response::new(Session {
             app_name: r.app_name,
             user_id: r.user_id,
@@ -931,40 +990,41 @@ impl Tape for TapeService {
         request: Request<GetSessionRequest>,
     ) -> Result<Response<GetSessionResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let row: Option<(String, i64)> = conn
-            .query_row(
+        let meta = self
+            .s()
+            .query_opt(
                 "SELECT state_json, last_update_time_ms FROM tape_sessions WHERE app_name=?1 AND user_id=?2 AND session_id=?3",
-                params![r.app_name, r.user_id, r.session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                vec![r.app_name.clone().into(), r.user_id.clone().into(), r.session_id.clone().into()],
             )
-            .optional()
+            .await
             .map_err(db)?;
-        let Some((state_json, last_update)) = row else {
+        let Some(meta) = meta else {
             return Ok(Response::new(GetSessionResponse { found: false, session: None }));
         };
+        let state_json = meta.str(0);
+        let last_update = meta.i64(1);
         let limit = if r.max_events > 0 { r.max_events } else { i64::MAX };
-        let mut stmt = conn
-            .prepare(
+        let rows = self
+            .s()
+            .query(
                 "SELECT event_id, invocation_id, author, branch, content_json, actions_json, timestamp_ms \
                  FROM tape_events WHERE app_name=?1 AND user_id=?2 AND session_id=?3 ORDER BY ord LIMIT ?4",
+                vec![r.app_name.clone().into(), r.user_id.clone().into(), r.session_id.clone().into(), limit.into()],
             )
+            .await
             .map_err(db)?;
-        let events: Vec<EventRecord> = stmt
-            .query_map(params![r.app_name, r.user_id, r.session_id, limit], |row| {
-                Ok(EventRecord {
-                    id: row.get(0)?,
-                    invocation_id: row.get(1)?,
-                    author: row.get(2)?,
-                    branch: row.get(3)?,
-                    content_json: row.get(4)?,
-                    actions_json: row.get(5)?,
-                    timestamp_ms: row.get(6)?,
-                })
+        let events = rows
+            .iter()
+            .map(|row| EventRecord {
+                id: row.str(0),
+                invocation_id: row.str(1),
+                author: row.str(2),
+                branch: row.str(3),
+                content_json: row.str(4),
+                actions_json: row.str(5),
+                timestamp_ms: row.i64(6),
             })
-            .map_err(db)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(db)?;
+            .collect();
         Ok(Response::new(GetSessionResponse {
             found: true,
             session: Some(Session {
@@ -983,26 +1043,25 @@ impl Tape for TapeService {
         request: Request<ListSessionsRequest>,
     ) -> Result<Response<ListSessionsResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let mut stmt = conn
-            .prepare(
+        let rows = self
+            .s()
+            .query(
                 "SELECT session_id, state_json, last_update_time_ms FROM tape_sessions WHERE app_name=?1 AND user_id=?2 ORDER BY last_update_time_ms DESC",
+                vec![r.app_name.clone().into(), r.user_id.clone().into()],
             )
+            .await
             .map_err(db)?;
-        let sessions: Vec<Session> = stmt
-            .query_map(params![r.app_name, r.user_id], |row| {
-                Ok(Session {
-                    app_name: r.app_name.clone(),
-                    user_id: r.user_id.clone(),
-                    session_id: row.get(0)?,
-                    state_json: row.get(1)?,
-                    events: vec![],
-                    last_update_time_ms: row.get(2)?,
-                })
+        let sessions = rows
+            .iter()
+            .map(|row| Session {
+                app_name: r.app_name.clone(),
+                user_id: r.user_id.clone(),
+                session_id: row.str(0),
+                state_json: row.str(1),
+                events: vec![],
+                last_update_time_ms: row.i64(2),
             })
-            .map_err(db)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(db)?;
+            .collect();
         Ok(Response::new(ListSessionsResponse { sessions }))
     }
 
@@ -1011,18 +1070,21 @@ impl Tape for TapeService {
         request: Request<DeleteSessionRequest>,
     ) -> Result<Response<DeleteSessionResponse>, Status> {
         let r = request.into_inner();
-        let conn = self.store.conn();
-        let n = conn
-            .execute(
+        let n = self
+            .s()
+            .exec(
                 "DELETE FROM tape_sessions WHERE app_name=?1 AND user_id=?2 AND session_id=?3",
-                params![r.app_name, r.user_id, r.session_id],
+                vec![r.app_name.clone().into(), r.user_id.clone().into(), r.session_id.clone().into()],
             )
+            .await
             .map_err(db)?;
-        conn.execute(
-            "DELETE FROM tape_events WHERE app_name=?1 AND user_id=?2 AND session_id=?3",
-            params![r.app_name, r.user_id, r.session_id],
-        )
-        .map_err(db)?;
+        self.s()
+            .exec(
+                "DELETE FROM tape_events WHERE app_name=?1 AND user_id=?2 AND session_id=?3",
+                vec![r.app_name.into(), r.user_id.into(), r.session_id.into()],
+            )
+            .await
+            .map_err(db)?;
         Ok(Response::new(DeleteSessionResponse { deleted: n > 0 }))
     }
 
@@ -1035,51 +1097,53 @@ impl Tape for TapeService {
             .event
             .ok_or_else(|| Status::invalid_argument("append_event: missing event"))?;
         let ts = if ev.timestamp_ms > 0 { ev.timestamp_ms } else { now_ms() };
-        let mut guard = self.store.conn();
-        let tx = guard.transaction().map_err(db)?;
 
-        // append order = current max + 1
-        let ord: i64 = tx
-            .query_row(
+        // ord = current max + 1 (a minor race across concurrent invocations on
+        // the same session is acceptable — events within one invocation are
+        // serialized; the upsert below carries the merged state in the same txn).
+        let ord = self
+            .s()
+            .query_opt(
                 "SELECT COALESCE(MAX(ord), -1) + 1 FROM tape_events WHERE app_name=?1 AND user_id=?2 AND session_id=?3",
-                params![r.app_name, r.user_id, r.session_id],
-                |row| row.get(0),
+                vec![r.app_name.clone().into(), r.user_id.clone().into(), r.session_id.clone().into()],
             )
-            .map_err(db)?;
-        tx.execute(
-            "INSERT INTO tape_events (app_name, user_id, session_id, ord, event_id, invocation_id, author, branch, content_json, actions_json, timestamp_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![r.app_name, r.user_id, r.session_id, ord, ev.id, ev.invocation_id, ev.author, ev.branch, ev.content_json, ev.actions_json, ts],
-        ).map_err(db)?;
+            .await
+            .map_err(db)?
+            .map(|row| row.i64(0))
+            .unwrap_or(0);
+        let cur_state = self
+            .s()
+            .query_opt(
+                "SELECT state_json FROM tape_sessions WHERE app_name=?1 AND user_id=?2 AND session_id=?3",
+                vec![r.app_name.clone().into(), r.user_id.clone().into(), r.session_id.clone().into()],
+            )
+            .await
+            .map_err(db)?
+            .map(|row| row.str(0))
+            .unwrap_or_else(|| "{}".to_string());
+        let delta = if r.state_delta_json.is_empty() { "{}".to_string() } else { r.state_delta_json.clone() };
+        let merged = merge_json(&cur_state, &delta);
 
-        // apply state_delta in the same txn (run-scoped keys only here; the
-        // user:/app: prefixes go to tape_scoped_state — left simple for v1).
-        if !r.state_delta_json.is_empty() && r.state_delta_json != "{}" {
-            let cur: String = tx
-                .query_row(
-                    "SELECT state_json FROM tape_sessions WHERE app_name=?1 AND user_id=?2 AND session_id=?3",
-                    params![r.app_name, r.user_id, r.session_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(db)?
-                .unwrap_or_else(|| "{}".to_string());
-            let merged = merge_json(&cur, &r.state_delta_json);
-            tx.execute(
-                "INSERT INTO tape_sessions (app_name, user_id, session_id, state_json, last_update_time_ms) \
-                 VALUES (?1,?2,?3,?4,?5) \
-                 ON CONFLICT(app_name, user_id, session_id) DO UPDATE SET state_json=excluded.state_json, last_update_time_ms=excluded.last_update_time_ms",
-                params![r.app_name, r.user_id, r.session_id, merged, ts],
-            ).map_err(db)?;
-        } else {
-            tx.execute(
-                "INSERT INTO tape_sessions (app_name, user_id, session_id, state_json, last_update_time_ms) \
-                 VALUES (?1,?2,?3,'{}',?4) \
-                 ON CONFLICT(app_name, user_id, session_id) DO UPDATE SET last_update_time_ms=excluded.last_update_time_ms",
-                params![r.app_name, r.user_id, r.session_id, ts],
-            ).map_err(db)?;
-        }
-        tx.commit().map_err(db)?;
+        self.s()
+            .tx(vec![
+                (
+                    "INSERT INTO tape_events (app_name, user_id, session_id, ord, event_id, invocation_id, author, branch, content_json, actions_json, timestamp_ms) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)".to_string(),
+                    vec![
+                        r.app_name.clone().into(), r.user_id.clone().into(), r.session_id.clone().into(),
+                        ord.into(), ev.id.clone().into(), ev.invocation_id.clone().into(), ev.author.clone().into(),
+                        ev.branch.clone().into(), ev.content_json.clone().into(), ev.actions_json.clone().into(), ts.into(),
+                    ],
+                ),
+                (
+                    "INSERT INTO tape_sessions (app_name, user_id, session_id, state_json, last_update_time_ms) \
+                     VALUES (?1,?2,?3,?4,?5) \
+                     ON CONFLICT(app_name, user_id, session_id) DO UPDATE SET state_json=excluded.state_json, last_update_time_ms=excluded.last_update_time_ms".to_string(),
+                    vec![r.app_name.clone().into(), r.user_id.clone().into(), r.session_id.clone().into(), merged.into(), ts.into()],
+                ),
+            ])
+            .await
+            .map_err(db)?;
         Ok(Response::new(AppendEventResponse {
             event: Some(EventRecord { timestamp_ms: ts, ..ev }),
             last_update_time_ms: ts,
@@ -1087,83 +1151,104 @@ impl Tape for TapeService {
     }
 }
 
-/// Shallow-merge `delta` (a JSON object) into `base` (a JSON object). A `null`
-/// value in the delta deletes the key.
-fn merge_json(base: &str, delta: &str) -> String {
-    let mut b: serde_json::Value = serde_json::from_str(base).unwrap_or(serde_json::json!({}));
-    let d: serde_json::Value = serde_json::from_str(delta).unwrap_or(serde_json::json!({}));
-    if let (Some(bo), Some(dobj)) = (b.as_object_mut(), d.as_object()) {
-        for (k, v) in dobj {
-            if v.is_null() {
-                bo.remove(k);
-            } else {
-                bo.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    b.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::open;
 
     #[test]
     fn key_names_the_decision_not_the_inputs() {
         let k = derive_key("run-1", 0, "execute_sweep", 0);
         assert_eq!(k, "run-1/decision-0/execute_sweep/0");
-        // Same decision, same call -> same key, regardless of any recomputed args.
         assert_eq!(k, derive_key("run-1", 0, "execute_sweep", 0));
-        // A second call of the same tool under the same decision is distinct.
         assert_ne!(k, derive_key("run-1", 0, "execute_sweep", 1));
-        // No authorizing decision -> a stable "no-decision" key.
         assert_eq!(derive_key("run-1", -1, "post_gl", 0), "run-1/no-decision/post_gl/0");
     }
 
     #[test]
     fn merge_json_shallow_with_null_delete() {
-        assert_eq!(merge_json("{}", "{\"a\":1}"), "{\"a\":1}");
         let m = merge_json("{\"a\":1,\"b\":2}", "{\"b\":3,\"c\":4}");
         let v: serde_json::Value = serde_json::from_str(&m).unwrap();
         assert_eq!(v["a"], 1);
         assert_eq!(v["b"], 3);
         assert_eq!(v["c"], 4);
-        // null deletes
         let m = merge_json("{\"a\":1,\"b\":2}", "{\"b\":null}");
         let v: serde_json::Value = serde_json::from_str(&m).unwrap();
         assert!(v.get("b").is_none());
         assert_eq!(v["a"], 1);
     }
 
-    #[test]
-    fn effect_lifecycle_in_store() {
-        // A tiny end-to-end over the store: begin_run -> begin_effect (pending)
-        // -> complete_effect (confirmed) -> get_effect sees confirmed; a second
-        // begin_effect for the same key short-circuits.
-        let store = std::sync::Arc::new(Store::open(":memory:").unwrap());
-        let conn = store.conn();
-        let ts = now_ms();
-        conn.execute(
-            "INSERT INTO tape_runs (run_id, app_name, user_id, session_id, invocation_id, status, seq_cursor, lease_owner, lease_expires_at_ms, started_at_ms) \
-             VALUES ('r','a','u','s','inv',2,0,'',0,?1)",
-            params![ts],
-        ).unwrap();
-        // begin_effect: write pending
-        let seq = next_seq(&conn, "r").unwrap();
-        conn.execute(
-            "INSERT INTO tape_effects (run_id, seq, decision_index, tool_name, idempotency_key, status, request_json, response_json, error_json, ts_ms) \
-             VALUES ('r',?1,0,'execute_sweep','r/decision-0/execute_sweep/0',?2,'{}','','',?3)",
-            params![seq, EffectStatus::Pending as i32, ts],
-        ).unwrap();
-        let e = read_effect(&conn, "r", "r/decision-0/execute_sweep/0").unwrap().unwrap();
-        assert_eq!(e.status, EffectStatus::Pending as i32);
-        // complete: confirmed
-        conn.execute(
-            "UPDATE tape_effects SET status=?1, response_json='{\"wire_id\":\"w1\"}' WHERE run_id='r' AND idempotency_key='r/decision-0/execute_sweep/0'",
-            params![EffectStatus::Confirmed as i32],
-        ).unwrap();
-        let e = read_effect(&conn, "r", "r/decision-0/execute_sweep/0").unwrap().unwrap();
-        assert_eq!(e.status, EffectStatus::Confirmed as i32);
-        assert!(e.response_json.contains("wire_id"));
+    #[tokio::test]
+    async fn effect_lifecycle_over_the_store() {
+        let store = open(":memory:").await.unwrap();
+        let svc = TapeService::new(store);
+        // begin a run
+        let run = svc
+            .begin_run(Request::new(BeginRunRequest {
+                app_name: "a".into(), user_id: "u".into(), session_id: "s".into(),
+                invocation_id: "inv".into(), lease_owner: "t".into(), lease_ttl_ms: 60_000,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!run.resumed);
+        let rid = run.run_id;
+        // a decision
+        svc.record_decision(Request::new(RecordDecisionRequest {
+            run_id: rid.clone(), decision_index: 0, model: "m".into(),
+            request_json: "{}".into(), response_json: "{\"plan\":1}".into(),
+            rationale: "".into(), policy_version: "p1".into(),
+        }))
+        .await
+        .unwrap();
+        assert!(svc.get_decision(Request::new(GetDecisionRequest { run_id: rid.clone(), decision_index: 0 })).await.unwrap().into_inner().found);
+        // begin an effect -> PENDING
+        let be = svc
+            .begin_effect(Request::new(BeginEffectRequest {
+                run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
+                call_index: 0, request_json: "{}".into(), custom_key: "".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(be.status, EffectStatus::Pending as i32);
+        assert_eq!(be.idempotency_key, format!("{rid}/decision-0/execute_sweep/0"));
+        // a second begin short-circuits to PENDING
+        let be2 = svc
+            .begin_effect(Request::new(BeginEffectRequest {
+                run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
+                call_index: 0, request_json: "{}".into(), custom_key: "".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(be2.status, EffectStatus::Pending as i32);
+        // complete -> CONFIRMED
+        svc.complete_effect(Request::new(CompleteEffectRequest {
+            run_id: rid.clone(), idempotency_key: be.idempotency_key.clone(),
+            status: EffectStatus::Confirmed as i32, response_json: "{\"wire_id\":\"w1\"}".into(), error_json: "".into(),
+        }))
+        .await
+        .unwrap();
+        let ge = svc.get_effect(Request::new(GetEffectRequest { run_id: rid.clone(), idempotency_key: be.idempotency_key.clone() })).await.unwrap().into_inner();
+        assert!(ge.found);
+        assert_eq!(ge.effect.as_ref().unwrap().status, EffectStatus::Confirmed as i32);
+        assert!(ge.effect.unwrap().response_json.contains("wire_id"));
+        // budget admit/charge
+        svc.set_budget(Request::new(SetBudgetRequest { run_id: rid.clone(), usd_cap: 1.0, token_cap: 0 })).await.unwrap();
+        assert!(svc.admit_budget(Request::new(AdmitBudgetRequest { run_id: rid.clone(), usd_estimate: 0.5, token_estimate: 0 })).await.unwrap().into_inner().admitted);
+        svc.charge_budget(Request::new(ChargeBudgetRequest { run_id: rid.clone(), usd: 0.9, tokens: 0 })).await.unwrap();
+        assert!(!svc.admit_budget(Request::new(AdmitBudgetRequest { run_id: rid.clone(), usd_estimate: 0.5, token_estimate: 0 })).await.unwrap().into_inner().admitted);
+        // end the run
+        svc.end_run(Request::new(EndRunRequest { run_id: rid.clone(), status: RunStatus::Terminal as i32, detail_json: "".into() })).await.unwrap();
+        assert_eq!(svc.get_run(Request::new(GetRunRequest { run_id: rid.clone() })).await.unwrap().into_inner().status, RunStatus::Terminal as i32);
+        // a re-begin_run finds the existing (TERMINAL) run
+        let again = svc.begin_run(Request::new(BeginRunRequest {
+            app_name: "a".into(), user_id: "u".into(), session_id: "s".into(),
+            invocation_id: "inv".into(), lease_owner: "t".into(), lease_ttl_ms: 60_000,
+        })).await.unwrap().into_inner();
+        assert!(again.resumed);
+        assert_eq!(again.run_id, rid);
+        assert_eq!(again.status, RunStatus::Terminal as i32);
     }
 }
