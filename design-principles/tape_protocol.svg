@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title>The Tape Protocol</title>
+  <desc>The Tape Protocol — the tape.proto RPC surface grouped by ledger: run lifecycle, decisions, effects, obligations, budget, gates, and the ADK SessionService shim.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 17px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="760"/>
+  <text x="60" y="64" class="title">The Tape Protocol</text>
+  <text x="60" y="94" class="subtitle">One gRPC service. Every mutating RPC carries (run_id, seq) and is safe to retry.</text>
+
+  <!-- run lifecycle -->
+  <rect x="60" y="125" width="540" height="150" rx="14" class="soft"/>
+  <text x="80" y="150" class="label">Run lifecycle</text>
+  <text x="80" y="176" class="mono">BeginRun · ResumeRun · EndRun · GetRun</text>
+  <text x="80" y="200" class="mono">SubscribeRun  → stream JournalEntry</text>
+  <text x="80" y="226" class="small">a run = (app_name, user_id, session_id, invocation_id);</text>
+  <text x="80" y="246" class="small">status ∈ {runnable, running, waiting, terminal, failed, compensating, stuck}</text>
+
+  <!-- decisions -->
+  <rect x="620" y="125" width="520" height="150" rx="14" class="blue"/>
+  <text x="640" y="150" class="label">Decision ledger</text>
+  <text x="640" y="176" class="mono">RecordDecision   (model, request, response,</text>
+  <text x="640" y="196" class="mono">                  rationale, policy_version)</text>
+  <text x="640" y="222" class="mono">GetDecision      → DecisionRecord   [re-drive]</text>
+  <text x="640" y="248" class="small">before_model returns a recorded LlmResponse → ADK skips the model call</text>
+
+  <!-- effects -->
+  <rect x="60" y="295" width="540" height="200" rx="14" class="green"/>
+  <text x="80" y="320" class="label">Effect ledger</text>
+  <text x="80" y="346" class="mono">BeginEffect      → key, lease  [writes pending,</text>
+  <text x="80" y="366" class="mono">                                commits first]</text>
+  <text x="80" y="392" class="mono">CompleteEffect   (confirmed | failed | unknown)</text>
+  <text x="80" y="418" class="mono">GetEffect        → EffectRecord  [short-circuit]</text>
+  <text x="80" y="444" class="mono">ReconcileEffect  → EffectRecord  [resolves unknown]</text>
+  <text x="80" y="470" class="small">idempotency_key = run/decision-N/&lt;tool&gt; — names the decision, not its inputs</text>
+
+  <!-- obligations -->
+  <rect x="620" y="295" width="520" height="95" rx="14" class="red"/>
+  <text x="640" y="320" class="label">Obligations / compensation</text>
+  <text x="640" y="346" class="mono">RegisterCompensation   Compensate  [LIFO]</text>
+  <text x="640" y="372" class="small">a confirmed effect with a declared inverse → an obligation row, same txn</text>
+
+  <!-- budget -->
+  <rect x="620" y="400" width="520" height="95" rx="14" class="amber"/>
+  <text x="640" y="425" class="label">Budget</text>
+  <text x="640" y="451" class="mono">AdmitBudget  [refuse if over]   ChargeBudget</text>
+  <text x="640" y="477" class="small">caps + spent counters are run state — read back on resume</text>
+
+  <!-- gates -->
+  <rect x="60" y="515" width="540" height="95" rx="14" class="soft"/>
+  <text x="80" y="540" class="label">Gates / signals</text>
+  <text x="80" y="566" class="mono">AwaitSignal  [parks the run]   SendSignal</text>
+  <text x="80" y="592" class="small">a gate = LongRunningFunctionTool → status=waiting; SendSignal → runnable</text>
+
+  <!-- session shim -->
+  <rect x="620" y="515" width="520" height="120" rx="14" class="box"/>
+  <text x="640" y="540" class="label">ADK SessionService shim</text>
+  <text x="640" y="566" class="mono">CreateSession · GetSession · ListSessions</text>
+  <text x="640" y="586" class="mono">DeleteSession · AppendEvent</text>
+  <text x="640" y="612" class="small">AppendEvent = the Event + state_delta + the tape projections, in ONE txn</text>
+
+  <rect x="230" y="660" width="740" height="44" rx="10" class="soft"/>
+  <text x="600" y="688" class="label" text-anchor="middle">The contract is the proto. The SDKs are thin clients over it.</text>
+</svg>

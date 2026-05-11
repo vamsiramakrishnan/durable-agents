@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="740" viewBox="0 0 1200 740" role="img" aria-labelledby="title desc">
+  <title>What Tape Captures for Resumability</title>
+  <desc>What Tape Captures for Resumability — six kinds of state, each written append-only in one Postgres transaction together with the ADK event it corresponds to.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 33px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 17px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 12.5px ui-sans-serif, system-ui, sans-serif; fill: #686868; }
+      .mono { font: 500 12.5px ui-monospace, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; }
+      .line { stroke: #1f1f1f; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #686868; stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="740"/>
+  <text x="60" y="62" class="title">What Tape Captures for Resumability</text>
+  <text x="60" y="92" class="subtitle">Reconstructed, not restored. Six kinds of state — append-only — each in one txn with its ADK event.</text>
+
+  <!-- six cards -->
+  <rect x="60" y="120" width="350" height="118" rx="12" class="box"/>
+  <text x="80" y="146" class="label">1 · Conversation state</text>
+  <text x="80" y="170" class="small">ADK Session — events list + state dict</text>
+  <text x="80" y="190" class="mono">tape_events · tape_state</text>
+  <text x="80" y="212" class="tiny">written by TapeSessionService.append_event;</text>
+  <text x="80" y="228" class="tiny">get_session rebuilds it on resume</text>
+
+  <rect x="425" y="120" width="350" height="118" rx="12" class="blue"/>
+  <text x="445" y="146" class="label">2 · Decision state</text>
+  <text x="445" y="170" class="small">every LlmResponse, keyed by call ordinal</text>
+  <text x="445" y="190" class="mono">tape_decisions  (run_id, seq, …)</text>
+  <text x="445" y="212" class="tiny">after_model records · before_model replays:</text>
+  <text x="445" y="228" class="tiny">re-drive gets the SAME decision</text>
+
+  <rect x="790" y="120" width="350" height="118" rx="12" class="green"/>
+  <text x="810" y="146" class="label">3 · Effect state</text>
+  <text x="810" y="170" class="small">every tool call — intent first, then outcome</text>
+  <text x="810" y="190" class="mono">tape_effects  (status, idempotency_key, …)</text>
+  <text x="810" y="212" class="tiny">BeginEffect writes pending &amp; commits;</text>
+  <text x="810" y="228" class="tiny">confirmed → before_tool short-circuits the body</text>
+
+  <rect x="60" y="252" width="350" height="118" rx="12" class="amber"/>
+  <text x="80" y="278" class="label">4 · Budget state</text>
+  <text x="80" y="302" class="small">caps + spent counters</text>
+  <text x="80" y="322" class="mono">tape_budget  (usd_cap, usd_spent, …)</text>
+  <text x="80" y="344" class="tiny">AdmitBudget before · ChargeBudget after,</text>
+  <text x="80" y="360" class="tiny">same txn — crashed at $40/$50 resumes at $40</text>
+
+  <rect x="425" y="252" width="350" height="118" rx="12" class="red"/>
+  <text x="445" y="278" class="label">5 · Obligation state</text>
+  <text x="445" y="302" class="small">compensation handles</text>
+  <text x="445" y="322" class="mono">tape_obligations  (kind, payload, status)</text>
+  <text x="445" y="344" class="tiny">registered with each confirmed effect, same txn;</text>
+  <text x="445" y="360" class="tiny">a later failure runs them LIFO</text>
+
+  <rect x="790" y="252" width="350" height="118" rx="12" class="soft"/>
+  <text x="810" y="278" class="label">6 · Gate state</text>
+  <text x="810" y="302" class="small">which run waits on which signal</text>
+  <text x="810" y="322" class="mono">tape_signals + tape_runs.status = waiting</text>
+  <text x="810" y="344" class="tiny">LongRunningFunctionTool parks; SendSignal</text>
+  <text x="810" y="360" class="tiny">flips to runnable — survives any deploy</text>
+
+  <!-- the txn band -->
+  <rect x="120" y="410" width="960" height="96" rx="14" class="green"/>
+  <text x="600" y="438" class="label" text-anchor="middle">One Postgres transaction per step</text>
+  <text x="600" y="464" class="mono" text-anchor="middle">append the ADK Event  +  apply state_delta  +  write the tape_decisions / tape_effects / tape_obligations row  +  update tape_budget</text>
+  <text x="600" y="490" class="tiny" text-anchor="middle">the event stream and the ledger never disagree — they commit together</text>
+
+  <path d="M235,238 L520,410" class="dash"/>
+  <path d="M600,238 L600,410" class="dash"/>
+  <path d="M965,238 L680,410" class="dash"/>
+  <path d="M235,370 L520,410" class="dash"/>
+  <path d="M600,370 L600,410" class="dash"/>
+  <path d="M965,370 L680,410" class="dash"/>
+
+  <!-- resume arrow -->
+  <rect x="120" y="540" width="450" height="150" rx="14" class="box"/>
+  <text x="140" y="566" class="label">On resume</text>
+  <text x="140" y="592" class="small">runner.run(invocation_id = stored)</text>
+  <text x="140" y="616" class="small">→ get_session rebuilds events + state</text>
+  <text x="140" y="640" class="small">→ ADK re-drives the agent</text>
+  <text x="140" y="664" class="small">→ Tape replays decisions, skips confirmed effects</text>
+  <text x="140" y="684" class="tiny">… until the first seq it has no record of — the resume point</text>
+
+  <rect x="610" y="540" width="470" height="150" rx="14" class="red"/>
+  <text x="630" y="566" class="label">The one window of doubt</text>
+  <text x="630" y="592" class="small">crash between BeginEffect(pending) and CompleteEffect</text>
+  <text x="630" y="616" class="small">→ a pending row survives — never a silent gap</text>
+  <text x="630" y="640" class="small">→ the reconciler calls the registered status check</text>
+  <text x="630" y="664" class="small">→ flips to confirmed (record result) or re-issues (same key)</text>
+  <text x="630" y="684" class="tiny">without a status check: re-runs idempotently within the counterparty's window</text>
+
+  <path d="M345,506 L345,540" class="line"/>
+  <path d="M845,506 L845,540" class="line"/>
+</svg>
