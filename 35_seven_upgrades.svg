@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+  <title>Seven Upgrades, Today → Better</title>
+  <desc>Seven steps from a coarse proto-journal toward a real one, for coding harnesses.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .num{font:700 17px ui-serif,Georgia,serif;fill:#8a8a8a}
+      .name{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .now{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .better{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .mono{font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#4E745B}
+      .nbox{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.4;rx:12}
+      .tbox{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.4;rx:10}
+      .bbox{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.5;rx:10}
+      .line{stroke:#1f1f1f;stroke-width:2.4;fill:none;marker-end:url(#arrow)}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="820"/>
+  <text x="60" y="54" class="title">Seven Upgrades, Today → Better</text>
+  <text x="60" y="82" class="subtitle">Each is a step from a coarse proto-journal toward a real one — and none of them is exotic.</text>
+
+  <text x="140" y="116" class="now" fill="#8A3C3C" text-anchor="middle" font-weight="700">TODAY</text>
+  <text x="850" y="116" class="better" fill="#4E745B" text-anchor="middle" font-weight="700">BETTER</text>
+
+  <!-- 7 rows, each ~92px tall, starting y=130 -->
+  <!-- 1 -->
+  <text x="76" y="160" class="num">①</text><rect x="100" y="132" width="40" height="84" class="nbox" fill="none" stroke="none"/>
+  <rect x="100" y="132" width="380" height="84" class="tbox"/><text x="120" y="156" class="name">snapshot = a whole-tree copy</text><text x="120" y="178" class="now">O(repo) per turn — slow, fat</text>
+  <path d="M484,174 L556,174" class="line"/>
+  <rect x="560" y="132" width="560" height="84" class="bbox"/><text x="580" y="156" class="name">content-addressed / copy-on-write</text><text x="580" y="178" class="now">git objects · APFS clones · overlayfs — checkpoint = O(touched bytes); or replay the diff log onto a base</text>
+  <!-- 2 -->
+  <text x="76" y="252" class="num">②</text>
+  <rect x="100" y="224" width="380" height="84" class="tbox"/><text x="120" y="248" class="name">snapshot at turn boundaries</text><text x="120" y="270" class="now">rewind to "before prompt N" only</text>
+  <path d="M484,266 L556,266" class="line"/>
+  <rect x="560" y="224" width="560" height="84" class="bbox"/><text x="580" y="248" class="name">snapshot at effect boundaries</text><text x="580" y="270" class="now">pre-edit snapshot per file-modifying tool call — rewind to "after edit 3 of 7" (Gemini already does this)</text>
+  <!-- 3 -->
+  <text x="76" y="344" class="num">③</text>
+  <rect x="100" y="316" width="380" height="84" class="tbox"/><text x="120" y="340" class="name">a file-mtime soup</text><text x="120" y="362" class="now">restore an arbitrary state, no provenance</text>
+  <path d="M484,358 L556,358" class="line"/>
+  <rect x="560" y="316" width="560" height="84" class="bbox"/><text x="580" y="340" class="name">diffs tagged with the decision that made them</text><text x="580" y="362" class="now">prompt + plan + test result → coherent unit; rewind one decision; cherry-pick one decision</text>
+  <!-- 4 -->
+  <text x="76" y="436" class="num">④</text>
+  <rect x="100" y="408" width="380" height="84" class="tbox"/><text x="120" y="432" class="name">snapshot the reversible, silently skip the rest</text><text x="120" y="454" class="now">pushes, publishes, comments — invisible</text>
+  <path d="M484,450 L556,450" class="line"/>
+  <rect x="560" y="408" width="560" height="84" class="bbox"/><text x="580" y="432" class="name">classify effects · gate the irreversible · record compensation handles</text><text x="580" y="454" class="now">reversible → snapshot; partial (commit) → record the SHA; irreversible (push/publish) → approval + a handle to undo</text>
+  <!-- 5 -->
+  <text x="76" y="528" class="num">⑤</text>
+  <rect x="100" y="500" width="380" height="84" class="tbox"/><text x="120" y="524" class="name">a private snapshot store</text><text x="120" y="546" class="now">reinventing what git already does</text>
+  <path d="M484,542 L556,542" class="line"/>
+  <rect x="560" y="500" width="560" height="84" class="bbox"/><text x="580" y="524" class="name">auto-commit to a hidden ref</text><text x="580" y="546" class="now"><tspan class="mono">refs/agent/&lt;run&gt;</tspan> — invisible to <tspan class="mono">git log</tspan>; "undo" = <tspan class="mono">git reset</tspan>; the reflog is the journal. The floor was already there.</text>
+  <!-- 6 -->
+  <text x="76" y="620" class="num">⑥</text>
+  <rect x="100" y="592" width="380" height="84" class="tbox"/><text x="120" y="616" class="name">an unbounded snapshot pile</text><text x="120" y="638" class="now">a sprint of edits, mostly irrelevant on replay</text>
+  <path d="M484,634 L556,634" class="line"/>
+  <rect x="560" y="592" width="560" height="84" class="bbox"/><text x="580" y="616" class="name">compaction at decision boundaries</text><text x="580" y="638" class="now">keep the last K fine-grained; coalesce the rest into a checkpoint (a merged sub-plan → one checkpoint)</text>
+  <!-- 7 -->
+  <text x="76" y="712" class="num">⑦</text>
+  <rect x="100" y="684" width="380" height="84" class="tbox"/><text x="120" y="708" class="name">cost is a vibe</text><text x="120" y="730" class="now">"is this attempt worth continuing?" — unknown</text>
+  <path d="M484,726 L556,726" class="line"/>
+  <rect x="560" y="684" width="560" height="84" class="bbox"/><text x="580" y="708" class="name">tokens / $ / wall-clock recorded next to each diff</text><text x="580" y="730" class="now">"abandon this branch — it's burned $4 with no green tests" is a query (Codex's --attempts N is the shape of this)</text>
+
+  <rect x="200" y="784" width="800" height="32" class="soft"/><text x="600" y="806" class="name" text-anchor="middle">The transcript is already a decent decision journal. These seven harden the *effect* side.</text>
+</svg>

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>Backward, Forward, Fork — None of Them Replay</title>
+  <desc>Rewind truncates the transcript and restores the file snapshot; forward re-samples the model; fork branches a new attempt from an earlier point.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-b" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#486A8F"/></marker>
+    <marker id="arrow-a" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#A36A28"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 31px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .h{font:700 16px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .small{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .u{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:14}
+      .a{fill:#EAE7DF;stroke:#8a8a8a;stroke-width:1.4;rx:14}
+      .a2{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.6;rx:14}
+      .snap{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.5;rx:8}
+      .chain{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .b{stroke:#486A8F;stroke-width:2;fill:none;marker-end:url(#arrow-b)}
+      .amber{stroke:#A36A28;stroke-width:2;fill:none;marker-end:url(#arrow-a)}
+      .cut{stroke:#8A3C3C;stroke-width:2.4;fill:none;stroke-dasharray:3 4}
+      .div{stroke:#d8d3c8;stroke-width:1.4}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="54" class="title">Backward, Forward, Fork — None of Them Replay</text>
+  <text x="60" y="82" class="subtitle">Rewind truncates and restores. Forward re-samples. Fork branches an attempt. A coding agent has no verbatim replay — and shouldn't.</text>
+
+  <!-- BACKWARD -->
+  <text x="60" y="130" class="h">BACKWARD — pick a point, truncate the transcript, restore the file snapshot taken there</text>
+  <g transform="translate(0,0)">
+    <rect x="80"  y="146" width="80" height="36" class="u"/><text x="120" y="169" class="small" text-anchor="middle">u1</text>
+    <rect x="200" y="146" width="80" height="36" class="a"/><text x="240" y="169" class="small" text-anchor="middle">a1</text>
+    <rect x="320" y="146" width="80" height="36" class="u"/><text x="360" y="169" class="small" text-anchor="middle">u2</text>
+    <rect x="440" y="146" width="80" height="36" class="a"/><text x="480" y="169" class="small" text-anchor="middle">a2</text>
+    <rect x="560" y="146" width="80" height="36" class="u"/><text x="600" y="169" class="small" text-anchor="middle">u3</text>
+    <rect x="680" y="146" width="80" height="36" class="a"/><text x="720" y="169" class="small" text-anchor="middle">a3 (now)</text>
+    <path d="M160,164 L200,164" class="chain"/><path d="M280,164 L320,164" class="chain"/><path d="M400,164 L440,164" class="chain"/><path d="M520,164 L560,164" class="chain"/><path d="M640,164 L680,164" class="chain"/>
+    <line x1="412" y1="130" x2="412" y2="200" class="cut"/><text x="420" y="200" class="tiny" fill="#8A3C3C">truncate after u2</text>
+    <rect x="320" y="216" width="200" height="30" class="snap"/><text x="420" y="236" class="tiny" text-anchor="middle">restore files to the snapshot @ u2</text>
+    <path d="M360,182 C360,196 380,210 400,214" class="b"/>
+    <text x="800" y="160" class="small">Claude /rewind: code &amp;/or convo</text><text x="800" y="178" class="small">Gemini /restore: code + convo</text><text x="800" y="196" class="small">Codex CLI: you do `git checkout`</text>
+  </g>
+
+  <line x1="60" y1="266" x2="1140" y2="266" class="div"/>
+
+  <!-- FORWARD -->
+  <text x="60" y="300" class="h">FORWARD from the rewound point — the model re-samples; the plan is non-deterministic</text>
+  <rect x="80"  y="316" width="80" height="36" class="u"/><text x="120" y="339" class="small" text-anchor="middle">u1</text>
+  <rect x="200" y="316" width="80" height="36" class="a"/><text x="240" y="339" class="small" text-anchor="middle">a1</text>
+  <rect x="320" y="316" width="80" height="36" class="u"/><text x="360" y="339" class="small" text-anchor="middle">u2</text>
+  <path d="M160,334 L200,334" class="chain"/><path d="M280,334 L320,334" class="chain"/>
+  <path d="M400,334 L440,334" class="amber"/>
+  <rect x="440" y="316" width="100" height="36" class="a2"/><text x="490" y="339" class="small" text-anchor="middle">a2′ ≠ a2</text>
+  <path d="M540,334 L580,334" class="amber"/>
+  <rect x="580" y="316" width="80" height="36" class="u"/><text x="620" y="339" class="small" text-anchor="middle">u3′</text>
+  <path d="M660,334 L700,334" class="amber"/><text x="730" y="338" class="small">…</text>
+  <text x="800" y="320" class="small">"Forward" = redo from here, knowing</text><text x="800" y="338" class="small">what you knew then — not "replay."</text><text x="800" y="356" class="tiny">re-running a coding agent verbatim reproduces nothing.</text>
+
+  <line x1="60" y1="386" x2="1140" y2="386" class="div"/>
+
+  <!-- FORK -->
+  <text x="60" y="420" class="h">FORK — keep the original thread, start a new branch from u2</text>
+  <rect x="80"  y="436" width="80" height="36" class="u"/><text x="120" y="459" class="small" text-anchor="middle">u1</text>
+  <rect x="200" y="436" width="80" height="36" class="a"/><text x="240" y="459" class="small" text-anchor="middle">a1</text>
+  <rect x="320" y="436" width="80" height="36" class="u"/><text x="360" y="459" class="small" text-anchor="middle">u2</text>
+  <path d="M160,454 L200,454" class="chain"/><path d="M280,454 L320,454" class="chain"/>
+  <!-- original branch continues -->
+  <path d="M400,448 C440,432 470,420 510,418" class="chain"/>
+  <rect x="510" y="400" width="80" height="36" class="a"/><text x="550" y="423" class="small" text-anchor="middle">a2</text>
+  <path d="M590,418 L630,418" class="chain"/><rect x="630" y="400" width="80" height="36" class="u"/><text x="670" y="423" class="small" text-anchor="middle">u3 …</text><text x="730" y="423" class="tiny">(the original — untouched)</text>
+  <!-- forked branch -->
+  <path d="M400,460 C440,476 470,488 510,490" class="amber"/>
+  <rect x="510" y="472" width="100" height="36" class="a2"/><text x="560" y="495" class="small" text-anchor="middle">a2″</text>
+  <path d="M610,490 L650,490" class="amber"/><rect x="650" y="472" width="80" height="36" class="u"/><text x="690" y="495" class="small" text-anchor="middle">u3″ …</text><text x="760" y="495" class="tiny">(a new attempt)</text>
+  <rect x="800" y="430" width="340" height="74" class="soft"/><text x="970" y="452" class="small" text-anchor="middle">Codex `--attempts N` = N forks from one prompt,</text><text x="970" y="470" class="small" text-anchor="middle">pick the winner. `codex fork` / `--fork-session` /</text><text x="970" y="488" class="small" text-anchor="middle">`/branch` = one fork, kept alongside the original.</text>
+
+  <rect x="200" y="560" width="800" height="56" class="soft"/><text x="600" y="582" class="h" text-anchor="middle">These harnesses already treat the transcript as memory, not as a deterministic log — which is the right move.</text><text x="600" y="602" class="small" text-anchor="middle">Resuming a coding agent reproduces the *situation* and lets it re-decide; it does not reproduce the outputs.</text>
+</svg>

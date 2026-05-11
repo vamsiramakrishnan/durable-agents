@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title>Precursors</title>
+  <desc>What coding harnesses already have (the decision ledger, a thin effect ledger, git underneath) and what they're missing (the obligation ledger, the effect taxonomy, action gates, shared-state coordination) — which is what the treatise calls the ceiling.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 34px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .colh{font:700 18px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .item{font:700 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .note{font:400 12.5px ui-sans-serif,system-ui,sans-serif;fill:#555}
+      .have{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.6;rx:12}
+      .partial{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.6;rx:12}
+      .missing{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.6;rx:12}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+      .line{stroke:#1f1f1f;stroke-width:2.4;fill:none;marker-end:url(#arrow)}
+      .div{stroke:#d8d3c8;stroke-width:1.6}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="640"/>
+  <text x="60" y="56" class="title">Precursors</text>
+  <text x="60" y="84" class="subtitle">What the harnesses already have, what they're missing — and why the missing part has a name.</text>
+
+  <!-- HAVE -->
+  <text x="290" y="124" class="colh" text-anchor="middle" fill="#4E745B">HAVE</text>
+  <rect x="60" y="138" width="460" height="58" class="have"/><text x="80" y="158" class="item">✓ the decision ledger — the transcript</text><text x="80" y="176" class="note">append-only · ordered · used as memory, not replayed verbatim (the right move)</text>
+  <rect x="60" y="204" width="460" height="58" class="partial"/><text x="80" y="224" class="item">◐ a thin effect ledger — the snapshot</text><text x="80" y="242" class="note">coarse (whole-file / whole-tree) · local files only · where it exists at all</text>
+  <rect x="60" y="270" width="460" height="58" class="have"/><text x="80" y="290" class="item">✓ git underneath — a real journal to lean on</text><text x="80" y="308" class="note">commits · branches · stash · reflog · restore · revert · worktrees</text>
+
+  <line x1="600" y1="120" x2="600" y2="360" class="div"/>
+
+  <!-- MISSING -->
+  <text x="850" y="124" class="colh" text-anchor="middle" fill="#8A3C3C">MISSING</text>
+  <rect x="640" y="138" width="500" height="50" class="missing"/><text x="660" y="168" class="item">✗ the obligation ledger</text><text x="900" y="168" class="note">"this push needs reverting if the build fails"</text>
+  <rect x="640" y="196" width="500" height="50" class="missing"/><text x="660" y="226" class="item">✗ the effect taxonomy</text><text x="900" y="226" class="note">reversible / partial / irreversible — and acting on it</text>
+  <rect x="640" y="254" width="500" height="50" class="missing"/><text x="660" y="284" class="item">✗ action gates on push / publish / deploy</text><text x="940" y="284" class="note">approval before the irreversible</text>
+  <rect x="640" y="312" width="500" height="50" class="missing"/><text x="660" y="334" class="item">✗ coordination through *shared* journaled state</text><text x="660" y="350" class="note" dx="0"></text>
+  <text x="950" y="334" class="note" text-anchor="end">worktrees + leases + merge-base awareness,</text>
+
+  <!-- the label arrow -->
+  <path d="M880,362 L880,400" class="line"/>
+  <rect x="560" y="404" width="640" height="46" class="soft"/><text x="880" y="426" class="colh" text-anchor="middle">What's missing = what the treatise calls THE CEILING.</text><text x="880" y="444" class="note" text-anchor="middle">What's present = mostly THE FLOOR (git) plus a decent transcript.</text>
+
+  <rect x="60" y="404" width="440" height="46" class="soft"/><text x="280" y="426" class="colh" text-anchor="middle">The working-tree / worktree / merge interplay</text><text x="280" y="444" class="note" text-anchor="middle">is where the floor holds — and where it runs out.</text>
+
+  <rect x="120" y="478" width="960" height="120" class="soft" fill="#f3f1ea"/>
+  <text x="600" y="506" class="item" text-anchor="middle">Coding harnesses are proto-journals, and the prototype is honest about what it is:</text>
+  <text x="600" y="528" class="item" text-anchor="middle">small · local · optimistic · single-actor.</text>
+  <text x="600" y="552" class="note" text-anchor="middle">Scale the world — a second agent, a remote, CI, a publish, a deploy — and the prototype breaks in exactly the ways</text>
+  <text x="600" y="570" class="note" text-anchor="middle">Sections V and XIV predict. The fix isn't more rewind. It's the ceiling: effect classification, action gates, compensation</text>
+  <text x="600" y="588" class="note" text-anchor="middle">handles, and coordination through shared journaled state — instead of N private rewind stacks racing on one checkout.</text>
+</svg>

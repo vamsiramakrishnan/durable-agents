@@ -2023,7 +2023,209 @@ checkpointed state is not journaled consequence
 
 ---
 
-## XIII. What This Treatise Is Glossing Over
+## XIII. Field Report: Coding Harnesses as Proto-Journals
+
+*A grounded interlude. The treatise has argued from first principles; here is where the argument already lives — half-built — in the coding agents you use every day: Codex (CLI and cloud), Claude Code, Gemini CLI. Read the boxed lines for the gist; read the beats for the case; read the figures for the shape. This is progressive disclosure: stop wherever you have what you need.*
+
+> **In one breath.** A coding harness's "rewind" is two things stapled together: a **transcript** — a real, append-only *decision ledger*; they all have it, and (rightly) they use it as **memory**, not as a replay log — and a **filesystem snapshot** — a coarse, local-files-only *effect ledger*; only some of them have it. What it can't undo — a `git push`, an `npm publish`, a PR comment, a CI run — it doesn't even try to. And under all of it sits **git**, which is itself a journal: commits, branches, stash, reflog, worktrees. So a coding agent gets away with a proto-journal because its default world is small, local, reversible, and single-actor. Scale the world — a second agent, a remote, CI, a publish — and it breaks in exactly the ways Section V and Section XIV predict.
+
+### 1 · The lay of the land — four harnesses, four proto-journals
+
+> **Gist.** All four record the conversation (the *decision ledger*). Two of them (Claude Code, Gemini CLI) also snapshot the working tree before edits (the *effect ledger*); Codex CLI delegates that to your git; Codex cloud's "effect ledger" is a git branch plus a disposable container. None records what it *owes* — no *obligation ledger*. Granularity ranges from per-prompt (Claude) to per-file-modifying-tool-call (Gemini) to none-at-all (Codex CLI).
+
+![Four harnesses, four proto-journals](31_harness_matrix.svg)
+
+```text
+                  Codex CLI               Codex cloud             Claude Code             Gemini CLI
+decision ledger   rollout JSONL           the task thread         session JSONL           conversation +
+(the transcript)  ~/.codex/sessions/…     (in ChatGPT) + the diff ~/.claude/projects/…    /chat save tags
+file rollback?    ✗ — use your git        ✗ — don't merge /       ✓ — private store       ✓ — shadow git repo
+                  (.git/ forced read-only)  revert the PR           ~/.claude/file-history/  ~/.gemini/history/<hash>
+backward (state)  git checkout (yours)    close the PR            /rewind: code &/or      /restore: code + convo,
+                                                                    convo · per prompt      per file-modifying tool call
+forward / fork    codex fork; Esc-rewind  parallel tasks;         --fork-session;         /restore re-prompts;
+                  (branch a thread)         --attempts 1–4          /branch                 /chat tags
+resume            codex resume [--last]   follow-ups in the       --continue / --resume   gemini -r
+                  (replays the rollout)     task; container ≤12h
+can't undo        edits · shell cmds ·    a merged PR · setup-    bash effects · pushes · shell cmds · pushes;
+                  pushes · network          script side effects     hand-edits · protected   needs a git repo;
+                                                                    paths                    .gitignored content
+concurrent actors none — sole owner       parallel branches →    none — sole owner       none — /restore clobbers
+                  assumed                   you merge them          assumed                 concurrent edits (git clean -fd)
+```
+
+*Strong on the decision ledger (the transcript). Thin on the effect ledger (the snapshot, where it exists at all). Blank on the obligation ledger. The shape Section V predicted for the coding agent.*
+
+1/ **Codex CLI** has no filesystem snapshot. It edits your real working tree, kernel-sandboxed (Seatbelt on macOS, Landlock+seccomp on Linux), and under `workspace-write` it forces `.git/` and `.codex/` read-only so the agent can't rewrite history behind your back. File-undo is your job (`git checkout`/`stash`/`reset`). What it *does* keep is the **rollout file** — `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, a `SessionMeta` header (id, cwd, model, git info) then every message, tool call, and token count. `codex resume [<id>|--last]` *replays* that to reconstruct the conversation; `codex fork` branches a new thread from an earlier user message; `codex exec --ephemeral` writes no rollout at all.
+
+2/ **Codex cloud** runs each task in an isolated container that checks out your repo at a branch/SHA, runs a setup script (with internet), then the agent (internet off by default). Containers aren't purely ephemeral — they're cached up to ~12h, so follow-ups reuse them; the cache invalidates on script/env/secret changes. The output is a **diff**; you open a PR or send follow-ups (which can push commits onto an existing PR branch); **parallel tasks** and **`--attempts 1–4`** fork N independent solutions, each its own container/branch/diff. The "undo" is git/GitHub: don't merge, close the PR, or revert. The container is disposable; only the branch/PR persists.
+
+3/ **Claude Code** keeps both. The **session JSONL** — `~/.claude/projects/<project>/<session-id>.jsonl`, one object per line: every message, every tool call + result, timestamps; oversized outputs spill to a `tool-results/` dir; 30-day retention. And **rewind** (`/rewind`, `Esc Esc`): per-user-turn checkpoints, with pre-edit snapshots of *touched files* in a private store at `~/.claude/file-history/<session-id>/` (not git — no commits, doesn't touch `.git`); the menu restores **code only / conversation only / both**. It tracks only files edited through Claude's edit tools — bash side effects, hand-edits, and a protected-paths list are not captured. Hooks (`PreToolUse` can deny/rewrite; `PostToolUse` observes the result) are a programmable journal-write seam; `--fork-session`/`/branch` copy the transcript prefix into a new session.
+
+4/ **Gemini CLI** has the finest grain. With **checkpointing** on (`general.checkpointing.enabled`, or `--checkpointing`), before *every file-modifying tool call* it commits a whole-project snapshot into a **shadow git repo** at `~/.gemini/history/<project_hash>` (a real but separate repo — your `git log`/branches/index untouched) and saves conversation + the pending tool call to `~/.gemini/tmp/<project_hash>/checkpoints/<ts>-<file>-<tool>.json`. **`/restore [checkpoint]`** rewinds both files (`git restore --source <hash> .` + `git clean -fd`) and conversation, and re-shows the tool prompt for re-approval. It mirrors your `.gitignore`/`.geminiignore` (so `node_modules` is excluded; `git clean -fd` on restore deletes files created since the snapshot); it silently no-ops outside a git repo. Plus `/chat save|resume|list` (conversation-only tags) and `gemini -r` (resume the last session).
+
+### 2 · Anatomy of one turn — what gets written, what doesn't
+
+> **Gist.** When the agent does a turn, the transcript captures *the whole thing* (prompt, plan, every tool call and result). The snapshot store captures *only the local files the agent's edit tools touched* — and only those. A `git commit` is partly modeled (the SHA may be in the transcript text). A `git push`, an `npm publish`, a PR comment, a CI trigger: not captured, not reversible, no compensation handle. So "rewind a turn" means "restore those files and truncate the transcript" — which is exactly enough when the turn was only file edits, and exactly nothing when it wasn't.
+
+![X-ray of one turn](32_anatomy_of_a_turn.svg)
+
+```text
+you: "add input validation"
+   │
+   ├─ model plans a 4-step plan ───────────────────────► transcript (prompt · plan · every    ✓ decision ledger — strong
+   ├─ edit src/api.ts ──── (pre-edit snapshot) ────────► snapshot store   tool call & result · ✓ effect ledger — thin,
+   ├─ edit src/api.test.ts ─ (pre-edit snapshot) ─────►                   tokens)                  file-scoped
+   ├─ run `npm test` ──────────────────────────────────► ✗ nothing snapshotted (a coverage file, the test cache — not in the store)
+   ├─ run `git commit` ────────────────────────────────► ◐ the SHA may be in the transcript text; the store doesn't model it
+   └─ (had it run `git push` / `npm publish` / a PR comment) → ✗ not captured · not reversible · no compensation handle
+
+undoable: the two file edits.   not undoable: the commit (partly), the test side effects, anything pushed / published / posted.
+```
+
+*The transcript is the decision ledger and it's good. The effect ledger is whatever local files the agent's edit tools touched — and that's it. Everything else is git's problem, or nobody's.*
+
+5/ This is the whole proto-journal story in one picture. The decision side is rich and append-only and the harnesses do the right thing with it (next subsection). The effect side is a coarse undo buffer scoped to "files my edit tool wrote," at turn or tool-call granularity, with no model of commits, no model of pushes, no compensation handles for the irreversible. The treatise's coding-agent line — *"the code can be reverted, the LLM cannot"* — is true here, and there's a second clause the field report adds: *the outside world can't be reverted either, and the harness knows it, so it doesn't pretend to.*
+
+```text
+the transcript is the decision ledger · the snapshot is whatever local files got touched
+```
+
+### 3 · Backward, forward, fork — none of them replay
+
+> **Gist.** Backward = truncate the transcript at message N and restore the file snapshot taken there. Forward = re-run from N — and the model *re-samples*, so you get a different plan and different edits; "forward" is *redo knowing what you knew then*, not *replay*. Fork = keep the original thread and start a new branch from N (Codex `fork` / `--attempts N`, Claude `--fork-session`/`/branch`, Gemini `/restore` re-prompting). The harnesses already treat the transcript as **memory, not a deterministic log** — which is precisely what Section V said a coding agent needs.
+
+![Backward, forward, fork — none of them replay](33_rewind_vs_fork.svg)
+
+```text
+BACKWARD   u1─►a1─►u2─►a2─►u3─►a3(now)         pick u2 → truncate after u2 + restore files to the snapshot @ u2
+                       ╳ truncate here           (Claude: code &/or convo · Gemini: code + convo · Codex CLI: you `git checkout`)
+
+FORWARD    u1─►a1─►u2 ─► a2′(≠a2) ─► u3′ …      re-run from u2 → the model re-samples. "Forward" = redo knowing what
+                                               you knew then — NOT replay. A coding agent re-run verbatim reproduces nothing.
+
+FORK       u1─►a1─►u2 ─┬─► a2 ─► u3 …  (original — untouched)
+                       └─► a2″ ─► u3″ …  (a new attempt)    Codex `--attempts N` = N forks from one prompt, pick the winner.
+```
+
+*These harnesses already treat the transcript as memory, not a deterministic log — which is the right move. Resuming a coding agent reproduces the situation and lets it re-decide; it does not reproduce the outputs.*
+
+6/ This is the one place the proto-journals are already *correct by the treatise's lights*, not merely present. Section V: *"replay does not reconstruct the same plan, because the plan was non-deterministic in the first place… resumption that uses the journal as memory rather than as a transcript to replay verbatim."* That is exactly what `codex resume` (replay the rollout to rebuild the conversation, then let the model continue), `--fork-session`, and `/restore` (re-show the tool prompt for re-approval) do. Forward is not replay; it never could be; the tools don't pretend it is.
+
+```text
+forward is not replay · forward is redo, knowing what you knew then
+```
+
+### 4 · The three ledgers, audited
+
+> **Gist.** Map the harnesses onto Section III's three ledgers — *decision* (why), *effect* (what), *obligation* (owed). They score: decision = strong, all four (the transcript). Effect = thin, two of four (the snapshot — Codex CLI has none; Codex cloud has it as a branch). Obligation = essentially zero (the closest is Codex cloud's open PR, which GitHub tracks, not the harness). And — the load-bearing caveat — *none of the three is the source of truth for state*. The working tree is. The transcript records intent; the filesystem records what happened; they diverge the moment a second actor (you, another agent, a `git pull`, an `npm install`) touches the tree outside the harness.
+
+![The three ledgers, audited](34_three_ledgers_applied.svg)
+
+```text
+                       DECISION LEDGER (why)        EFFECT LEDGER (what — restorable)     OBLIGATION LEDGER (owed)
+Codex CLI              ●●●●  rollout JSONL, full     ○○○○  none — delegates to your git    ○  nothing
+Codex cloud            ●●●   the task thread          ●●    a git branch + a ≤12h container  ◐  the open PR (GitHub's, not the harness's)
+Claude Code            ●●●●● session JSONL, forkable; ●●●   per-turn snapshots, local files  ○  nothing
+                             hooks can intercept & log       only — no bash effects, no
+                                                             hand-edits, no protected paths
+Gemini CLI             ●●●   conversation + /chat     ●●●●  per-tool-call shadow-git;        ○  nothing
+                                                             follows .gitignore
+
+In every case: the journal is not the source of truth for state — the working tree is.
+```
+
+*Strong on why, thin on what, blank on what's owed — exactly the shape Section V predicted, and exactly the gap Section IX's primitives fill.*
+
+7/ The "not the source of truth" point is the deep one, and it's the treatise's browser-agent observation transplanted: *"the journal is the only record, and did it happen is answered by re-observation, not by asking the other side."* A coding harness is in that boat for everything not in git — there's no API to ask the filesystem "did my edit survive?", so you re-read the file. Which is fine, until two actors are writing it, at which point "re-read the file" gives you *whose* version? — and the per-actor journal can't say, because it never modeled the *shared* state. (Hold that thought; it's subsection 6.)
+
+### 5 · Seven upgrades — how the proto-journal becomes a real one
+
+> **Gist.** The transcript is already a decent decision journal. Seven moves harden the *effect* side, and none of them is exotic — most of them already exist somewhere (Gemini's shadow-git is content-addressed and effect-grained; Codex's `--attempts N` is budget-aware forking). Roughly: incremental snapshots instead of whole-tree copies; effect-boundary granularity; diffs tagged with their decision; an effect taxonomy with gates and compensation handles; auto-commit to a hidden git ref (lean on the floor); compaction at decision boundaries; cost recorded next to each diff.
+
+![Seven upgrades, today → better](35_seven_upgrades.svg)
+
+```text
+   TODAY                                          →  BETTER
+① a whole-tree copy per turn                       →  content-addressed / copy-on-write (git objects · APFS clones · overlayfs) — O(touched bytes)
+② snapshot at turn boundaries                      →  snapshot at effect boundaries — rewind to "after edit 3 of 7", not just "before prompt N"
+③ a file-mtime soup, no provenance                →  diffs tagged with the decision that made them — rewind/cherry-pick one decision
+④ snapshot the reversible, silently skip the rest →  classify effects · gate the irreversible (push/publish) · record compensation handles
+⑤ a private snapshot store                          →  auto-commit to a hidden ref (refs/agent/<run>); the reflog is the journal — the floor was already there
+⑥ an unbounded snapshot pile                        →  compaction at decision boundaries — keep the last K fine-grained, coalesce the rest
+⑦ cost is a vibe                                   →  tokens/$/wall-clock recorded next to each diff — "abandon this $4 branch, no green tests" is a query
+```
+
+*The transcript is already a decent decision journal. These seven harden the effect side — into something a runtime, or a worktree-aware orchestrator, could lean on.*
+
+8/ Notice that ⑤ is the treatise's whole "plug into old plumbing" move, applied to coding agents: don't reinvent a snapshot store, `git commit` each turn to a hidden ref (`refs/codex/…`, invisible to `git log`), so "undo" = `git reset`, "fork" = `git branch`, and `git reflog` *is* your journal — and if you do it in a *worktree*, you get isolation for free, which is the next subsection. And ④ is the treatise's action-space management and adaptive compensation, applied here: the dangerous thing today isn't that the harness can't undo a `push` — it's that it *silently doesn't try*, with no gate in front of it and no handle recorded to undo it later.
+
+### 6 · Where git carries it — and where it doesn't
+
+> **Gist.** A harness's "rewind" is **local, optimistic, single-actor** time-travel — and it works *because* the default world is one working tree of mostly-reversible file edits, with git underneath as a real journal. So a lot of the journaling machinery genuinely doesn't matter here: git already does it. It stays forgiving for committed work, one actor, worktree-isolated agents, and "it's just code." It stops being forgiving the moment a second actor, a remote, CI, a publish, or a deploy enters — and there the local journal is useless and you want the durable-execution machinery for real. The boundary is the answer to your question.
+
+![Where git carries it — and where it doesn't](36_git_forgiveness.svg)
+
+```text
+FORGIVING — git carries it                          NOT FORGIVING — the local journal is useless here
+─────────────────────────                           ──────────────────────────────────────────────────
+• you committed → `reflog` recovers any reset --hard • uncommitted changes + a destructive git command (reset --hard,
+  (the harness's snapshot is just a faster path)      stash drop) → gone, and NOT in the reflog — only the snapshot, if it has it
+• one agent, one checkout → its store + git is plenty • merge conflicts — the conflict is in the *relationship between two
+• each agent gets its own `git worktree` → different  histories*; rewinding one agent can't un-conflict it with another
+  trees, no index races, merge at the end like two   • concurrent ops on one `.git` → `index.lock` races; A's restore clobbers
+  branches  ← this is the multi-agent answer          B — needs worktrees or a lease on the checkout
+• the thing changed is just code → almost any        • effects outside git → `push` (it's on the remote), `npm publish`, PR
+  local mistake is recoverable                        comments, CI runs, deploys, a charge from running the test suite
+                                                     • `.git` surgery → `gc --prune`, `filter-repo`, force-push prune the reflog itself
+                                                     • untracked / ignored state → node_modules · .env · dist/ · a local DB — git-
+                                                       based snapshots skip them; restore = code at T, deps at T+5
+
+boundary: one actor + local edits = forgiving · a second actor / a remote / CI / a publish / a deploy = not.
+```
+
+*"The merchant's idempotency layer was already there" → "git's object store and reflog were already there." A floor, not a ceiling — and the working-tree interplay is the live demo of where the floor ends.*
+
+9/ The forgiving side is real and it's why these tools ship without a "real" journal: **git is one**. Committed work is recoverable from the reflog even after `reset --hard`; branches are free; `stash` parks dirty state. The harness's private snapshot is, in the common case, just a faster path to the same recovery — which is why Codex CLI can skip it entirely and tell you to use git.
+
+10/ And worktrees are the actual answer to "multiple coding agents," and they make per-agent rewind *sufficient*: one `.git` object store, N working directories, each agent in its own — they edit different trees, can't stomp each other's index, and you merge at the end like any two branches. The coordination is pushed into git's merge machinery, which the agents don't have to model. Worktree-per-agent orchestrators (and there are several) are leaning on exactly this. It's the treatise's "coordinate through journaled shared state" — except the shared state is git's object graph, and the coordination is `git merge`.
+
+11/ The unforgiving side is where the local journal is *useless* and you'd want the ceiling. Uncommitted changes are not in the reflog — the reflog tracks committed refs, not working-tree state — so a stray `git checkout .` or `git reset --hard` before the harness snapshotted is unrecoverable; the snapshot is the only net, and it's only as good as its granularity (Claude won't have it if the change came from a bash command; Codex CLI never has it). **Merge conflicts** are the purest case: the conflict lives in the *relationship between two histories*, not inside one — rewinding agent A doesn't un-conflict it with B, because there's nothing in A's history to rewind *to* that resolves it; you resolve by hand, or with a third agent run that takes *both* diffs as input. That's Section IX ⑥ — "two SRE agents on one incident fight; coordinate through journaled shared state, not direct messaging" — and git gives you the shared state (the merge base, the conflict markers) but only as a *manual* resolution surface.
+
+12/ Concurrent operations on one `.git` are the same problem at the index level: two runs in one checkout race on `.git/index.lock`; one `git commit`s while the other has staged changes; `npm install` rewrites `package-lock.json` under the other's edits. The per-agent snapshot can't model the *shared* state, so A's "restore" clobbers B. Fix: worktrees (separate trees), or a lease on the checkout — coordination-through-journaled-state, which no harness does today (they assume sole ownership). And **effects outside git** are the hard wall: `push` puts it on the remote where others may have pulled (reverting is a *new* commit, not an undo); `npm publish` (yanking ≠ unpublishing); PR comments, CI runs, deploys, a charge on a test Stripe account from running the suite — rewind and `/restore` touch only the local tree; none of this is reachable. The treatise: *"communication is reputation-bearing… compensation is impossible."* (And `.git` surgery — `gc --prune`, `filter-repo`, force-push — prunes the reflog itself, so even "git is your net" collapses; Codex forcing `.git/` read-only during agent commands is a deliberate action-gate against exactly this.)
+
+13/ One more, easy to miss: **untracked and ignored state.** Git-based snapshots (Gemini's shadow repo) follow `.gitignore`, so they don't capture `node_modules`, `.env`, `dist/`, generated migrations, a local SQLite file. A restore brings code back to T but leaves `node_modules` at T+5 — a state the snapshot *calls* consistent but isn't. Claude's protected-paths list has the same shape: some things are deliberately not snapshotted, so a restore is partial by design. This is the harness version of the treatise's freshness problem — the runtime has to declare which state is snapshot and which is live — and the harnesses mostly don't declare it; they just exclude.
+
+```text
+git is a floor, not a ceiling
+```
+
+### 7 · The synthesis — precursors, and the part with a name
+
+> **Gist.** Coding harnesses are proto-journals, and the prototype is honest about what it is: small, local, optimistic, single-actor. They *have* the decision ledger (the transcript — strong, and used as memory, not as a replay log, which is the right move) and a thin effect ledger (the snapshot, where it exists), with git underneath as a real journal to lean on. They're *missing* the obligation ledger, the effect taxonomy, the action gates on `push`/`publish`/`deploy`, and coordination through *shared* journaled state — which is to say, they're missing what the treatise calls **the ceiling**. The working-tree / worktree / merge interplay is the live demonstration of where **the floor** (git) holds and where it runs out — which is where a coding agent stops being able to coast on git, and where the durable-execution machinery would have to start.
+
+![Precursors](37_precursor.svg)
+
+```text
+HAVE                                                MISSING  (= what the treatise calls THE CEILING)
+✓ the decision ledger — the transcript              ✗ the obligation ledger ("this push needs reverting if the build fails")
+  (append-only · used as memory, not replayed)      ✗ the effect taxonomy (reversible / partial / irreversible) — and acting on it
+◐ a thin effect ledger — the snapshot               ✗ action gates on push / publish / deploy
+  (coarse · local files only · where it exists)     ✗ coordination through *shared* journaled state — worktrees + leases +
+✓ git underneath — a real journal to lean on          merge-base awareness, instead of N private rewind stacks racing on one checkout
+  (commits · branches · stash · reflog · worktrees)
+
+Precursors. The prototype is honest: small · local · optimistic · single-actor.
+Scale the world and it breaks in exactly the ways Sections V and XIV predict. The fix isn't more rewind. It's the ceiling.
+```
+
+*Coding harnesses are precursors to the journal. They have the decision ledger and a thin effect ledger; they're missing the obligation ledger, the effect taxonomy, the gates, and the shared-state coordination — which is to say, they're missing "the ceiling," and the working-tree / worktree / merge interplay is the live demonstration of where "the floor" (git) holds and where it runs out.*
+
+14/ So the answer, folded back into the treatise's frame: the harnesses already did the floor (or rather, git did it for them) and they already did the *easy* part of the ceiling — the decision ledger, used correctly as memory. What they haven't done is the *hard* part of the ceiling, and they haven't needed to, because their world is small. The day a coding agent's world stops being small — N agents on one repo, a shared remote, a CI pipeline that runs on push, a release that publishes — is the day "rewind" stops being enough and "the runtime" has to keep the contract. Until then: the transcript is the journal, git is the safety net, and the snapshot store is a faster path to a recovery git could have done anyway. Precursor, not the thing — but an honest precursor, which is the most you can ask of a prototype.
+
+---
+
+## XIV. What This Treatise Is Glossing Over
 
 Section X named what is still hard *inside* the loop. This is what is still hard *around* it — the places this treatise, in the service of a clean argument, has quietly assumed away, smoothed over, or drawn as a cartoon. A treatise that does not do this is a brochure.
 
@@ -2071,7 +2273,7 @@ the property has a price · a treatise that hides it is selling
 
 ---
 
-## XIV. Floor and Ceiling
+## XV. Floor and Ceiling
 
 ![Floor and ceiling](04_floor_and_ceiling.svg)
 

@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>The Three Ledgers, Audited</title>
+  <desc>Decision, effect, and obligation ledgers scored across Codex CLI, Codex cloud, Claude Code, and Gemini CLI.</desc>
+  <defs>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .col{font:700 17px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .colsub{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .name{font:700 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .note{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#555}
+      .dec{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.7;rx:14}
+      .eff{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.7;rx:14}
+      .obl{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.7;rx:14}
+      .row{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.2;rx:8}
+      .full{fill:#4E745B}.empty{fill:#fff;stroke:#9a9a9a;stroke-width:1}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="54" class="title">The Three Ledgers, Audited</text>
+  <text x="60" y="82" class="subtitle">Decision: all four have it, and it's strong. Effect: two have it, and it's thin. Obligation: nobody.</text>
+
+  <!-- column headers -->
+  <rect x="60"  y="104" width="350" height="50" class="dec"/><text x="235" y="128" class="col" text-anchor="middle">DECISION LEDGER</text><text x="235" y="146" class="colsub" text-anchor="middle">why it acted — prompt · plan · tool calls</text>
+  <rect x="425" y="104" width="350" height="50" class="eff"/><text x="600" y="128" class="col" text-anchor="middle">EFFECT LEDGER</text><text x="600" y="146" class="colsub" text-anchor="middle">what it did to the world — restorable</text>
+  <rect x="790" y="104" width="350" height="50" class="obl"/><text x="965" y="128" class="col" text-anchor="middle">OBLIGATION LEDGER</text><text x="965" y="146" class="colsub" text-anchor="middle">what it owes — compensations pending</text>
+
+  <!-- meter macro: 5 pips. We'll draw inline. -->
+  <!-- ROW: Codex CLI -->
+  <text x="60" y="184" class="name">Codex CLI</text>
+  <!-- decision: 4/5 -->
+  <rect x="60" y="194" width="350" height="56" class="row"/>
+  <circle cx="78" cy="212" r="6" class="full"/><circle cx="94" cy="212" r="6" class="full"/><circle cx="110" cy="212" r="6" class="full"/><circle cx="126" cy="212" r="6" class="full"/><circle cx="142" cy="212" r="6" class="empty"/>
+  <text x="160" y="216" class="note">rollout JSONL — full, replayable as memory</text><text x="78" y="238" class="note">— but not the source of truth for files</text>
+  <!-- effect: 0/5 -->
+  <rect x="425" y="194" width="350" height="56" class="row"/>
+  <circle cx="443" cy="212" r="6" class="empty"/><circle cx="459" cy="212" r="6" class="empty"/><circle cx="475" cy="212" r="6" class="empty"/><circle cx="491" cy="212" r="6" class="empty"/><circle cx="507" cy="212" r="6" class="empty"/>
+  <text x="525" y="216" class="note">none — delegates entirely to your git</text><text x="443" y="238" class="note">.git/ is forced read-only under the sandbox</text>
+  <!-- obligation: 0/5 -->
+  <rect x="790" y="194" width="350" height="56" class="row"/>
+  <circle cx="808" cy="212" r="6" class="empty"/><circle cx="824" cy="212" r="6" class="empty"/><circle cx="840" cy="212" r="6" class="empty"/><circle cx="856" cy="212" r="6" class="empty"/><circle cx="872" cy="212" r="6" class="empty"/>
+  <text x="890" y="216" class="note">— nothing recorded as owed</text>
+
+  <!-- ROW: Codex cloud -->
+  <text x="60" y="280" class="name">Codex cloud</text>
+  <rect x="60" y="290" width="350" height="56" class="row"/>
+  <circle cx="78" cy="308" r="6" class="full"/><circle cx="94" cy="308" r="6" class="full"/><circle cx="110" cy="308" r="6" class="full"/><circle cx="126" cy="308" r="6" class="empty"/><circle cx="142" cy="308" r="6" class="empty"/>
+  <text x="160" y="312" class="note">the task thread (in ChatGPT)</text><text x="78" y="334" class="note">— not exportable as a structured log</text>
+  <rect x="425" y="290" width="350" height="56" class="row"/>
+  <circle cx="443" cy="308" r="6" class="full"/><circle cx="459" cy="308" r="6" class="full"/><circle cx="475" cy="308" r="6" class="empty"/><circle cx="491" cy="308" r="6" class="empty"/><circle cx="507" cy="308" r="6" class="empty"/>
+  <text x="525" y="312" class="note">a git branch + a ≤12h cached container</text><text x="443" y="334" class="note">— a diff to merge, not a restore stack</text>
+  <rect x="790" y="290" width="350" height="56" class="row"/>
+  <circle cx="808" cy="308" r="6" class="full" fill-opacity="0.5"/><circle cx="824" cy="308" r="6" class="empty"/><circle cx="840" cy="308" r="6" class="empty"/><circle cx="856" cy="308" r="6" class="empty"/><circle cx="872" cy="308" r="6" class="empty"/>
+  <text x="890" y="312" class="note">the open PR — modeled by GitHub,</text><text x="808" y="334" class="note">not by the harness</text>
+
+  <!-- ROW: Claude Code -->
+  <text x="60" y="376" class="name">Claude Code</text>
+  <rect x="60" y="386" width="350" height="56" class="row"/>
+  <circle cx="78" cy="404" r="6" class="full"/><circle cx="94" cy="404" r="6" class="full"/><circle cx="110" cy="404" r="6" class="full"/><circle cx="126" cy="404" r="6" class="full"/><circle cx="142" cy="404" r="6" class="full"/>
+  <text x="160" y="408" class="note">session JSONL — full, forkable</text><text x="78" y="430" class="note">hooks can intercept &amp; log each tool call</text>
+  <rect x="425" y="386" width="350" height="56" class="row"/>
+  <circle cx="443" cy="404" r="6" class="full"/><circle cx="459" cy="404" r="6" class="full"/><circle cx="475" cy="404" r="6" class="full"/><circle cx="491" cy="404" r="6" class="empty"/><circle cx="507" cy="404" r="6" class="empty"/>
+  <text x="525" y="408" class="note">per-turn snapshots — local files only</text><text x="443" y="430" class="note">no bash effects, no hand-edits, no protected paths</text>
+  <rect x="790" y="386" width="350" height="56" class="row"/>
+  <circle cx="808" cy="404" r="6" class="empty"/><circle cx="824" cy="404" r="6" class="empty"/><circle cx="840" cy="404" r="6" class="empty"/><circle cx="856" cy="404" r="6" class="empty"/><circle cx="872" cy="404" r="6" class="empty"/>
+  <text x="890" y="408" class="note">— nothing recorded as owed</text>
+
+  <!-- ROW: Gemini CLI -->
+  <text x="60" y="472" class="name">Gemini CLI</text>
+  <rect x="60" y="482" width="350" height="56" class="row"/>
+  <circle cx="78" cy="500" r="6" class="full"/><circle cx="94" cy="500" r="6" class="full"/><circle cx="110" cy="500" r="6" class="full"/><circle cx="126" cy="500" r="6" class="empty"/><circle cx="142" cy="500" r="6" class="empty"/>
+  <text x="160" y="504" class="note">conversation + /chat save tags</text>
+  <rect x="425" y="482" width="350" height="56" class="row"/>
+  <circle cx="443" cy="500" r="6" class="full"/><circle cx="459" cy="500" r="6" class="full"/><circle cx="475" cy="500" r="6" class="full"/><circle cx="491" cy="500" r="6" class="full"/><circle cx="507" cy="500" r="6" class="empty"/>
+  <text x="525" y="504" class="note">per-tool-call shadow-git snapshots</text><text x="443" y="526" class="note">finest grain of the four — but follows .gitignore</text>
+  <rect x="790" y="482" width="350" height="56" class="row"/>
+  <circle cx="808" cy="500" r="6" class="empty"/><circle cx="824" cy="500" r="6" class="empty"/><circle cx="840" cy="500" r="6" class="empty"/><circle cx="856" cy="500" r="6" class="empty"/><circle cx="872" cy="500" r="6" class="empty"/>
+  <text x="890" y="504" class="note">— nothing recorded as owed</text>
+
+  <rect x="60" y="558" width="1080" height="58" class="soft"/><text x="600" y="580" class="name" text-anchor="middle">And in every case: the journal is not the source of truth for state — the working tree is.</text><text x="600" y="600" class="note" text-anchor="middle">The transcript records intent; the filesystem records what happened; they diverge the moment a second actor touches the tree.</text>
+
+  <text x="60" y="650" class="note">Strong on *why*, thin on *what*, blank on *what's owed* — exactly the shape Section V predicted for the coding agent, and exactly the gap Section IX's primitives fill.</text>
+</svg>
