@@ -59,16 +59,19 @@ changes when you switch it:
 | `sqlite::memory:` / `memory` | ephemeral in-process — tests, demos |
 | `postgres://user:pass@host:5432/db` | pooled PostgreSQL — production / horizontally scalable |
 | `alloydb://user:pass@host:5432/db` | AlloyDB — it's PostgreSQL-wire-compatible; run the AlloyDB Auth Proxy and point at `127.0.0.1:5432`, or use a private-IP host |
-| `bigtable://project/instance/table` | Cloud Bigtable — `BIGTABLE_EMULATOR_HOST` is honoured. The row-key design is in `server/src/store/bigtable.rs`; the per-op wiring is the current WIP, so `bigtable://` fails loudly on startup until it lands. Create the table first: `cbt -project P -instance I createtable tape && … createfamily tape m` |
+| `bigtable://project/instance/table` | Cloud Bigtable — single-row atomic mutations over one column family `m`; `BIGTABLE_EMULATOR_HOST` honoured. Create the table first: `cbt -project P -instance I createtable tape && … createfamily tape m && … setgcpolicy tape m maxversions=1`. Row-key design + the two Bigtable caveats (explicit table creation; `AppendEvent` isn't a cross-row txn) are in `server/src/store/bigtable.rs` |
 
 Tape's logical operations are a trait, `RunStore` (`server/src/store/`); the SQL
 backends (`SqlRunStore` — SQLite, PostgreSQL, AlloyDB) share one set of portable
-SQL, and a non-SQL backend (Bigtable) implements the same trait. With a network
-store, the server is **stateless between requests** — run *N* replicas behind a
-load balancer (`docker compose up --scale tape-server=3`, `tape/deploy/k8s/tape.yaml`,
-an HPA). Safe with no extra coordination: "one driver per run at a time" is the
-per-run lease in `tape_runs`, and every mutating RPC is idempotent, so two
-recovery workers racing is harmless — the loser short-circuits. See
+SQL, and the Bigtable backend implements the same trait over single-row
+mutations. `tape/tests/test_bigtable.py` runs the treasury kill-and-resume
+scenario against `bigtable://` on the emulator (it self-bootstraps `cbtemulator`
++ `cbt` if they're on PATH / in `/tmp/gobin`). With a network store, the server
+is **stateless between requests** — run *N* replicas behind a load balancer
+(`docker compose up --scale tape-server=3`, `tape/deploy/k8s/tape.yaml`, an HPA).
+Safe with no extra coordination: "one driver per run at a time" is the per-run
+lease in `tape_runs`, and every mutating RPC is idempotent, so two recovery
+workers racing is harmless — the loser short-circuits. See
 [`design-principles/tape.md`](../design-principles/tape.md) §12.
 
 ## Wiring Tape into your agent (two lines)

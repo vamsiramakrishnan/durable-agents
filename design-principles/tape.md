@@ -702,18 +702,23 @@ backends (`SqlRunStore` over a `SqlBackend` — pooled `rusqlite` for SQLite,
 pooled `postgres` for PostgreSQL **and AlloyDB**, which is wire-compatible)
 share one set of portable SQL written once. A non-SQL backend implements the
 same `RunStore`: the Cloud Bigtable backend (`tape/server/src/store/bigtable.rs`)
-maps every operation onto single-row atomic mutations, `CheckAndMutateRow` (the
-effect-key dedup), and a per-run `seq` counter held on the run row (single-writer
-per run is guaranteed by the lease, so a plain read-then-write suffices —
-Bigtable's `ReadModifyWriteRow` would be cleaner but the data-plane client crate
-doesn't expose it); the table and its column family `m` must exist before
-startup (Bigtable requires explicit table creation, like creating a Postgres
-database), and the `AppendEvent` two-write isn't a single transaction (Bigtable
-has no cross-row transactions) — the event is written first, then the state, and
-a re-drive re-applies an un-applied delta. The full row-key design is documented
-in that module; the per-operation wiring against the Bigtable data plane is the
-current work in progress (the trait is the seam — until it lands, `bigtable://`
-fails loudly on startup rather than silently).
+maps every operation onto single-row atomic mutations, with the per-run `seq`
+held on the run row and bumped read-then-write (single-writer per run is
+guaranteed by the lease, so no compare-and-swap is needed — Bigtable's
+`ReadModifyWriteRow` would be tidier but the data-plane client crate doesn't
+expose it; `CheckAndMutateRow` is available if you do need a conditional
+mutation). Two Bigtable facts of life are documented and accepted there: the
+table and its column family `m` must exist before startup (Bigtable requires
+explicit table creation, like creating a Postgres database —
+`cbt createtable tape && cbt createfamily tape m && cbt setgcpolicy tape m maxversions=1`),
+and the `AppendEvent` two-write (the session row, then the event row) isn't a
+single transaction (Bigtable has no cross-row transactions) — a crash between
+leaves the state applied without its event, which the re-drive re-creates
+idempotently. `BIGTABLE_EMULATOR_HOST` is honoured, so `bigtable://demo/demo/tape`
+runs against the local emulator; the integration test
+(`tape/tests/test_bigtable.py`) drives the treasury kill-and-resume scenario
+against it — one wire, one GL batch, regardless of where the crash landed —
+exactly the SQLite/Postgres test, against Bigtable.
 
 **Horizontal scaling.** With a network store (Postgres), the Tape server is
 **stateless between requests** — so you run *N* replicas behind a load balancer

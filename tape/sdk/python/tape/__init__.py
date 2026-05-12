@@ -37,6 +37,7 @@ from .client import (
 from .effect import effect, idempotency_key, run_id_of, get_compensator, get_status_check
 from .gates import AckLost, gate, gate_tool
 from .budget import Budget, with_budget
+from .det import sample, now, uuid, random
 from ._recover import resume, recover_once, compensate_run
 from ._gen import tape_pb2 as pb
 
@@ -45,6 +46,7 @@ __all__ = [
     "effect", "idempotency_key", "run_id_of",
     "AckLost", "gate", "gate_tool",
     "Budget", "with_budget",
+    "sample", "now", "uuid", "random",
     "resume", "recover_once", "compensate_run", "send_signal",
     "get_compensator", "get_status_check",
     "RUN_STATUS_RUNNABLE", "RUN_STATUS_RUNNING", "RUN_STATUS_WAITING", "RUN_STATUS_TERMINAL",
