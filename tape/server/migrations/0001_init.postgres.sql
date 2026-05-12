@@ -121,3 +121,15 @@ CREATE TABLE IF NOT EXISTS tape_scoped_state (
   value_json TEXT NOT NULL,
   PRIMARY KEY (app_name, scope, scope_key, key)
 );
+
+CREATE TABLE IF NOT EXISTS tape_timers (
+  run_id       TEXT NOT NULL,
+  timer_id     TEXT NOT NULL,
+  fire_at_ms   BIGINT NOT NULL,
+  kind         TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '',
+  fired        BIGINT NOT NULL DEFAULT 0,
+  created_at_ms BIGINT NOT NULL,
+  PRIMARY KEY (run_id, timer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_timers_due ON tape_timers(fired, fire_at_ms);

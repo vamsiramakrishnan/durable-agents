@@ -496,4 +496,68 @@ impl RunStore for BigtableRunStore {
         ]).await?;
         Ok((EventRecord { timestamp_ms: ts, ..event }, ts))
     }
+
+    // ── reconciliation ──────────────────────────────────────────────────────
+    async fn list_pending_effects(&self, older_than_ms: i64, include_pending: bool, include_unknown: bool, limit: i64) -> StoreResult<Vec<EffectRecord>> {
+        let (ip, iu) = if !include_pending && !include_unknown { (true, true) } else { (include_pending, include_unknown) };
+        let mut out: Vec<EffectRecord> = self.read_prefix("e#", limit.max(1) * 32).await?.into_iter().filter_map(|(key, m)| {
+            let st = m.gi("status") as i32;
+            let want = (iu && st == EffectStatus::Unknown as i32)
+                || (ip && st == EffectStatus::Pending as i32 && (older_than_ms == 0 || m.gi("ts") < older_than_ms));
+            if want { Some(effect_from(key.trim_start_matches("e#"), &m)) } else { None }
+        }).collect();
+        out.sort_by_key(|x| x.ts_ms);
+        out.truncate(limit.max(1) as usize);
+        Ok(out)
+    }
+
+    // ── timers ──────────────────────────────────────────────────────────────
+    async fn set_timer(&self, run_id: &str, timer_id: &str, fire_at_ms: i64, kind: &str, payload_json: &str) -> StoreResult<TimerRecord> {
+        let tid = if timer_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { timer_id.to_string() };
+        let ts = now_ms();
+        self.write_row(&rk_timer(run_id, &tid), vec![set("fire_at", iv(fire_at_ms)), set("kind", sv(kind)), set("payload", sv(payload_json)), set("fired", iv(0)), set("created", iv(ts))]).await?;
+        Ok(TimerRecord { run_id: run_id.into(), timer_id: tid, fire_at_ms, kind: kind.into(), payload_json: payload_json.into(), fired: false, created_at_ms: ts })
+    }
+    async fn cancel_timer(&self, run_id: &str, timer_id: &str) -> StoreResult<bool> {
+        let existed = self.read_row(&rk_timer(run_id, timer_id)).await?.is_some();
+        self.delete_row(&rk_timer(run_id, timer_id)).await?;
+        Ok(existed)
+    }
+    async fn list_due_timers(&self, now_ms: i64, limit: i64, claim: bool) -> StoreResult<Vec<TimerRecord>> {
+        let mut due: Vec<(String, RowMap)> = self.read_prefix("tmr#", 100_000).await?.into_iter()
+            .filter(|(_, m)| m.gi("fired") == 0 && m.gi("fire_at") <= now_ms).collect();
+        due.sort_by_key(|(_, m)| m.gi("fire_at"));
+        due.truncate(limit.max(1) as usize);
+        let mut out = Vec::new();
+        for (key, m) in due {
+            // key = tmr#<run_id>#<timer_id>
+            let rest = key.trim_start_matches("tmr#");
+            let (run_id, tid) = rest.split_once('#').unwrap_or((rest, ""));
+            if claim {
+                // read-then-write claim; a double-claim is harmless because timer actions are idempotent.
+                self.write_row(&key, vec![set("fired", iv(1))]).await?;
+            }
+            out.push(TimerRecord { run_id: run_id.into(), timer_id: tid.into(), fire_at_ms: m.gi("fire_at"), kind: m.gs("kind"), payload_json: m.gs("payload"), fired: claim, created_at_ms: m.gi("created") });
+        }
+        Ok(out)
+    }
+
+    // ── the WAL tail ────────────────────────────────────────────────────────
+    async fn events_since(&self, _from_ts_ms: i64, run_id: &str, kind: &str, limit: i64) -> StoreResult<Vec<EventEntry>> {
+        // A cross-run, time-ordered tail isn't expressible against Bigtable's
+        // row-key layout — that's what Bigtable change streams are for (consume
+        // them via Dataflow or the ReadChangeStream API). The per-run feed
+        // (SubscribeRun / journal_range) still works.
+        if !run_id.is_empty() {
+            return Ok(self.journal_range(run_id, 0).await?.into_iter()
+                .filter(|j| kind.is_empty() || j.kind == kind)
+                .take(limit.max(1) as usize)
+                .map(|j| EventEntry { run_id: run_id.into(), seq: j.seq, kind: j.kind, payload_json: j.payload_json, ts_ms: j.ts_ms })
+                .collect());
+        }
+        tracing::warn!("SubscribeEvents (cross-run) is not supported on the Bigtable backend — use Bigtable change streams (design-principles/tape.md §12); returning empty");
+        Ok(vec![])
+    }
 }
+
+fn rk_timer(run_id: &str, timer_id: &str) -> String { format!("tmr#{run_id}#{timer_id}") }

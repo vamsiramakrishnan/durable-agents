@@ -20,6 +20,7 @@ dev = ["grpcio-tools>=1.60", "pytest>=7"]
 
 [project.scripts]
 tape = "tape._launcher:main"
+tape-reactors = "tape.reactors:_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

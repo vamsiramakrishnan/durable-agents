@@ -746,24 +746,47 @@ coordination:
 The lease is the *only* coordination primitive, and it lives in the store, not
 in the server — so the servers don't talk to each other.
 
-### …and where this goes next — the async substrate (v2)
+### The journal is the WAL — reactors, timers, and the cross-run feed
 
-The reactors that drive recovery and reconciliation are, today, pollers
-(`ListRunsToRecover`, periodic reconcile). The v2 axis turns them into
-**event-driven reactors**: every mutating RPC also publishes to a topic (run
-became RUNNABLE, effect went UNKNOWN, signal delivered) on a `EventBus` —
-in-process by default, **Pub/Sub** in prod — and the recovery loop, the
-reconciler, and the compensator become independent at-least-once subscribers
-(idempotent already, by the property above). Paired with that, a **Bigtable**
-`Store` (row key `run_id#seq`, one atomic single-row mutation per step;
-`CheckAndMutate` for the effect-key dedup; the materialized current-state view
-maintained by a reactor, or a small Spanner table for the read-your-writes hot
-spots — run status, lease, budget admission), Cloud Tasks for the "wake me when
-this lease/timer expires" delays, and an `grpc.aio` SDK that `await`s Tape on the
-right side of the line (sync on the floor — `BeginEffect`, `AdmitBudget` — async
-and batched everywhere else). `tape.proto` is frozen through all of this; the
-`Store` trait and an `EventBus` trait are the seams. (`SubscribeRun`, already in
-the proto, is the same fan-out, externalized.)
+Every mutating operation appends a `tape_journal` row before its effect is
+observable — so the journal *is* the write-ahead log, and what hangs off it is a
+fan-out of **reactors**: components that watch the WAL and react. Three ship in
+the box (`tape/sdk/python/tape/reactors.py`; run them with `tape-reactors
+--runner-from my_app:build_runner` or `tape.reactors.run_reactors(runner=…)`),
+and they're all idempotent — the lease + replay properties make a double-run
+harmless — so you run as many copies behind a load balancer as you like:
+
+- the **recovery reactor** — re-drives RUNNABLE runs, RUNNING runs whose lease is
+  stale, and WAITING runs whose gate was signalled (`recover_once` / the
+  `ListRunsToRecover` RPC);
+- the **reconciler reactor** — for every UNKNOWN effect (and, optionally, every
+  long-PENDING one), calls the per-tool status check registered via
+  `@tape.effect(status_check=…)` and resolves the effect to CONFIRMED or FAILED
+  (`reconcile_once` / `ListPendingEffects`);
+- the **timer reactor** — fires due timers (`SetTimer` / `CancelTimer` /
+  `ListDueTimers`, claimed atomically so a peer reactor won't re-fire): built-in
+  kinds `gate_timeout` (release a parked run with a timeout resolution),
+  `redrive` (re-invoke a run), `reconcile` (resolve a specific effect), plus your
+  own via a callback. Timers are a `tape_timers` row in the store — the durable
+  "wake me at time T" the delayed reactors and gate timeouts need.
+
+And `SubscribeEvents` is the **cross-run WAL tail** — journal entries since a
+timestamp, optionally filtered to one run / one `kind` — which `run_event_fanout(url,
+sink)` streams to a `sink` you wire to Pub/Sub / Kafka / a webhook, so the WAL
+can leave the system entirely. On the SQL backends the tail is a `(ts, run_id,
+seq)`-ordered query; on Bigtable a cross-run time-ordered tail isn't expressible
+against the row-key layout — there you let **Bigtable change streams** be the CDC
+source (consumed via Dataflow's `BigtableChangeStreamsToPubSub` template or the
+`ReadChangeStream` API; see [docs.cloud.google.com/bigtable/docs/change-streams-overview](https://docs.cloud.google.com/bigtable/docs/change-streams-overview)),
+and the per-run `SubscribeRun` feed still works.
+
+`tape.proto` stays the contract (these are additive RPCs); the `RunStore` trait
+is where a backend implements them. Still on the v2 list: a transactional-outbox
+`EventLog` (a `tape_outbox` row written in the same txn, a relay → Pub/Sub — for
+exactly-once-effective publish without the at-least-once-with-idempotent-consumers
+tradeoff the WAL tail accepts), Cloud Tasks as the timer backend at scale, and an
+`grpc.aio` SDK that `await`s Tape (sync only on the floor — `BeginEffect`,
+`AdmitBudget` — async and batched everywhere else).
 
 ---
 

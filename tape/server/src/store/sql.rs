@@ -605,4 +605,62 @@ impl RunStore for SqlRunStore {
         ]).await?;
         Ok((EventRecord { timestamp_ms: ts, ..event }, ts))
     }
+
+    // ── reconciliation ──────────────────────────────────────────────────────
+    async fn list_pending_effects(&self, older_than_ms: i64, include_pending: bool, include_unknown: bool, limit: i64) -> StoreResult<Vec<EffectRecord>> {
+        let (ip, iu) = if !include_pending && !include_unknown { (true, true) } else { (include_pending, include_unknown) };
+        let unk: i64 = if iu { EffectStatus::Unknown as i64 } else { -1 };
+        let pend: i64 = if ip { EffectStatus::Pending as i64 } else { -1 };
+        let sql = format!(
+            "SELECT {EFFECT_COLS} FROM tape_effects WHERE status = ?2 OR (status = ?3 AND (?4 = 0 OR ts_ms < ?4)) ORDER BY ts_ms LIMIT ?1");
+        Ok(self.d().query(&sql, vec![limit.max(1).into(), unk.into(), pend.into(), older_than_ms.into()]).await?.iter().map(effect_of).collect())
+    }
+
+    // ── timers ──────────────────────────────────────────────────────────────
+    async fn set_timer(&self, run_id: &str, timer_id: &str, fire_at_ms: i64, kind: &str, payload_json: &str) -> StoreResult<TimerRecord> {
+        let tid = if timer_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { timer_id.to_string() };
+        let ts = now_ms();
+        self.d().exec(
+            "INSERT INTO tape_timers (run_id, timer_id, fire_at_ms, kind, payload_json, fired, created_at_ms) VALUES (?1,?2,?3,?4,?5,0,?6) \
+             ON CONFLICT(run_id, timer_id) DO UPDATE SET fire_at_ms=excluded.fire_at_ms, kind=excluded.kind, payload_json=excluded.payload_json, fired=0",
+            vec![run_id.into(), tid.clone().into(), fire_at_ms.into(), kind.into(), payload_json.into(), ts.into()]).await?;
+        let row = self.d().query_opt("SELECT run_id, timer_id, fire_at_ms, kind, payload_json, fired, created_at_ms FROM tape_timers WHERE run_id=?1 AND timer_id=?2",
+            vec![run_id.into(), tid.into()]).await?.unwrap();
+        Ok(timer_of(&row))
+    }
+    async fn cancel_timer(&self, run_id: &str, timer_id: &str) -> StoreResult<bool> {
+        Ok(self.d().exec("DELETE FROM tape_timers WHERE run_id=?1 AND timer_id=?2", vec![run_id.into(), timer_id.into()]).await? > 0)
+    }
+    async fn list_due_timers(&self, now_ms: i64, limit: i64, claim: bool) -> StoreResult<Vec<TimerRecord>> {
+        let rows = self.d().query(
+            "SELECT run_id, timer_id, fire_at_ms, kind, payload_json, fired, created_at_ms FROM tape_timers WHERE fired=0 AND fire_at_ms <= ?1 ORDER BY fire_at_ms LIMIT ?2",
+            vec![now_ms.into(), limit.max(1).into()]).await?;
+        let mut out = Vec::new();
+        for row in &rows {
+            let t = timer_of(row);
+            if claim {
+                // Claim it: only this reactor proceeds if the conditional update hits.
+                let n = self.d().exec("UPDATE tape_timers SET fired=1 WHERE run_id=?1 AND timer_id=?2 AND fired=0", vec![t.run_id.clone().into(), t.timer_id.clone().into()]).await?;
+                if n == 1 { out.push(TimerRecord { fired: true, ..t }); }
+            } else {
+                out.push(t);
+            }
+        }
+        Ok(out)
+    }
+
+    // ── the WAL tail ────────────────────────────────────────────────────────
+    async fn events_since(&self, from_ts_ms: i64, run_id: &str, kind: &str, limit: i64) -> StoreResult<Vec<EventEntry>> {
+        let rows = self.d().query(
+            "SELECT run_id, seq, kind, payload_json, ts_ms FROM tape_journal WHERE ts_ms >= ?1 AND (?2 = '' OR run_id = ?2) AND (?3 = '' OR kind = ?3) ORDER BY ts_ms, run_id, seq LIMIT ?4",
+            vec![from_ts_ms.into(), run_id.into(), kind.into(), limit.max(1).into()]).await?;
+        Ok(rows.iter().map(|r| EventEntry { run_id: r.str(0), seq: r.i64(1), kind: r.str(2), payload_json: r.str(3), ts_ms: r.i64(4) }).collect())
+    }
+}
+
+fn timer_of(r: &Row) -> TimerRecord {
+    TimerRecord {
+        run_id: r.str(0), timer_id: r.str(1), fire_at_ms: r.i64(2), kind: r.str(3),
+        payload_json: r.str(4), fired: r.i64(5) != 0, created_at_ms: r.i64(6),
+    }
 }

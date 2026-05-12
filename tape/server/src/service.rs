@@ -198,6 +198,58 @@ impl Tape for TapeService {
         let (event, last_update) = self.store.append_event(&r.app_name, &r.user_id, &r.session_id, ev, &r.state_delta_json).await.map_err(db)?;
         Ok(Response::new(AppendEventResponse { event: Some(event), last_update_time_ms: last_update }))
     }
+
+    // ── reconciliation ──────────────────────────────────────────────────────
+    async fn list_pending_effects(&self, req: Request<ListPendingEffectsRequest>) -> Result<Response<ListPendingEffectsResponse>, Status> {
+        let r = req.into_inner();
+        let limit = if r.limit > 0 { r.limit } else { 200 };
+        Ok(Response::new(ListPendingEffectsResponse {
+            effects: self.store.list_pending_effects(r.older_than_ms, r.include_pending, r.include_unknown, limit).await.map_err(db)?,
+        }))
+    }
+
+    // ── timers ──────────────────────────────────────────────────────────────
+    async fn set_timer(&self, req: Request<SetTimerRequest>) -> Result<Response<TimerRecord>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(self.store.set_timer(&r.run_id, &r.timer_id, r.fire_at_ms, &r.kind, &r.payload_json).await.map_err(db)?))
+    }
+    async fn cancel_timer(&self, req: Request<CancelTimerRequest>) -> Result<Response<CancelTimerResponse>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(CancelTimerResponse { cancelled: self.store.cancel_timer(&r.run_id, &r.timer_id).await.map_err(db)? }))
+    }
+    async fn list_due_timers(&self, req: Request<ListDueTimersRequest>) -> Result<Response<ListDueTimersResponse>, Status> {
+        let r = req.into_inner();
+        let now = if r.now_ms > 0 { r.now_ms } else { now_ms() };
+        let limit = if r.limit > 0 { r.limit } else { 200 };
+        Ok(Response::new(ListDueTimersResponse { timers: self.store.list_due_timers(now, limit, r.claim).await.map_err(db)? }))
+    }
+
+    // ── the WAL tail (at-least-once; entries at the boundary ts may repeat — the
+    //    reactors / fan-out de-dup on (run_id, seq), which is harmless since
+    //    re-processing a journal entry is idempotent) ─────────────────────────
+    type SubscribeEventsStream = Pin<Box<dyn Stream<Item = Result<EventEntry, Status>> + Send + 'static>>;
+    async fn subscribe_events(&self, req: Request<SubscribeEventsRequest>) -> Result<Response<Self::SubscribeEventsStream>, Status> {
+        let r = req.into_inner();
+        let store = self.store.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            let mut from = r.from_ts_ms;
+            loop {
+                let batch = match store.events_since(from, &r.run_id, &r.kind, 512).await {
+                    Ok(b) => b,
+                    Err(_) => break,
+                };
+                for e in batch {
+                    from = from.max(e.ts_ms);
+                    if tx.send(Ok(e)).await.is_err() {
+                        return;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
 }
 
 #[cfg(test)]

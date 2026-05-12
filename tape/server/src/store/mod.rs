@@ -115,6 +115,27 @@ pub trait RunStore: Send + Sync {
     /// in one transaction. Returns (event, last_update_time_ms).
     async fn append_event(&self, app: &str, user: &str, session: &str, event: EventRecord,
                           state_delta_json: &str) -> StoreResult<(EventRecord, i64)>;
+
+    // ── reconciliation ──────────────────────────────────────────────────────
+    /// PENDING (older than `older_than_ms`, or all if 0) and/or UNKNOWN effects,
+    /// for the reconciler reactor to resolve via the registered status checks.
+    async fn list_pending_effects(&self, older_than_ms: i64, include_pending: bool,
+                                  include_unknown: bool, limit: i64) -> StoreResult<Vec<EffectRecord>>;
+
+    // ── timers ──────────────────────────────────────────────────────────────
+    async fn set_timer(&self, run_id: &str, timer_id: &str, fire_at_ms: i64, kind: &str,
+                       payload_json: &str) -> StoreResult<TimerRecord>;
+    async fn cancel_timer(&self, run_id: &str, timer_id: &str) -> StoreResult<bool>;
+    /// Due (fire_at_ms <= now), not-yet-fired timers. If `claim`, each returned
+    /// timer is atomically marked fired so a peer reactor won't re-fire it.
+    async fn list_due_timers(&self, now_ms: i64, limit: i64, claim: bool) -> StoreResult<Vec<TimerRecord>>;
+
+    // ── the WAL tail (cross-run journal feed) ───────────────────────────────
+    /// Journal entries with `ts_ms >= from_ts_ms`, optionally filtered to one
+    /// run and/or one kind, ordered by (ts_ms, run_id, seq). The reactor / fanout
+    /// re-polls with `from_ts_ms` = the last seen ts to follow the WAL.
+    async fn events_since(&self, from_ts_ms: i64, run_id: &str, kind: &str, limit: i64)
+        -> StoreResult<Vec<EventEntry>>;
 }
 
 /// Parse a store URL and build the matching `RunStore`, migrated and ready.

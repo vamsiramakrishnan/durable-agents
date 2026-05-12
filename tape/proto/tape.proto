@@ -49,6 +49,17 @@ service Tape {
   rpc AwaitSignal     (AwaitSignalRequest)     returns (AwaitSignalResponse);    // parks the run, or returns a delivered signal
   rpc SendSignal      (SendSignalRequest)      returns (SendSignalResponse);     // resumes a waiting run
 
+  // ── reconciliation ────────────────────────────────────────────────────────
+  rpc ListPendingEffects (ListPendingEffectsRequest) returns (ListPendingEffectsResponse); // PENDING/UNKNOWN effects, for the reconciler reactor
+
+  // ── timers (the delayed-reactor / gate-timeout service) ───────────────────
+  rpc SetTimer        (SetTimerRequest)        returns (TimerRecord);              // idempotent on (run_id, timer_id)
+  rpc CancelTimer     (CancelTimerRequest)     returns (CancelTimerResponse);
+  rpc ListDueTimers   (ListDueTimersRequest)   returns (ListDueTimersResponse);    // claim=true => atomically mark fired
+
+  // ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
+  rpc SubscribeEvents (SubscribeEventsRequest) returns (stream EventEntry);
+
   // ── ADK SessionService shim ───────────────────────────────────────────────
   rpc CreateSession   (CreateSessionRequest)   returns (Session);
   rpc GetSession      (GetSessionRequest)      returns (GetSessionResponse);
@@ -325,7 +336,62 @@ message SendSignalResponse {
   RunStatus run_status = 3;       // RUNNABLE if the run was waiting and is now released
 }
 
+// ── reconciliation ──────────────────────────────────────────────────────────
+
+message ListPendingEffectsRequest {
+  int64 older_than_ms = 1;        // only effects whose ts_ms < older_than_ms; 0 => all (used for PENDING)
+  int64 limit = 2;
+  bool   include_pending = 3;     // default behaviour if neither is set: both
+  bool   include_unknown = 4;
+}
+message ListPendingEffectsResponse {
+  repeated EffectRecord effects = 1;
+}
+
+// ── timers ──────────────────────────────────────────────────────────────────
+
+message SetTimerRequest {
+  string run_id = 1;
+  string timer_id = 2;            // "" => server generates; (run_id, timer_id) is the key — idempotent
+  int64  fire_at_ms = 3;
+  string kind = 4;                // e.g. "redrive" | "gate_timeout" | "reconcile" | <yours>
+  string payload_json = 5;
+}
+message TimerRecord {
+  string run_id = 1;
+  string timer_id = 2;
+  int64  fire_at_ms = 3;
+  string kind = 4;
+  string payload_json = 5;
+  bool   fired = 6;
+  int64  created_at_ms = 7;
+}
+message CancelTimerRequest { string run_id = 1; string timer_id = 2; }
+message CancelTimerResponse { bool cancelled = 1; }
+message ListDueTimersRequest {
+  int64 now_ms = 1;               // 0 => server time
+  int64 limit = 2;
+  bool   claim = 3;               // true => atomically mark the returned timers fired (so a peer reactor won't re-fire them)
+}
+message ListDueTimersResponse { repeated TimerRecord timers = 1; }
+
+// ── the WAL → reactors feed ─────────────────────────────────────────────────
+
+message SubscribeEventsRequest {
+  int64  from_ts_ms = 1;          // tail from this timestamp (0 => from the beginning)
+  string run_id = 2;              // "" => all runs
+  string kind = 3;                // "" => all kinds  (decision | effect | obligation | gate | state | event)
+}
+message EventEntry {
+  string run_id = 1;
+  int64  seq = 2;
+  string kind = 3;
+  string payload_json = 4;
+  int64  ts_ms = 5;
+}
+
 // ── ADK SessionService shim ─────────────────────────────────────────────────
+
 
 message Session {
   string app_name = 1;

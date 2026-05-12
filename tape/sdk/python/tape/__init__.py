@@ -47,7 +47,7 @@ __all__ = [
     "AckLost", "gate", "gate_tool",
     "Budget", "with_budget",
     "sample", "now", "uuid", "random",
-    "resume", "recover_once", "compensate_run", "send_signal",
+    "resume", "recover_once", "compensate_run", "send_signal", "set_timer", "cancel_timer",
     "get_compensator", "get_status_check",
     "RUN_STATUS_RUNNABLE", "RUN_STATUS_RUNNING", "RUN_STATUS_WAITING", "RUN_STATUS_TERMINAL",
     "RUN_STATUS_FAILED", "RUN_STATUS_STUCK",
@@ -64,3 +64,18 @@ def send_signal(gate_name, *, run_id="", app_name="", user_id="", session_id="",
         return c.send_signal(run_id=run_id, app_name=app_name, user_id=user_id,
                              session_id=session_id, gate_name=gate_name,
                              resolution_json=_json.dumps(resolution or {}))
+
+
+def set_timer(*, run_id, fire_at_ms, kind, timer_id="", payload=None, url: str = DEFAULT_URL):
+    """Set (or replace) a timer. When `fire_at_ms` passes, the timer reactor
+    fires it — `kind` "gate_timeout" / "redrive" / "reconcile" are handled
+    built-in; others are delegated to your `on_timer` callback. Idempotent on
+    (run_id, timer_id)."""
+    with TapeClient(url) as c:
+        return c.set_timer(run_id=run_id, timer_id=timer_id, fire_at_ms=fire_at_ms,
+                           kind=kind, payload_json=_json.dumps(payload or {}))
+
+
+def cancel_timer(*, run_id, timer_id, url: str = DEFAULT_URL):
+    with TapeClient(url) as c:
+        return c.cancel_timer(run_id=run_id, timer_id=timer_id)

@@ -91,9 +91,27 @@ runner = Runner(app=app, session_service=TapeSessionService("tape://localhost:78
 
 Your tool bodies stay plain; `@tape.effect(compensate=..., status_check=...)` is
 optional sugar for declaring an inverse and how the reconciler resolves an
-`UNKNOWN`. After a crash, `tape.recover_once(runner=runner)` re-drives every
-recoverable run — ADK reconstructs the agent, Tape replays the recorded decisions
-and short-circuits the confirmed effects, the run finishes once.
+`UNKNOWN`. Inline non-determinism a tool body smuggles in (`time.time()`, a
+random id, a file read) goes through `tape.now()` / `tape.uuid()` / `tape.random()`
+/ `tape.sample(tool_context, fn, *args)` — "make any call an activity": called
+once per run, journaled, replayed on a re-drive.
+
+After a crash, run the **reactors** — they watch the journal (the WAL) and react:
+`recovery` re-drives recoverable runs; `reconciler` resolves UNKNOWN effects via
+the registered status checks; `timers` fires due timers (gate timeouts, delayed
+re-drives, …). Run them as a sidecar:
+
+```bash
+tape-reactors --runner-from my_app:build_runner --url tape://tape:7878
+# or:  python -c "import tape.reactors, my_app; tape.reactors.run_reactors(runner=my_app.build_runner())"
+```
+
+Each reactor is idempotent (the lease + replay properties make a double-run
+harmless), so run as many copies as you like. `tape.set_timer(run_id=…, fire_at_ms=…,
+kind="gate_timeout"|"redrive"|…)` sets a durable "wake me at T"; `SubscribeEvents`
+(via `tape.reactors.run_event_fanout(url, sink=…)`) tails the cross-run WAL — wire
+`sink` to Pub/Sub / Kafka / a webhook to publish it. (On Bigtable the cross-run
+tail is "use Bigtable change streams"; the per-run `SubscribeRun` feed still works.)
 
 There is also a zero-touch mode for an app you'd rather not edit:
 

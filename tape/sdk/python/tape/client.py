@@ -151,6 +151,30 @@ class TapeClient:
             run_id=run_id, app_name=app_name, user_id=user_id, session_id=session_id,
             gate_name=gate_name, resolution_json=resolution_json))
 
+    # ── reconciliation ──────────────────────────────────────────────────────
+
+    def list_pending_effects(self, *, older_than_ms=0, include_pending=True, include_unknown=True, limit=200):
+        return self.stub.ListPendingEffects(pb.ListPendingEffectsRequest(
+            older_than_ms=older_than_ms, include_pending=include_pending,
+            include_unknown=include_unknown, limit=limit))
+
+    # ── timers ──────────────────────────────────────────────────────────────
+
+    def set_timer(self, *, run_id, fire_at_ms, kind, timer_id="", payload_json=""):
+        return self.stub.SetTimer(pb.SetTimerRequest(
+            run_id=run_id, timer_id=timer_id, fire_at_ms=fire_at_ms, kind=kind, payload_json=payload_json))
+
+    def cancel_timer(self, *, run_id, timer_id):
+        return self.stub.CancelTimer(pb.CancelTimerRequest(run_id=run_id, timer_id=timer_id))
+
+    def list_due_timers(self, *, now_ms=0, limit=200, claim=False):
+        return self.stub.ListDueTimers(pb.ListDueTimersRequest(now_ms=now_ms, limit=limit, claim=claim))
+
+    # ── the WAL tail ────────────────────────────────────────────────────────
+
+    def subscribe_events(self, *, from_ts_ms=0, run_id="", kind=""):
+        return self.stub.SubscribeEvents(pb.SubscribeEventsRequest(from_ts_ms=from_ts_ms, run_id=run_id, kind=kind))
+
     # ── ADK SessionService shim ─────────────────────────────────────────────
 
     def create_session(self, *, app_name, user_id, session_id="", state_json="{}"):

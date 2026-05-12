@@ -33,6 +33,15 @@ def _maybe_crash(tool_name: str) -> None:
         os._exit(137)
 
 
+def _maybe_acklost(tool_name: str) -> None:
+    """If TAPE_ACKLOST_AFTER == tool_name: the request landed (it's already in the
+    ledger) but the acknowledgement is lost — raise tape.AckLost so Tape records
+    the effect as UNKNOWN and the reconciler resolves it via the status check."""
+    if os.environ.get("TAPE_ACKLOST_AFTER", "") == tool_name:
+        import tape
+        raise tape.AckLost(f"{tool_name}: acknowledgement lost (the request did land)")
+
+
 class _FileLedger:
     """A tiny key -> record store, persisted as JSON."""
 
@@ -79,7 +88,8 @@ class FakeBank:
         self.ledger.put_if_absent(idempotency_key, {
             "wire_id": wire_id, "account_id": account_id,
             "amount_minor": amount_minor, "target_mmf": target_mmf})
-        _maybe_crash("execute_sweep")  # the money has moved; the ack has not been returned
+        _maybe_acklost("execute_sweep")  # the money has moved; the ack is lost (-> UNKNOWN)
+        _maybe_crash("execute_sweep")    # the money has moved; the process dies before returning
         return wire_id
 
     def reverse(self, wire_id: str, **_) -> str:

@@ -134,6 +134,31 @@ class TapeStub(object):
                 request_serializer=tape__pb2.SendSignalRequest.SerializeToString,
                 response_deserializer=tape__pb2.SendSignalResponse.FromString,
                 _registered_method=True)
+        self.ListPendingEffects = channel.unary_unary(
+                '/tape.v1.Tape/ListPendingEffects',
+                request_serializer=tape__pb2.ListPendingEffectsRequest.SerializeToString,
+                response_deserializer=tape__pb2.ListPendingEffectsResponse.FromString,
+                _registered_method=True)
+        self.SetTimer = channel.unary_unary(
+                '/tape.v1.Tape/SetTimer',
+                request_serializer=tape__pb2.SetTimerRequest.SerializeToString,
+                response_deserializer=tape__pb2.TimerRecord.FromString,
+                _registered_method=True)
+        self.CancelTimer = channel.unary_unary(
+                '/tape.v1.Tape/CancelTimer',
+                request_serializer=tape__pb2.CancelTimerRequest.SerializeToString,
+                response_deserializer=tape__pb2.CancelTimerResponse.FromString,
+                _registered_method=True)
+        self.ListDueTimers = channel.unary_unary(
+                '/tape.v1.Tape/ListDueTimers',
+                request_serializer=tape__pb2.ListDueTimersRequest.SerializeToString,
+                response_deserializer=tape__pb2.ListDueTimersResponse.FromString,
+                _registered_method=True)
+        self.SubscribeEvents = channel.unary_stream(
+                '/tape.v1.Tape/SubscribeEvents',
+                request_serializer=tape__pb2.SubscribeEventsRequest.SerializeToString,
+                response_deserializer=tape__pb2.EventEntry.FromString,
+                _registered_method=True)
         self.CreateSession = channel.unary_unary(
                 '/tape.v1.Tape/CreateSession',
                 request_serializer=tape__pb2.CreateSessionRequest.SerializeToString,
@@ -297,6 +322,42 @@ class TapeServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListPendingEffects(self, request, context):
+        """── reconciliation ────────────────────────────────────────────────────────
+        PENDING/UNKNOWN effects, for the reconciler reactor
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetTimer(self, request, context):
+        """── timers (the delayed-reactor / gate-timeout service) ───────────────────
+        idempotent on (run_id, timer_id)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CancelTimer(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListDueTimers(self, request, context):
+        """claim=true => atomically mark fired
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeEvents(self, request, context):
+        """── the WAL → reactors feed (cross-run journal tail) ──────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CreateSession(self, request, context):
         """── ADK SessionService shim ───────────────────────────────────────────────
         """
@@ -431,6 +492,31 @@ def add_TapeServicer_to_server(servicer, server):
                     servicer.SendSignal,
                     request_deserializer=tape__pb2.SendSignalRequest.FromString,
                     response_serializer=tape__pb2.SendSignalResponse.SerializeToString,
+            ),
+            'ListPendingEffects': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListPendingEffects,
+                    request_deserializer=tape__pb2.ListPendingEffectsRequest.FromString,
+                    response_serializer=tape__pb2.ListPendingEffectsResponse.SerializeToString,
+            ),
+            'SetTimer': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetTimer,
+                    request_deserializer=tape__pb2.SetTimerRequest.FromString,
+                    response_serializer=tape__pb2.TimerRecord.SerializeToString,
+            ),
+            'CancelTimer': grpc.unary_unary_rpc_method_handler(
+                    servicer.CancelTimer,
+                    request_deserializer=tape__pb2.CancelTimerRequest.FromString,
+                    response_serializer=tape__pb2.CancelTimerResponse.SerializeToString,
+            ),
+            'ListDueTimers': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListDueTimers,
+                    request_deserializer=tape__pb2.ListDueTimersRequest.FromString,
+                    response_serializer=tape__pb2.ListDueTimersResponse.SerializeToString,
+            ),
+            'SubscribeEvents': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeEvents,
+                    request_deserializer=tape__pb2.SubscribeEventsRequest.FromString,
+                    response_serializer=tape__pb2.EventEntry.SerializeToString,
             ),
             'CreateSession': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateSession,
@@ -998,6 +1084,141 @@ class Tape(object):
             '/tape.v1.Tape/SendSignal',
             tape__pb2.SendSignalRequest.SerializeToString,
             tape__pb2.SendSignalResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListPendingEffects(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ListPendingEffects',
+            tape__pb2.ListPendingEffectsRequest.SerializeToString,
+            tape__pb2.ListPendingEffectsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetTimer(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/SetTimer',
+            tape__pb2.SetTimerRequest.SerializeToString,
+            tape__pb2.TimerRecord.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CancelTimer(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/CancelTimer',
+            tape__pb2.CancelTimerRequest.SerializeToString,
+            tape__pb2.CancelTimerResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListDueTimers(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ListDueTimers',
+            tape__pb2.ListDueTimersRequest.SerializeToString,
+            tape__pb2.ListDueTimersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeEvents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/tape.v1.Tape/SubscribeEvents',
+            tape__pb2.SubscribeEventsRequest.SerializeToString,
+            tape__pb2.EventEntry.FromString,
             options,
             channel_credentials,
             insecure,

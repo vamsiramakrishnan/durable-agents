@@ -47,8 +47,8 @@ def _wait_up(url: str, timeout: float = 15.0) -> None:
     raise RuntimeError(f"tape server never came up at {url}: {last}")
 
 
-@pytest.fixture(scope="session")
-def tape_server(tmp_path_factory):
+@pytest.fixture()  # function-scoped: a fresh server + DB per test, so a recoverable
+def tape_server(tmp_path_factory):  # run left by one test never gets re-driven by another
     if not SERVER_BIN.exists():
         pytest.skip(f"tape-server binary not built — run `cargo build` in {SERVER_BIN.parent.parent}")
     d = tmp_path_factory.mktemp("tape")
