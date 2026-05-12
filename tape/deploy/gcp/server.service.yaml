@@ -1,0 +1,60 @@
+# Tape server on Cloud Run — a stateless Rust gRPC service, autoscaled, internal.
+# Deploy: gcloud run services replace tape/deploy/gcp/server.service.yaml --region=$REGION
+# (or use deploy.sh, which does the equivalent `gcloud run deploy`.)
+#
+# Key bits:
+#   * run.googleapis.com/use-http2: "true"   — Cloud Run forwards h2c to the
+#     container, so the Rust server stays plaintext gRPC; TLS is between clients
+#     and the Cloud Run LB.
+#   * ingress: internal                       — only callers on your VPC / other
+#     Cloud Run services (with roles/run.invoker) can reach it.
+#   * minScale: "1"                            — keep one warm (it's on the hot path).
+#   * the AlloyDB Auth Proxy as a sidecar container, so TAPE_STORE can be
+#     postgres://…@127.0.0.1:5432/…  — or delete that container + the env and set
+#     TAPE_STORE=bigtable://PROJECT/INSTANCE/TABLE (Bigtable uses the SA's IAM).
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: tape-server
+  annotations:
+    run.googleapis.com/ingress: internal
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/use-http2: "true"
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "20"
+        # for the AlloyDB Auth Proxy sidecar to reach AlloyDB over a private IP:
+        run.googleapis.com/vpc-access-connector: projects/PROJECT/locations/REGION/connectors/CONNECTOR
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+    spec:
+      serviceAccountName: tape-server@PROJECT.iam.gserviceaccount.com
+      containers:
+        - name: tape-server
+          image: REGION-docker.pkg.dev/PROJECT/tape/tape-server:0.1
+          args: ["tape-server"]
+          ports:
+            - name: h2c            # Cloud Run requires the gRPC container to expose h2c
+              containerPort: 7878
+          env:
+            - name: TAPE_LISTEN
+              value: "0.0.0.0:7878"
+            # AlloyDB path (proxy sidecar below):
+            - name: TAPE_STORE
+              value: "postgres://tape:PASSWORD@127.0.0.1:5432/tape"
+            # Bigtable path instead — delete the line above and the proxy sidecar:
+            # - name: TAPE_STORE
+            #   value: "bigtable://PROJECT/tape/tape"
+            - name: RUST_LOG
+              value: "tape_server=info"
+          resources:
+            limits: { cpu: "1", memory: "512Mi" }
+        # ── AlloyDB Auth Proxy sidecar (omit entirely for the Bigtable path) ──
+        - name: alloydb-proxy
+          image: gcr.io/alloydb-connectors/alloydb-auth-proxy:latest
+          args:
+            - "--port=5432"
+            - "projects/PROJECT/locations/REGION/clusters/CLUSTER/instances/INSTANCE"
+          resources:
+            limits: { cpu: "0.5", memory: "256Mi" }

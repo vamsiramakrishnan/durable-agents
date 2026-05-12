@@ -780,11 +780,36 @@ source (consumed via Dataflow's `BigtableChangeStreamsToPubSub` template or the
 `ReadChangeStream` API; see [docs.cloud.google.com/bigtable/docs/change-streams-overview](https://docs.cloud.google.com/bigtable/docs/change-streams-overview)),
 and the per-run `SubscribeRun` feed still works.
 
+**Deploying onto a managed agent runtime (Vertex AI Agent Engine).** Agent
+Engine runs your ADK `App` in a managed, autoscaled service you don't get to add
+sidecars to — so the *client* of Tape runs there (deploy the `App` with
+`plugins=[TapePlugin("tapes://…")]`, `session_service=TapeSessionService("tapes://…")`,
+`resumability_config=ResumabilityConfig(is_resumable=True)`, `tape-py` in
+`requirements`, `TAPE_URL` in `env_vars`), while the Tape *server* and the
+*reactors* are separate services — by definition, the parts that must outlive
+the agent process. The Tape server is a Cloud Run service (`--use-http2`,
+internal ingress, `min-instances ≥ 1`) backed by AlloyDB (the AlloyDB Auth Proxy
+as a Cloud Run sidecar — `TAPE_STORE=postgres://…@127.0.0.1:5432/…`) or Bigtable
+(`bigtable://…`, the service account's IAM); the `tapes://host` URL scheme makes
+the SDK open a TLS channel and attach a Google ID token (ADC) for the Cloud Run
+audience, so the agent's service account just needs `roles/run.invoker`. The
+reactors are a small Cloud Run service that bundles your agent package (for the
+`@tape.effect(status_check=…)` registrations) and runs
+`tape.reactors.run_reactors(redrive_fn=…)` — its `redrive_fn` re-invokes a
+stalled run through the Agent Engine `:streamQuery` API rather than a local
+`runner.run_async` (the recovery reactor by definition runs when the agent
+isn't, so it can't reach into Agent Engine's runtime — it pokes the API). The
+worked manifests are in `tape/deploy/gcp/` (and `tape/deploy/k8s/` for
+self-managed Kubernetes, where the reactor *can* be a literal sidecar container
+in the agent's pod).
+
 `tape.proto` stays the contract (these are additive RPCs); the `RunStore` trait
 is where a backend implements them. Still on the v2 list: a transactional-outbox
 `EventLog` (a `tape_outbox` row written in the same txn, a relay → Pub/Sub — for
 exactly-once-effective publish without the at-least-once-with-idempotent-consumers
-tradeoff the WAL tail accepts), Cloud Tasks as the timer backend at scale, and an
+tradeoff the WAL tail accepts), Cloud Tasks as the timer backend at scale (the
+managed swap for the `tape_timers` table + the polling timer reactor — not
+required, but it removes the poller and gives exact-time delivery), and an
 `grpc.aio` SDK that `await`s Tape (sync only on the floor — `BeginEffect`,
 `AdmitBudget` — async and batched everywhere else).
 

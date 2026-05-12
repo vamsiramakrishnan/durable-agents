@@ -94,10 +94,12 @@ def reconcile_once(url: str = DEFAULT_URL, *, reconcile_pending_after_ms: int = 
 
 # ── the timer reactor ───────────────────────────────────────────────────────
 
-def fire_due_timers_once(url: str = DEFAULT_URL, *, runner: Any = None,
+def fire_due_timers_once(url: str = DEFAULT_URL, *, runner: Any = None, redrive_fn: Any = None,
                          on_timer: Optional[Callable[[Any], None]] = None,
                          client: Optional[TapeClient] = None) -> list[dict]:
-    """Claim and fire due timers. Returns a list of {run_id, timer_id, kind, action}."""
+    """Claim and fire due timers. Returns a list of {run_id, timer_id, kind, action}.
+    `redrive_fn` (e.g. one that calls the Agent Engine `:streamQuery` API) is used
+    for `redrive` timers when there's no local `runner`."""
     c = client or TapeClient(url)
     out: list[dict] = []
     for t in c.list_due_timers(claim=True, limit=500).timers:
@@ -113,9 +115,10 @@ def fire_due_timers_once(url: str = DEFAULT_URL, *, runner: Any = None,
                 resolution = {"timed_out": True, **(payload.get("resolution") or {})}
                 c.send_signal(run_id=t.run_id, gate_name=gate, resolution_json=json.dumps(resolution))
                 action = f"signalled {gate} (timeout)"
-            elif t.kind == "redrive" and runner is not None:
+            elif t.kind == "redrive" and (runner is not None or redrive_fn is not None):
                 run = c.get_run(t.run_id)
-                _resume(run.invocation_id, runner=runner, user_id=run.user_id, session_id=run.session_id)
+                _resume(run.invocation_id, runner=runner, redrive_fn=redrive_fn,
+                        user_id=run.user_id, session_id=run.session_id)
                 action = "re-driven"
             elif t.kind == "reconcile":
                 key = payload.get("key", "")
@@ -147,18 +150,22 @@ from ._recover import recover_once  # noqa: E402,F401
 
 # ── the loop ────────────────────────────────────────────────────────────────
 
-def run_reactors(*, runner: Any = None, url: str = DEFAULT_URL, recover: bool = True,
-                 reconcile: bool = True, timers: bool = True, interval_s: float = 2.0,
-                 reconcile_pending_after_s: float = 0.0, once: bool = False,
-                 on_tick: Optional[Callable[[dict], None]] = None) -> None:
-    """Loop: each tick, run the enabled reactors. Returns after one tick if `once`."""
+def run_reactors(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAULT_URL,
+                 recover: bool = True, reconcile: bool = True, timers: bool = True,
+                 interval_s: float = 2.0, reconcile_pending_after_s: float = 0.0,
+                 once: bool = False, on_tick: Optional[Callable[[dict], None]] = None) -> None:
+    """Loop: each tick, run the enabled reactors. Returns after one tick if `once`.
+    Pass `runner=` for a local ADK Runner, or `redrive_fn=` (e.g. one that calls
+    the Vertex AI Agent Engine `:streamQuery` API) when the agent is deployed
+    elsewhere — recovery still works, it just re-invokes through that callback."""
     client = TapeClient(url)
+    can_redrive = runner is not None or redrive_fn is not None
     try:
         while True:
             tick: dict = {}
-            if recover and runner is not None:
+            if recover and can_redrive:
                 try:
-                    tick["recovered"] = recover_once(runner=runner, url=url)
+                    tick["recovered"] = recover_once(runner=runner, redrive_fn=redrive_fn, url=url)
                 except Exception as ex:  # noqa: BLE001
                     tick["recover_error"] = str(ex)
             if reconcile:
@@ -168,7 +175,7 @@ def run_reactors(*, runner: Any = None, url: str = DEFAULT_URL, recover: bool = 
                     tick["reconcile_error"] = str(ex)
             if timers:
                 try:
-                    tick["timers_fired"] = fire_due_timers_once(url, runner=runner, client=client)
+                    tick["timers_fired"] = fire_due_timers_once(url, runner=runner, redrive_fn=redrive_fn, client=client)
                 except Exception as ex:  # noqa: BLE001
                     tick["timer_error"] = str(ex)
             if on_tick is not None:

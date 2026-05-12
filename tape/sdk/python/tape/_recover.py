@@ -42,13 +42,35 @@ def _drain(agen) -> list:
     return asyncio.run(_run())
 
 
-def resume(invocation_id: str, *, runner: Any, user_id: str, session_id: str) -> list:
+class _Run:
+    """A minimal RunState-shaped object handed to a `redrive_fn`."""
+    def __init__(self, run_id="", app_name="", user_id="", session_id="", invocation_id=""):
+        self.run_id, self.app_name = run_id, app_name
+        self.user_id, self.session_id, self.invocation_id = user_id, session_id, invocation_id
+
+
+def _redrive(run: Any, *, runner: Any = None, redrive_fn: Any = None) -> None:
+    """Re-invoke a run. With `redrive_fn` (e.g. one that calls the Vertex AI
+    Agent Engine `:streamQuery` API), `redrive_fn(run)` is called; otherwise the
+    local `runner.run_async(invocation_id=…)` path is used (the run finishes /
+    re-suspends as it goes)."""
+    if redrive_fn is not None:
+        redrive_fn(run)
+        return
+    if runner is None:
+        raise ValueError("recover/redrive needs either `runner=` (a local ADK Runner) or `redrive_fn=`")
+    _drain(runner.run_async(user_id=run.user_id, session_id=run.session_id, invocation_id=run.invocation_id))
+
+
+def resume(invocation_id: str, *, runner: Any = None, redrive_fn: Any = None,
+           user_id: str = "", session_id: str = "") -> None:
     """Re-invoke one crashed/parked run by its ADK invocation_id."""
-    agen = runner.run_async(user_id=user_id, session_id=session_id, invocation_id=invocation_id)
-    return _drain(agen)
+    _redrive(_Run(invocation_id=invocation_id, user_id=user_id, session_id=session_id),
+             runner=runner, redrive_fn=redrive_fn)
 
 
-def recover_once(*, runner: Any, url: str = DEFAULT_URL, limit: int = 50) -> list[dict]:
+def recover_once(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAULT_URL,
+                 limit: int = 50) -> list[dict]:
     """Re-drive every recoverable run. Returns a list of {run_id, invocation_id}."""
     c = TapeClient(url)
     try:
@@ -57,8 +79,7 @@ def recover_once(*, runner: Any, url: str = DEFAULT_URL, limit: int = 50) -> lis
         c.close()
     out = []
     for r in runs:
-        agen = runner.run_async(user_id=r.user_id, session_id=r.session_id, invocation_id=r.invocation_id)
-        _drain(agen)
+        _redrive(r, runner=runner, redrive_fn=redrive_fn)
         out.append({"run_id": r.run_id, "invocation_id": r.invocation_id})
     return out
 

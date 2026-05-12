@@ -37,17 +37,98 @@ DEFAULT_URL = os.environ.get("TAPE_URL", "tape://localhost:7878")
 
 
 def _target(url: str) -> str:
+    """The host:port for a gRPC channel. `tapes://h` -> `h:443` (TLS), `tape://h`
+    / `grpc://h` / bare `h:p` -> as-is (plaintext)."""
+    if url.startswith("tapes://"):
+        h = url[len("tapes://"):]
+        return h if ":" in h else f"{h}:443"
     if url.startswith("tape://"):
-        return url[len("tape://") :]
+        return url[len("tape://"):]
     if url.startswith("grpc://"):
-        return url[len("grpc://") :]
+        return url[len("grpc://"):]
     return url
 
 
+def _is_tls(url: str) -> bool:
+    return url.startswith("tapes://") or url.startswith("grpcs://")
+
+
+def _audience_for(url: str) -> str:
+    """The OIDC audience for a Cloud Run-style IAM-protected endpoint: the full
+    https:// service URL (host without port)."""
+    host = _target(url).split(":")[0]
+    return f"https://{host}"
+
+
+class _GoogleIdTokenPlugin(grpc.AuthMetadataPlugin):
+    """A gRPC call-credentials plugin that attaches `authorization: Bearer <id-token>`.
+    Lazily uses Application Default Credentials (Cloud Run / GCE / GKE Workload
+    Identity / a service-account key) to mint an ID token for `audience`. If
+    google-auth isn't available or the fetch fails, it sends no auth header
+    (so TLS-without-IAM still works) and warns once."""
+
+    def __init__(self, audience: str):
+        self._aud = audience
+        self._token = ""
+        self._exp = 0.0
+        self._warned = False
+
+    def _fetch(self) -> str:
+        import time as _time
+        now = _time.time()
+        if self._token and now < self._exp - 60:
+            return self._token
+        try:
+            import base64
+            import json as _json
+            import google.auth.transport.requests as gar
+            from google.oauth2 import id_token as _idt
+
+            tok = _idt.fetch_id_token(gar.Request(), self._aud)
+            # decode the JWT exp (no signature check — we only need the expiry)
+            payload = _json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "=="))
+            self._exp = float(payload.get("exp", now + 1800))
+            self._token = tok
+        except Exception as ex:  # noqa: BLE001
+            if not self._warned:
+                self._warned = True
+                import warnings
+                warnings.warn(f"tape: could not mint a Google ID token for {self._aud}: {ex}; "
+                              "proceeding without auth (fine if the endpoint isn't IAM-protected)")
+            self._token, self._exp = "", float("inf")  # don't keep retrying every call
+        return self._token
+
+    def __call__(self, context, callback):
+        tok = self._fetch()
+        callback((("authorization", f"Bearer {tok}"),) if tok else (), None)
+
+
 class TapeClient:
-    def __init__(self, url: str = DEFAULT_URL):
+    """Synchronous gRPC client over the `tape.v1` service.
+
+    URL schemes: `tape://host:port` (plaintext — self-hosted / k8s / local),
+    `tapes://host` (TLS on :443 — Cloud Run / any HTTPS endpoint). On a TLS
+    channel, if the endpoint is IAM-protected (e.g. an internal Cloud Run
+    service), Tape attaches a Google ID token automatically — pass `auth=False`
+    to disable, or `id_token=<str>` to supply your own, or `audience=<url>` to
+    override the derived one."""
+
+    def __init__(self, url: str = DEFAULT_URL, *, auth: bool = True,
+                 audience: str = "", id_token: str = ""):
         self.url = url
-        self.channel = grpc.insecure_channel(_target(url))
+        target = _target(url)
+        if _is_tls(url):
+            chan_creds = grpc.ssl_channel_credentials()
+            call_creds = None
+            if id_token:
+                call_creds = grpc.access_token_call_credentials(id_token)
+            elif auth:
+                aud = audience or os.environ.get("TAPE_AUDIENCE", "") or _audience_for(url)
+                call_creds = grpc.metadata_call_credentials(_GoogleIdTokenPlugin(aud))
+            creds = grpc.composite_channel_credentials(chan_creds, call_creds) if call_creds else chan_creds
+            self.channel = grpc.secure_channel(target, creds)
+        else:
+            self.channel = grpc.insecure_channel(target)
         self.stub = pb_grpc.TapeStub(self.channel)
 
     def close(self) -> None:

@@ -113,6 +113,18 @@ kind="gate_timeout"|"redrive"|…)` sets a durable "wake me at T"; `SubscribeEve
 `sink` to Pub/Sub / Kafka / a webhook to publish it. (On Bigtable the cross-run
 tail is "use Bigtable change streams"; the per-run `SubscribeRun` feed still works.)
 
+When the agent isn't a local `Runner` you can call — e.g. it's deployed on
+**Vertex AI Agent Engine** — pass `run_reactors(redrive_fn=…)` instead of
+`runner=`, where `redrive_fn(run)` re-invokes through whatever API does
+(Agent Engine's `:streamQuery`, a REST endpoint, …). And when the Tape server
+runs on **Cloud Run**, point at it with the `tapes://host` scheme — the SDK
+opens a TLS channel and attaches a Google ID token (Application Default
+Credentials) for the Cloud Run audience, so the caller's service account just
+needs `roles/run.invoker`. The full GCP topology — Tape server on Cloud Run
+(with the AlloyDB Auth Proxy sidecar, or `bigtable://…`), the ADK agent on
+Agent Engine, the reactors on Cloud Run — is in [`deploy/gcp/`](deploy/gcp/)
+(the [`deploy/k8s/`](deploy/k8s/) manifest is the self-managed-Kubernetes version).
+
 There is also a zero-touch mode for an app you'd rather not edit:
 
 ```bash
