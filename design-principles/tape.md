@@ -684,21 +684,36 @@ in the treatise house style (`tape_*.svg`):
 
 The store is chosen by **URL at deploy time** — that is the whole "wiring". The
 server reads `TAPE_STORE` (or `--store`), parses the scheme, builds the matching
-`Store`, runs migrations, serves. Nothing above the server moves: the gRPC
-contract, the SDKs, the agents are all unaffected.
+store, migrates it, serves. Nothing above the server moves: the gRPC contract,
+the SDKs, the agents are all unaffected.
 
 | `TAPE_STORE` | backend | use |
 |---|---|---|
 | `sqlite:./tape.db` | file-backed SQLite (pooled, WAL) | the default; single-node, dev, small prod |
 | `sqlite::memory:` / `memory` | ephemeral in-process SQLite | tests, demos |
 | `postgres://user:pass@host:5432/db` | pooled PostgreSQL | production / horizontally scalable |
-| `bigtable://project/instance/table` | *reserved (v2)* — the trait is the seam | very-high-scale / GCP-native (see "the async substrate" below) |
+| `alloydb://user:pass@host:5432/db` | AlloyDB (PostgreSQL-wire-compatible) — run the AlloyDB Auth Proxy and point at `127.0.0.1:5432`, or a private-IP host | production / Google-managed Postgres at scale |
+| `bigtable://project/instance/table` | Cloud Bigtable (`BIGTABLE_EMULATOR_HOST` honoured) | very-high-scale / GCP-native (see "the async substrate" below) |
 
-A `Store` is a tiny surface — `exec` / `query` / `query_opt` / `tx` over the
-portable SQL the service writes once (`?N` placeholders; the Postgres store
-rewrites them to `$N`; the schemas differ only in int/float type names). Both the
-SQLite and the Postgres impls run blocking DB work on a blocking thread, behind
-an `r2d2` connection pool. Adding a backend = implementing four methods.
+Architecturally, Tape's *logical operations* — begin a run, record a decision,
+begin/complete an effect, register a compensation, charge a budget, append an
+event, … — are a trait, `RunStore`; everything else is plumbing. The SQL
+backends (`SqlRunStore` over a `SqlBackend` — pooled `rusqlite` for SQLite,
+pooled `postgres` for PostgreSQL **and AlloyDB**, which is wire-compatible)
+share one set of portable SQL written once. A non-SQL backend implements the
+same `RunStore`: the Cloud Bigtable backend (`tape/server/src/store/bigtable.rs`)
+maps every operation onto single-row atomic mutations, `CheckAndMutateRow` (the
+effect-key dedup), and a per-run `seq` counter held on the run row (single-writer
+per run is guaranteed by the lease, so a plain read-then-write suffices —
+Bigtable's `ReadModifyWriteRow` would be cleaner but the data-plane client crate
+doesn't expose it); the table and its column family `m` must exist before
+startup (Bigtable requires explicit table creation, like creating a Postgres
+database), and the `AppendEvent` two-write isn't a single transaction (Bigtable
+has no cross-row transactions) — the event is written first, then the state, and
+a re-drive re-applies an un-applied delta. The full row-key design is documented
+in that module; the per-operation wiring against the Bigtable data plane is the
+current work in progress (the trait is the seam — until it lands, `bigtable://`
+fails loudly on startup rather than silently).
 
 **Horizontal scaling.** With a network store (Postgres), the Tape server is
 **stateless between requests** — so you run *N* replicas behind a load balancer

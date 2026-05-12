@@ -1,32 +1,42 @@
-//! The storage layer — pluggable, chosen by URL at deploy time.
+//! The storage layer.
 //!
-//! `TAPE_STORE` (or `--store`) is a URL:
-//!   * `sqlite:./tape.db`   — a file-backed SQLite store (the default)
-//!   * `sqlite::memory:` / `memory` — an ephemeral in-process store (tests, demos)
-//!   * `postgres://user:pass@host:5432/db` — a pooled PostgreSQL store (production / HA)
-//!   * `bigtable://project/instance/table` — reserved for v2 (see design-principles/tape.md §13)
+//! Tape's logical operations — begin a run, record a decision, begin/complete an
+//! effect, register a compensation, charge a budget, append an event, … — are a
+//! trait, [`RunStore`]. Backends implement it however they like:
 //!
-//! The wiring is automatic: the server parses the URL on startup, builds the
-//! matching `Store`, runs migrations, and serves. Nothing else changes — the
-//! gRPC contract, the SDKs, the agents are all unaffected. Run N replicas of the
-//! server behind a load balancer against the same Postgres and you have a
-//! horizontally scalable Tape: the server holds no state between requests; "one
-//! driver per run at a time" is enforced by the per-run lease in `tape_runs`;
-//! every mutating RPC is idempotent, so a double-drive (two recovery workers
-//! racing) is harmless — the loser short-circuits.
+//!   * [`sql`] — a SQL implementation (`SqlRunStore` over a tiny `SqlBackend`),
+//!     with `SqliteBackend` and `PostgresBackend` (and AlloyDB, which is
+//!     PostgreSQL-wire-compatible — see `open`);
+//!   * [`bigtable`] — a Cloud Bigtable implementation, for very-high-scale /
+//!     GCP-native deployments. Bigtable doesn't speak SQL; it speaks single-row
+//!     atomic mutations, `CheckAndMutate` (the effect-key dedup), and
+//!     `ReadModifyWrite` counters (the per-run `seq`) — which is exactly the
+//!     shape `RunStore` needs.
 //!
-//! Implementations share a tiny surface — `exec` / `query` / `query_opt` / `tx`
-//! over portable SQL with `?N` placeholders — so the SQL lives once, in
-//! `service.rs`. SQLite reads `?N` natively; the Postgres store rewrites it to
-//! `$N`. Both use an `r2d2` connection pool and run blocking DB work on a
-//! blocking thread.
+//! The store is chosen by **URL at deploy time** (`TAPE_STORE` / `--store`):
+//!
+//!   sqlite:./tape.db                          file-backed SQLite (default)
+//!   sqlite::memory:  |  memory                ephemeral, for tests/demos
+//!   postgres://user:pass@host:5432/db         pooled PostgreSQL
+//!   alloydb://user:pass@host:5432/db          AlloyDB via the Auth Proxy (Postgres wire)
+//!   bigtable://project/instance/table         Cloud Bigtable
+//!     (BIGTABLE_EMULATOR_HOST is honoured, so `bigtable://demo/demo/tape` works
+//!      against the local emulator)
+//!
+//! Run N replicas of the server against a shared network store (Postgres/AlloyDB/
+//! Bigtable) behind a load balancer and you have a horizontally scalable Tape:
+//! the server holds no state between requests; "one driver per run at a time" is
+//! the per-run lease; every mutating RPC is idempotent, so a double-drive is
+//! harmless.
 
-pub mod postgres;
-pub mod sqlite;
+pub mod bigtable;
+pub mod sql;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+
+use crate::pb::*;
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
@@ -35,114 +45,116 @@ pub enum StoreError {
     #[error("tape store: {0}")]
     Msg(String),
 }
-
 impl StoreError {
     pub fn msg(s: impl Into<String>) -> Self {
         StoreError::Msg(s.into())
     }
 }
 
-/// A SQL value, in or out. Every column in the Tape schema is one of these.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Val {
-    Int(i64),
-    Real(f64),
-    Text(String),
-    Null,
-}
-
-impl From<i64> for Val { fn from(v: i64) -> Self { Val::Int(v) } }
-impl From<i32> for Val { fn from(v: i32) -> Self { Val::Int(v as i64) } }
-impl From<u64> for Val { fn from(v: u64) -> Self { Val::Int(v as i64) } }
-impl From<f64> for Val { fn from(v: f64) -> Self { Val::Real(v) } }
-impl From<&str> for Val { fn from(v: &str) -> Self { Val::Text(v.to_string()) } }
-impl From<String> for Val { fn from(v: String) -> Self { Val::Text(v) } }
-impl From<&String> for Val { fn from(v: &String) -> Self { Val::Text(v.clone()) } }
-
-/// A result row: positional columns. Use the typed getters.
-pub type Row = Vec<Val>;
-
-pub trait RowExt {
-    fn i64(&self, i: usize) -> i64;
-    fn f64(&self, i: usize) -> f64;
-    fn str(&self, i: usize) -> String;
-    fn i32(&self, i: usize) -> i32 {
-        self.i64(i) as i32
-    }
-}
-
-impl RowExt for Row {
-    fn i64(&self, i: usize) -> i64 {
-        match self.get(i) {
-            Some(Val::Int(v)) => *v,
-            Some(Val::Real(v)) => *v as i64,
-            Some(Val::Text(s)) => s.parse().unwrap_or(0),
-            _ => 0,
-        }
-    }
-    fn f64(&self, i: usize) -> f64 {
-        match self.get(i) {
-            Some(Val::Real(v)) => *v,
-            Some(Val::Int(v)) => *v as f64,
-            Some(Val::Text(s)) => s.parse().unwrap_or(0.0),
-            _ => 0.0,
-        }
-    }
-    fn str(&self, i: usize) -> String {
-        match self.get(i) {
-            Some(Val::Text(s)) => s.clone(),
-            Some(Val::Int(v)) => v.to_string(),
-            Some(Val::Real(v)) => v.to_string(),
-            _ => String::new(),
-        }
-    }
-}
-
+/// Tape's logical operations. A backend that implements this is a complete
+/// storage layer. All ordering, sequencing and journaling lives inside the
+/// implementation — the gRPC layer above is pure plumbing.
 #[async_trait]
-pub trait Store: Send + Sync {
-    /// Create the schema if absent.
-    async fn migrate(&self) -> StoreResult<()>;
+pub trait RunStore: Send + Sync {
+    // ── run lifecycle ───────────────────────────────────────────────────────
+    async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
+                       lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<BeginRunResponse>;
+    async fn resume_run(&self, run_id: &str, lease_owner: &str, lease_ttl_ms: i64)
+        -> StoreResult<Option<RunState>>;
+    async fn end_run(&self, run_id: &str, status: i32, detail_json: &str) -> StoreResult<Option<RunState>>;
+    async fn get_run(&self, run_id: &str) -> StoreResult<Option<RunState>>;
+    async fn list_runs_to_recover(&self, now_ms: i64, limit: i64) -> StoreResult<Vec<RunState>>;
+    async fn journal_range(&self, run_id: &str, from_seq: i64) -> StoreResult<Vec<JournalEntry>>;
 
-    /// Run a statement; return rows affected. `?N` placeholders.
-    async fn exec(&self, sql: &str, params: Vec<Val>) -> StoreResult<u64>;
+    // ── decision ledger ─────────────────────────────────────────────────────
+    async fn record_decision(&self, run_id: &str, decision_index: i64, model: &str,
+                             request_json: &str, response_json: &str, rationale: &str,
+                             policy_version: &str) -> StoreResult<DecisionRecord>;
+    async fn get_decision(&self, run_id: &str, decision_index: i64) -> StoreResult<Option<DecisionRecord>>;
 
-    /// Run a query; return all rows.
-    async fn query(&self, sql: &str, params: Vec<Val>) -> StoreResult<Vec<Row>>;
+    // ── effect ledger ───────────────────────────────────────────────────────
+    /// Returns the effect row. If it didn't exist, it was created with status
+    /// PENDING (and committed) before this returns — that's the outbox move.
+    async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
+                          request_json: &str, custom_key: &str) -> StoreResult<EffectRecord>;
+    async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str,
+                             error_json: &str) -> StoreResult<Option<EffectRecord>>;
+    async fn get_effect(&self, run_id: &str, key: &str) -> StoreResult<Option<EffectRecord>>;
+    async fn reconcile_effect(&self, run_id: &str, key: &str, resolved_status: i32,
+                              response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>>;
 
-    /// Run a query expected to return zero or one row.
-    async fn query_opt(&self, sql: &str, params: Vec<Val>) -> StoreResult<Option<Row>> {
-        Ok(self.query(sql, params).await?.into_iter().next())
-    }
+    // ── obligations / compensation ──────────────────────────────────────────
+    async fn register_compensation(&self, run_id: &str, effect_key: &str, kind: &str,
+                                   payload_json: &str) -> StoreResult<ObligationRecord>;
+    async fn list_obligations(&self, run_id: &str, only_unresolved: bool) -> StoreResult<Vec<ObligationRecord>>;
+    async fn resolve_obligation(&self, run_id: &str, obligation_seq: i64, status: i32,
+                                result_json: &str) -> StoreResult<Option<ObligationRecord>>;
 
-    /// Run several statements in one transaction (all-or-nothing).
-    async fn tx(&self, stmts: Vec<(String, Vec<Val>)>) -> StoreResult<()>;
+    // ── budget ──────────────────────────────────────────────────────────────
+    async fn set_budget(&self, run_id: &str, usd_cap: f64, token_cap: i64) -> StoreResult<BudgetState>;
+    async fn get_budget(&self, run_id: &str) -> StoreResult<BudgetState>;
+    async fn charge_budget(&self, run_id: &str, usd: f64, tokens: i64) -> StoreResult<BudgetState>;
+
+    // ── gates / signals ─────────────────────────────────────────────────────
+    /// Returns (delivered, resolution_json). If not delivered, the run is parked
+    /// (status WAITING) on `gate_name`.
+    async fn await_signal(&self, run_id: &str, gate_name: &str, payload_json: &str)
+        -> StoreResult<(bool, String)>;
+    /// Returns (run_id, run_status). `run_id` may be "" to route by (app, user, session).
+    async fn send_signal(&self, run_id: &str, app: &str, user: &str, session: &str, gate_name: &str,
+                         resolution_json: &str) -> StoreResult<(String, i32)>;
+
+    // ── ADK SessionService shim ─────────────────────────────────────────────
+    async fn create_session(&self, app: &str, user: &str, session: &str, state_json: &str)
+        -> StoreResult<Session>;
+    async fn get_session(&self, app: &str, user: &str, session: &str, max_events: i64)
+        -> StoreResult<Option<Session>>;
+    async fn list_sessions(&self, app: &str, user: &str) -> StoreResult<Vec<Session>>;
+    async fn delete_session(&self, app: &str, user: &str, session: &str) -> StoreResult<bool>;
+    /// Appends the ADK event and applies `state_delta_json` to the session state
+    /// in one transaction. Returns (event, last_update_time_ms).
+    async fn append_event(&self, app: &str, user: &str, session: &str, event: EventRecord,
+                          state_delta_json: &str) -> StoreResult<(EventRecord, i64)>;
 }
 
-/// Parse a store URL and build the matching `Store`, migrated and ready.
-pub async fn open(url: &str) -> StoreResult<Arc<dyn Store>> {
-    let s: Arc<dyn Store> = if url == "memory" || url == ":memory:" || url == "sqlite::memory:" {
-        Arc::new(sqlite::SqliteStore::open_memory()?)
-    } else if let Some(path) = url.strip_prefix("sqlite:") {
+/// Parse a store URL and build the matching `RunStore`, migrated and ready.
+pub async fn open(url: &str) -> StoreResult<Arc<dyn RunStore>> {
+    if url == "memory" || url == ":memory:" || url == "sqlite::memory:" {
+        return Ok(Arc::new(sql::SqlRunStore::sqlite_memory().await?));
+    }
+    if let Some(path) = url.strip_prefix("sqlite:") {
         let path = path.strip_prefix("//").unwrap_or(path);
-        if path == ":memory:" {
-            Arc::new(sqlite::SqliteStore::open_memory()?)
+        return if path == ":memory:" {
+            Ok(Arc::new(sql::SqlRunStore::sqlite_memory().await?))
         } else {
-            Arc::new(sqlite::SqliteStore::open_file(path)?)
+            Ok(Arc::new(sql::SqlRunStore::sqlite_file(path).await?))
+        };
+    }
+    if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        return Ok(Arc::new(sql::SqlRunStore::postgres(url).await?));
+    }
+    if let Some(rest) = url.strip_prefix("alloydb://") {
+        // AlloyDB speaks the PostgreSQL wire protocol. Run the AlloyDB Auth Proxy
+        // (`alloydb-auth-proxy "projects/…/instances/…" --port 5432`) and point
+        // this at 127.0.0.1:5432 — or use a private-IP host directly.
+        return Ok(Arc::new(sql::SqlRunStore::postgres(&format!("postgres://{rest}")).await?));
+    }
+    if let Some(rest) = url.strip_prefix("bigtable://") {
+        // bigtable://<project>/<instance>/<table>
+        let parts: Vec<&str> = rest.splitn(3, '/').collect();
+        if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
+            return Err(StoreError::msg("bigtable URL must be bigtable://<project>/<instance>/<table>"));
         }
-    } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
-        Arc::new(postgres::PostgresStore::connect(url)?)
-    } else if url.starts_with("bigtable://") || url.starts_with("spanner://") {
-        return Err(StoreError::msg(format!(
-            "the '{}' store is reserved for v2 — implement the Store trait in src/store/ \
-             (see design-principles/tape.md §13: Pluggable stores and horizontal scaling)",
-            url.split(':').next().unwrap_or("?")
-        )));
-    } else {
-        // Bare path -> a SQLite file.
-        Arc::new(sqlite::SqliteStore::open_file(url)?)
-    };
-    s.migrate().await?;
-    Ok(s)
+        let s = bigtable::BigtableRunStore::connect(parts[0], parts[1], parts[2]).await?;
+        return Ok(Arc::new(s));
+    }
+    if url.starts_with("spanner://") {
+        return Err(StoreError::msg(
+            "the spanner store is not yet implemented — add an impl of RunStore in src/store/ \
+             (see design-principles/tape.md §12)"));
+    }
+    // Bare path -> a SQLite file.
+    Ok(Arc::new(sql::SqlRunStore::sqlite_file(url).await?))
 }
 
 pub fn now_ms() -> i64 {
@@ -153,20 +165,50 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Rewrite SQLite-style `?N` placeholders to Postgres `$N`. (No `?N` is reused
-/// in Tape's SQL, so this is a straight token swap.)
-pub(crate) fn to_pg_placeholders(sql: &str) -> String {
-    let bytes = sql.as_bytes();
-    let mut out = String::with_capacity(sql.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'?' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-            out.push('$');
-            i += 1;
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
+/// `idempotency_key` derivation: name the decision, not its inputs (treatise §IX ①).
+pub fn derive_key(run_id: &str, decision_index: i64, tool: &str, call_index: i32) -> String {
+    if decision_index < 0 {
+        format!("{run_id}/no-decision/{tool}/{call_index}")
+    } else {
+        format!("{run_id}/decision-{decision_index}/{tool}/{call_index}")
+    }
+}
+
+/// Shallow-merge `delta` (a JSON object) into `base`; a `null` value deletes.
+pub fn merge_json(base: &str, delta: &str) -> String {
+    let mut b: serde_json::Value = serde_json::from_str(base).unwrap_or(serde_json::json!({}));
+    let d: serde_json::Value = serde_json::from_str(delta).unwrap_or(serde_json::json!({}));
+    if let (Some(bo), Some(dobj)) = (b.as_object_mut(), d.as_object()) {
+        for (k, v) in dobj {
+            if v.is_null() {
+                bo.remove(k);
+            } else {
+                bo.insert(k.clone(), v.clone());
+            }
         }
     }
-    out
+    b.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_names_the_decision_not_the_inputs() {
+        assert_eq!(derive_key("r", 0, "execute_sweep", 0), "r/decision-0/execute_sweep/0");
+        assert_eq!(derive_key("r", 0, "execute_sweep", 0), derive_key("r", 0, "execute_sweep", 0));
+        assert_ne!(derive_key("r", 0, "execute_sweep", 0), derive_key("r", 0, "execute_sweep", 1));
+        assert_eq!(derive_key("r", -1, "post_gl", 0), "r/no-decision/post_gl/0");
+    }
+
+    #[test]
+    fn merge_json_shallow_with_null_delete() {
+        let m = merge_json("{\"a\":1,\"b\":2}", "{\"b\":3,\"c\":4}");
+        let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        assert_eq!(v["a"], 1); assert_eq!(v["b"], 3); assert_eq!(v["c"], 4);
+        let m = merge_json("{\"a\":1,\"b\":2}", "{\"b\":null}");
+        let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        assert!(v.get("b").is_none()); assert_eq!(v["a"], 1);
+    }
 }

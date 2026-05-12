@@ -58,14 +58,18 @@ changes when you switch it:
 | `sqlite:./tape.db` *(default)* | file-backed SQLite (pooled, WAL) — single node, dev, small prod |
 | `sqlite::memory:` / `memory` | ephemeral in-process — tests, demos |
 | `postgres://user:pass@host:5432/db` | pooled PostgreSQL — production / horizontally scalable |
-| `bigtable://…` | *reserved for v2* — the `Store` trait in `server/src/store/` is the seam |
+| `alloydb://user:pass@host:5432/db` | AlloyDB — it's PostgreSQL-wire-compatible; run the AlloyDB Auth Proxy and point at `127.0.0.1:5432`, or use a private-IP host |
+| `bigtable://project/instance/table` | Cloud Bigtable — `BIGTABLE_EMULATOR_HOST` is honoured. The row-key design is in `server/src/store/bigtable.rs`; the per-op wiring is the current WIP, so `bigtable://` fails loudly on startup until it lands. Create the table first: `cbt -project P -instance I createtable tape && … createfamily tape m` |
 
-With Postgres, the server is **stateless between requests** — run *N* replicas
-behind a load balancer (`docker compose up --scale tape-server=3`,
-`tape/deploy/k8s/tape.yaml`, an HPA). It's safe with no extra coordination:
-"one driver per run at a time" is the per-run lease in `tape_runs`, and every
-mutating RPC is idempotent, so two recovery workers racing is harmless — the
-loser short-circuits. See [`design-principles/tape.md`](../design-principles/tape.md) §12.
+Tape's logical operations are a trait, `RunStore` (`server/src/store/`); the SQL
+backends (`SqlRunStore` — SQLite, PostgreSQL, AlloyDB) share one set of portable
+SQL, and a non-SQL backend (Bigtable) implements the same trait. With a network
+store, the server is **stateless between requests** — run *N* replicas behind a
+load balancer (`docker compose up --scale tape-server=3`, `tape/deploy/k8s/tape.yaml`,
+an HPA). Safe with no extra coordination: "one driver per run at a time" is the
+per-run lease in `tape_runs`, and every mutating RPC is idempotent, so two
+recovery workers racing is harmless — the loser short-circuits. See
+[`design-principles/tape.md`](../design-principles/tape.md) §12.
 
 ## Wiring Tape into your agent (two lines)
 
