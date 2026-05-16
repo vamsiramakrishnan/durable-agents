@@ -108,10 +108,27 @@ tape-reactors --runner-from my_app:build_runner --url tape://tape:7878
 
 Each reactor is idempotent (the lease + replay properties make a double-run
 harmless), so run as many copies as you like. `tape.set_timer(run_id=…, fire_at_ms=…,
-kind="gate_timeout"|"redrive"|…)` sets a durable "wake me at T"; `SubscribeEvents`
-(via `tape.reactors.run_event_fanout(url, sink=…)`) tails the cross-run WAL — wire
-`sink` to Pub/Sub / Kafka / a webhook to publish it. (On Bigtable the cross-run
-tail is "use Bigtable change streams"; the per-run `SubscribeRun` feed still works.)
+kind="gate_timeout"|"redrive"|…)` sets a durable "wake me at T". For an
+**exactly-once-effective publisher** to external systems, the outbox relay
+streams `SubscribeEvents` to a `Sink` with a durable cursor:
+
+```python
+from tape.sinks import WebhookSink, PubSubSink, LogSink
+import tape.reactors
+
+tape.reactors.run_outbox_relay(
+    "tape://localhost:7878",
+    sink=PubSubSink(project="my-proj", topic="tape-events"),
+    cursor_path="/var/lib/tape/cursor.json",          # durable; a restart resumes from here
+)
+```
+
+`Sink` is a tiny protocol (`publish(entry) → None`); ships with `LogSink`,
+`WebhookSink` (POST + retries + `X-Tape-Event-Id: run_id/seq` for receiver
+dedup), and `PubSubSink` (`google-cloud-pubsub`, lazy-imported, `ordering_key =
+run_id`). At-least-once-delivery + consumer-side dedup on `(run_id, seq)` =
+exactly-once-effective. (On Bigtable the cross-run tail is "use Bigtable change
+streams"; the per-run `SubscribeRun` feed still works.)
 
 When the agent isn't a local `Runner` you can call — e.g. it's deployed on
 **Vertex AI Agent Engine** — pass `run_reactors(redrive_fn=…)` instead of

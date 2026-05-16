@@ -19,6 +19,12 @@ dist/
 
 # Node / TS
 node_modules/
+tape/sdk/typescript/dist/
 
 # Go
 tape/sdk/go/bin/
+
+# Java / Maven
+tape/sdk/java/target/
+tape/sdk/java/.mvn/
+*.class

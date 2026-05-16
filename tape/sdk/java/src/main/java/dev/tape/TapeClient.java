@@ -1,0 +1,233 @@
+package dev.tape;
+
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+
+import java.util.Iterator;
+import java.util.concurrent.TimeUnit;
+
+import dev.tape.proto.*;
+
+/**
+ * Tape — the Java client over the {@code tape.v1} gRPC service.
+ *
+ * <p>URL schemes:
+ * <ul>
+ *   <li>{@code tape://host:port} — plaintext gRPC (self-hosted, k8s, local).</li>
+ *   <li>{@code tapes://host} — TLS on :443 (Cloud Run / any HTTPS endpoint). For
+ *       IAM-protected endpoints, pass an ID token via {@link Options#idToken}
+ *       (mint it however your app does — google-auth-library-java, GCP metadata
+ *       server, etc.).</li>
+ * </ul>
+ */
+public final class TapeClient implements AutoCloseable {
+
+    public static String defaultUrl() {
+        String v = System.getenv("TAPE_URL");
+        return v != null ? v : "tape://localhost:7878";
+    }
+
+    public static final class Options {
+        public String idToken;   // optional static Bearer token (for tapes:// + IAM-protected)
+        public Options idToken(String t) { this.idToken = t; return this; }
+    }
+
+    public final String url;
+    private final ManagedChannel channel;
+    private final TapeGrpc.TapeBlockingStub stub;
+
+    public TapeClient(String url) { this(url, new Options()); }
+
+    public TapeClient(String url, Options opts) {
+        this.url = url;
+        boolean secure = url.startsWith("tapes://") || url.startsWith("grpcs://");
+        String host = url.replaceFirst("^(tapes?://|grpcs?://)", "");
+        if (secure && !host.contains(":")) host = host + ":443";
+
+        ManagedChannelBuilder<?> b;
+        if (secure) {
+            try {
+                b = NettyChannelBuilder.forTarget(host).sslContext(GrpcSslContexts.forClient().build());
+            } catch (javax.net.ssl.SSLException e) { throw new RuntimeException(e); }
+        } else {
+            b = ManagedChannelBuilder.forTarget(host).usePlaintext();
+        }
+        this.channel = b.build();
+        TapeGrpc.TapeBlockingStub s = TapeGrpc.newBlockingStub(this.channel);
+        if (opts != null && opts.idToken != null && !opts.idToken.isEmpty()) {
+            io.grpc.Metadata md = new io.grpc.Metadata();
+            md.put(io.grpc.Metadata.Key.of("authorization", io.grpc.Metadata.ASCII_STRING_MARSHALLER), "Bearer " + opts.idToken);
+            s = s.withInterceptors(io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(md));
+        }
+        this.stub = s;
+    }
+
+    @Override public void close() {
+        try { channel.shutdown().awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+    }
+
+    public TapeGrpc.TapeBlockingStub pb() { return stub; }
+
+    // ── run lifecycle ───────────────────────────────────────────────────────
+
+    public BeginRunResponse beginRun(String app, String user, String session, String invocation,
+                                     String leaseOwner, long leaseTtlMs) {
+        return stub.beginRun(BeginRunRequest.newBuilder()
+                .setAppName(app).setUserId(user).setSessionId(session).setInvocationId(invocation)
+                .setLeaseOwner(leaseOwner).setLeaseTtlMs(leaseTtlMs == 0 ? 120_000 : leaseTtlMs).build());
+    }
+
+    public EndRunResponse endRun(String runId, RunStatus status, String detailJson) {
+        return stub.endRun(EndRunRequest.newBuilder().setRunId(runId)
+                .setStatus(status == null ? RunStatus.RUN_STATUS_TERMINAL : status)
+                .setDetailJson(detailJson == null ? "" : detailJson).build());
+    }
+
+    public RunState getRun(String runId) {
+        return stub.getRun(GetRunRequest.newBuilder().setRunId(runId).build());
+    }
+
+    public ListRunsToRecoverResponse listRunsToRecover(long limit) {
+        return stub.listRunsToRecover(ListRunsToRecoverRequest.newBuilder().setLimit(limit == 0 ? 100 : limit).build());
+    }
+
+    // ── decisions ───────────────────────────────────────────────────────────
+
+    public DecisionRecord recordDecision(String runId, long idx, String model, String requestJson,
+                                         String responseJson, String rationale, String policyVersion) {
+        return stub.recordDecision(RecordDecisionRequest.newBuilder()
+                .setRunId(runId).setDecisionIndex(idx).setModel(model == null ? "" : model)
+                .setRequestJson(requestJson == null ? "" : requestJson)
+                .setResponseJson(responseJson == null ? "" : responseJson)
+                .setRationale(rationale == null ? "" : rationale)
+                .setPolicyVersion(policyVersion == null ? "" : policyVersion).build());
+    }
+
+    public GetDecisionResponse getDecision(String runId, long idx) {
+        return stub.getDecision(GetDecisionRequest.newBuilder().setRunId(runId).setDecisionIndex(idx).build());
+    }
+
+    // ── effects ─────────────────────────────────────────────────────────────
+
+    public BeginEffectResponse beginEffect(String runId, long decisionIndex, String toolName, int callIndex,
+                                           String requestJson, String customKey) {
+        return stub.beginEffect(BeginEffectRequest.newBuilder()
+                .setRunId(runId).setDecisionIndex(decisionIndex).setToolName(toolName)
+                .setCallIndex(callIndex).setRequestJson(requestJson == null ? "" : requestJson)
+                .setCustomKey(customKey == null ? "" : customKey).build());
+    }
+
+    public EffectRecord completeEffect(String runId, String key, EffectStatus status,
+                                       String responseJson, String errorJson) {
+        return stub.completeEffect(CompleteEffectRequest.newBuilder()
+                .setRunId(runId).setIdempotencyKey(key).setStatus(status)
+                .setResponseJson(responseJson == null ? "" : responseJson)
+                .setErrorJson(errorJson == null ? "" : errorJson).build());
+    }
+
+    public GetEffectResponse getEffect(String runId, String key) {
+        return stub.getEffect(GetEffectRequest.newBuilder().setRunId(runId).setIdempotencyKey(key).build());
+    }
+
+    public EffectRecord reconcileEffect(String runId, String key, EffectStatus resolved,
+                                        String responseJson, String errorJson) {
+        return stub.reconcileEffect(ReconcileEffectRequest.newBuilder()
+                .setRunId(runId).setIdempotencyKey(key).setResolvedStatus(resolved)
+                .setResponseJson(responseJson == null ? "" : responseJson)
+                .setErrorJson(errorJson == null ? "" : errorJson).build());
+    }
+
+    // ── obligations ─────────────────────────────────────────────────────────
+
+    public ObligationRecord registerCompensation(String runId, String effectKey, String kind, String payloadJson) {
+        return stub.registerCompensation(RegisterCompensationRequest.newBuilder()
+                .setRunId(runId).setEffectKey(effectKey).setKind(kind)
+                .setPayloadJson(payloadJson == null ? "" : payloadJson).build());
+    }
+
+    public ListObligationsResponse listObligations(String runId, boolean onlyUnresolved) {
+        return stub.listObligations(ListObligationsRequest.newBuilder()
+                .setRunId(runId).setOnlyUnresolved(onlyUnresolved).build());
+    }
+
+    // ── budget ──────────────────────────────────────────────────────────────
+
+    public BudgetState setBudget(String runId, double usdCap, long tokenCap) {
+        return stub.setBudget(SetBudgetRequest.newBuilder().setRunId(runId).setUsdCap(usdCap).setTokenCap(tokenCap).build());
+    }
+
+    public AdmitBudgetResponse admitBudget(String runId, double usd, long tokens) {
+        return stub.admitBudget(AdmitBudgetRequest.newBuilder().setRunId(runId).setUsdEstimate(usd).setTokenEstimate(tokens).build());
+    }
+
+    public BudgetState chargeBudget(String runId, double usd, long tokens) {
+        return stub.chargeBudget(ChargeBudgetRequest.newBuilder().setRunId(runId).setUsd(usd).setTokens(tokens).build());
+    }
+
+    // ── gates / signals ─────────────────────────────────────────────────────
+
+    public AwaitSignalResponse awaitSignal(String runId, String gate, String payloadJson) {
+        return stub.awaitSignal(AwaitSignalRequest.newBuilder().setRunId(runId).setGateName(gate)
+                .setPayloadJson(payloadJson == null ? "" : payloadJson).build());
+    }
+
+    public SendSignalResponse sendSignal(String runId, String app, String user, String session,
+                                          String gate, String resolutionJson) {
+        return stub.sendSignal(SendSignalRequest.newBuilder()
+                .setRunId(runId == null ? "" : runId).setAppName(app == null ? "" : app)
+                .setUserId(user == null ? "" : user).setSessionId(session == null ? "" : session)
+                .setGateName(gate).setResolutionJson(resolutionJson == null ? "" : resolutionJson).build());
+    }
+
+    // ── reconciliation / timers / WAL tail ──────────────────────────────────
+
+    public ListPendingEffectsResponse listPendingEffects(long olderThanMs, boolean includePending,
+                                                          boolean includeUnknown, long limit) {
+        return stub.listPendingEffects(ListPendingEffectsRequest.newBuilder()
+                .setOlderThanMs(olderThanMs).setIncludePending(includePending)
+                .setIncludeUnknown(includeUnknown).setLimit(limit == 0 ? 200 : limit).build());
+    }
+
+    public TimerRecord setTimer(String runId, String timerId, long fireAtMs, String kind, String payloadJson) {
+        return stub.setTimer(SetTimerRequest.newBuilder()
+                .setRunId(runId).setTimerId(timerId == null ? "" : timerId).setFireAtMs(fireAtMs)
+                .setKind(kind == null ? "" : kind).setPayloadJson(payloadJson == null ? "" : payloadJson).build());
+    }
+
+    public CancelTimerResponse cancelTimer(String runId, String timerId) {
+        return stub.cancelTimer(CancelTimerRequest.newBuilder().setRunId(runId).setTimerId(timerId).build());
+    }
+
+    public ListDueTimersResponse listDueTimers(long nowMs, long limit, boolean claim) {
+        return stub.listDueTimers(ListDueTimersRequest.newBuilder()
+                .setNowMs(nowMs).setLimit(limit == 0 ? 200 : limit).setClaim(claim).build());
+    }
+
+    public Iterator<EventEntry> subscribeEvents(long fromTsMs, String runId, String kind) {
+        return stub.subscribeEvents(SubscribeEventsRequest.newBuilder()
+                .setFromTsMs(fromTsMs).setRunId(runId == null ? "" : runId)
+                .setKind(kind == null ? "" : kind).build());
+    }
+
+    // ── ADK SessionService shim ─────────────────────────────────────────────
+
+    public Session createSession(String app, String user, String session, String stateJson) {
+        return stub.createSession(CreateSessionRequest.newBuilder()
+                .setAppName(app).setUserId(user).setSessionId(session == null ? "" : session)
+                .setStateJson(stateJson == null ? "{}" : stateJson).build());
+    }
+
+    public GetSessionResponse getSession(String app, String user, String session, long maxEvents) {
+        return stub.getSession(GetSessionRequest.newBuilder()
+                .setAppName(app).setUserId(user).setSessionId(session).setMaxEvents(maxEvents).build());
+    }
+
+    public AppendEventResponse appendEvent(String app, String user, String session,
+                                            EventRecord event, String stateDeltaJson) {
+        return stub.appendEvent(AppendEventRequest.newBuilder()
+                .setAppName(app).setUserId(user).setSessionId(session).setEvent(event)
+                .setStateDeltaJson(stateDeltaJson == null ? "{}" : stateDeltaJson).build());
+    }
+}

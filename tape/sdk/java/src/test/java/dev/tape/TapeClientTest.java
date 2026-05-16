@@ -1,0 +1,108 @@
+package dev.tape;
+
+import dev.tape.proto.*;
+import org.junit.jupiter.api.*;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.file.*;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+/** Spawns the Rust tape-server (in-memory store) and round-trips the lifecycle. */
+public class TapeClientTest {
+
+    static Process server;
+    static String url;
+    static int port;
+
+    @BeforeAll
+    static void start() throws Exception {
+        Path bin = Paths.get("../../server/target/debug/tape-server").toAbsolutePath().normalize();
+        assumeTrue(Files.exists(bin), "tape-server not built (run `cargo build` in tape/server)");
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))) {
+            port = s.getLocalPort();
+        }
+        ProcessBuilder pb = new ProcessBuilder(bin.toString(),
+                "--listen", "127.0.0.1:" + port, "--store", "memory")
+                .redirectOutput(new File("/dev/null"))
+                .redirectError(new File("/dev/null"));
+        pb.environment().put("RUST_LOG", "tape_server=warn");
+        server = pb.start();
+        url = "tape://127.0.0.1:" + port;
+        waitFor("127.0.0.1", port, 15_000);
+    }
+
+    @AfterAll
+    static void stop() throws InterruptedException {
+        if (server != null) {
+            server.destroy();
+            server.waitFor(5, TimeUnit.SECONDS);
+        }
+    }
+
+    static void waitFor(String host, int port, int timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            try (Socket s = new Socket()) { s.connect(new InetSocketAddress(host, port), 1000); return; }
+            catch (IOException ignored) {}
+            try { Thread.sleep(100); } catch (InterruptedException e) { return; }
+        }
+        fail("server never came up at " + host + ":" + port);
+    }
+
+    @Test
+    void roundTripsLifecycle() throws Exception {
+        try (TapeClient c = new TapeClient(url)) {
+            BeginRunResponse r = c.beginRun("a", "u", "java-smoke", "inv-java", "test", 60_000);
+            assertFalse(r.getResumed());
+            String rid = r.getRunId();
+
+            c.recordDecision(rid, 0, "m", "{}", "{\"plan\":1}", "", "p1");
+            assertTrue(c.getDecision(rid, 0).getFound());
+
+            BeginEffectResponse be = c.beginEffect(rid, 0, "execute_sweep", 0, "{}", "");
+            assertEquals(EffectStatus.EFFECT_STATUS_PENDING, be.getStatus());
+            assertEquals(rid + "/decision-0/execute_sweep/0", be.getIdempotencyKey());
+
+            BeginEffectResponse be2 = c.beginEffect(rid, 0, "execute_sweep", 0, "{}", "");
+            assertEquals(be.getIdempotencyKey(), be2.getIdempotencyKey());
+
+            c.completeEffect(rid, be.getIdempotencyKey(), EffectStatus.EFFECT_STATUS_CONFIRMED,
+                    "{\"wire_id\":\"w1\"}", "");
+            GetEffectResponse ge = c.getEffect(rid, be.getIdempotencyKey());
+            assertTrue(ge.getFound());
+            assertEquals(EffectStatus.EFFECT_STATUS_CONFIRMED, ge.getEffect().getStatus());
+
+            c.registerCompensation(rid, be.getIdempotencyKey(), "reverse_wire", "{}");
+            ListObligationsResponse obs = c.listObligations(rid, true);
+            assertEquals(1, obs.getObligationsCount());
+
+            c.setBudget(rid, 1.0, 0);
+            assertTrue(c.admitBudget(rid, 0.5, 0).getAdmitted());
+            c.chargeBudget(rid, 0.9, 0);
+            assertFalse(c.admitBudget(rid, 0.5, 0).getAdmitted());
+
+            TimerRecord tr = c.setTimer(rid, "", System.currentTimeMillis() - 1000,
+                    "gate_timeout", "{\"gate\":\"g1\"}");
+            ListDueTimersResponse due = c.listDueTimers(0, 50, true);
+            boolean found = false;
+            for (TimerRecord t : due.getTimersList()) {
+                if (t.getTimerId().equals(tr.getTimerId())) { found = true; break; }
+            }
+            assertTrue(found, "timer not in due list");
+
+            c.endRun(rid, RunStatus.RUN_STATUS_TERMINAL, "");
+            assertEquals(RunStatus.RUN_STATUS_TERMINAL, c.getRun(rid).getStatus());
+
+            BeginRunResponse again = c.beginRun("a", "u", "java-smoke", "inv-java", "test", 60_000);
+            assertTrue(again.getResumed());
+            assertEquals(rid, again.getRunId());
+            assertEquals(RunStatus.RUN_STATUS_TERMINAL, again.getStatus());
+        }
+    }
+}

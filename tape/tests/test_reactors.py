@@ -100,3 +100,62 @@ def test_reconciler_resolves_an_unknown_effect(example_env):
     bank = json.loads((ledger_dir / "bank.json").read_text())
     assert sum(1 for k in bank if not k.startswith("reverse:")) == 1
     _ = treasury_agent
+
+
+# ── outbox relay: WAL -> sink, durable cursor, exactly-once-effective ──────
+
+def test_outbox_relay_publishes_journal_entries_with_a_durable_cursor(tape_server, tmp_path):
+    import time as _time
+    import tape
+    from tape.client import TapeClient
+    import tape.client as tc
+    from tape.sinks import LogSink
+    from tape.reactors import outbox_relay_tick
+
+    url = tape_server["url"]
+    cursor = tmp_path / "cursor.json"
+    out = tmp_path / "out.jsonl"
+
+    c = TapeClient(url)
+    run = c.begin_run(app_name="a", user_id="u", session_id="s-outbox",
+                      invocation_id="inv-outbox", lease_owner="t", lease_ttl_ms=60_000)
+    rid = run.run_id
+    c.record_decision(run_id=rid, decision_index=0, response_json='{"plan":1}')
+    be = c.begin_effect(run_id=rid, decision_index=0, tool_name="execute_sweep",
+                         call_index=0, request_json="{}")
+    c.complete_effect(run_id=rid, idempotency_key=be.idempotency_key,
+                       status=tc.EFFECT_STATUS_CONFIRMED, response_json='{"wire_id":"w1"}')
+    c.close()
+
+    # tick 1: should publish every journal entry so far
+    sink = LogSink(str(out))
+    _time.sleep(0.3)
+    n1 = outbox_relay_tick(url, sink, cursor_path=str(cursor), idle_window_s=1.0)
+    sink.close()
+    assert n1 >= 3, f"expected at least 3 entries (decision + pending + confirmed), got {n1}"
+    cursor_after_1 = cursor.read_text()
+    assert "last_seq" in cursor_after_1 and rid in cursor_after_1
+
+    # tick 2: cursor is past everything; nothing new
+    sink = LogSink(str(out))
+    n2 = outbox_relay_tick(url, sink, cursor_path=str(cursor), idle_window_s=0.5)
+    sink.close()
+    assert n2 == 0, f"expected nothing new on a re-tick, got {n2}"
+
+    # add one more entry; relay restart picks up from the cursor and publishes only that one
+    c = TapeClient(url)
+    c.register_compensation(run_id=rid, effect_key=be.idempotency_key,
+                             kind="reverse_wire", payload_json="{}")
+    c.close()
+    _time.sleep(0.3)
+    sink = LogSink(str(out))
+    n3 = outbox_relay_tick(url, sink, cursor_path=str(cursor), idle_window_s=1.0)
+    sink.close()
+    assert n3 == 1, f"expected exactly one new entry, got {n3}"
+
+    # the log has every entry, each only once
+    import json as _json
+    lines = [_json.loads(line) for line in out.read_text().splitlines() if line]
+    assert len(lines) == n1 + n3, f"log has {len(lines)} lines, expected {n1 + n3}"
+    seen = {(l["run_id"], l["seq"]) for l in lines}
+    assert len(seen) == len(lines), "duplicate (run_id, seq) — exactly-once-effective violated"

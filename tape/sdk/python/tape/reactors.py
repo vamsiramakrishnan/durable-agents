@@ -187,7 +187,104 @@ def run_reactors(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAU
         client.close()
 
 
-# ── the WAL fan-out ─────────────────────────────────────────────────────────
+# ── outbox relay (durable cursor; the WAL → external-system bridge) ────────
+
+def _read_cursor(path):
+    """Returns (from_ts_ms, last_run_id, last_seq) from a JSON cursor file."""
+    import os, json as _json
+    if not path or not os.path.exists(path):
+        return 0, "", 0
+    try:
+        d = _json.load(open(path))
+        return int(d.get("from_ts_ms", 0)), str(d.get("last_run_id", "")), int(d.get("last_seq", 0))
+    except Exception:
+        return 0, "", 0
+
+
+def _write_cursor(path, from_ts_ms, last_run_id, last_seq):
+    import os, json as _json
+    if not path:
+        return
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        _json.dump({"from_ts_ms": from_ts_ms, "last_run_id": last_run_id, "last_seq": last_seq}, f)
+    os.replace(tmp, path)
+
+
+def outbox_relay_tick(url: str, sink: Any, *, cursor_path: str = "",
+                     run_id: str = "", kind: str = "", batch_limit: int = 512,
+                     client: Optional[TapeClient] = None, idle_window_s: float = 0.5) -> int:
+    """One pass of the relay. Reads journal entries since the cursor via
+    `SubscribeEvents`, calls `sink.publish(entry)` for each, advances the cursor.
+    Returns the number of entries published. Skips the last-published `(run_id,
+    seq)` (the WAL tail's at-least-once boundary repeat). Combined with a sink
+    that's idempotent on `(run_id, seq)`, this is exactly-once-effective."""
+    c = client or TapeClient(url)
+    try:
+        from_ts, last_run, last_seq = _read_cursor(cursor_path)
+        from ._gen import tape_pb2 as _pb
+        req = _pb.SubscribeEventsRequest(from_ts_ms=from_ts, run_id=run_id, kind=kind)
+        # Per-call timeout: the server-side SubscribeEvents stream polls forever.
+        # We set a short timeout so the iterator surfaces DEADLINE_EXCEEDED when
+        # the server pauses (no more entries) — which is our signal to stop the
+        # batch. Within the window we drain whatever arrives, up to batch_limit.
+        import grpc as _grpc
+        stream = c.stub.SubscribeEvents(req, timeout=idle_window_s)
+        n = 0
+        try:
+            for entry in stream:
+                if entry.run_id == last_run and entry.seq <= last_seq:
+                    continue
+                sink.publish(entry)
+                last_run, last_seq = entry.run_id, entry.seq
+                from_ts = max(from_ts, entry.ts_ms)
+                n += 1
+                if n >= batch_limit:
+                    break
+        except _grpc.RpcError as e:
+            # DEADLINE_EXCEEDED is the normal "no more entries in this window" exit;
+            # CANCELLED can show up after stream.cancel(). Anything else propagates.
+            code = getattr(e, "code", lambda: None)()
+            if code not in (_grpc.StatusCode.DEADLINE_EXCEEDED, _grpc.StatusCode.CANCELLED):
+                raise
+        finally:
+            try:
+                stream.cancel()
+            except Exception:
+                pass
+        if n:
+            _write_cursor(cursor_path, from_ts, last_run, last_seq)
+        return n
+    finally:
+        if client is None:
+            c.close()
+
+
+def run_outbox_relay(url: str, sink: Any, *, cursor_path: str = "", run_id: str = "",
+                    kind: str = "", interval_s: float = 1.0, once: bool = False) -> None:
+    """Loop `outbox_relay_tick` forever (or once). The cursor is durable in
+    `cursor_path` (a local JSON file), so a relay restart resumes from where it
+    stopped. Run multiple relays = multiple sinks (one cursor file each)."""
+    c = TapeClient(url)
+    try:
+        while True:
+            try:
+                outbox_relay_tick(url, sink, cursor_path=cursor_path, run_id=run_id, kind=kind, client=c)
+            except Exception as ex:  # noqa: BLE001
+                import sys
+                print(f"[tape outbox] tick error: {ex}", file=sys.stderr, flush=True)
+            if once:
+                return
+            time.sleep(interval_s)
+    finally:
+        c.close()
+        try:
+            sink.close()
+        except Exception:
+            pass
+
+
+# ── the WAL fan-out (inline callback; for one-process consumers) ───────────
 
 def run_event_fanout(url: str = DEFAULT_URL, *, sink: Callable[[Any], None],
                      from_ts_ms: int = 0, run_id: str = "", kind: str = "") -> None:
