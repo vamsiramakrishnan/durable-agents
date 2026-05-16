@@ -125,6 +125,7 @@ enum RunStatus {
   RUN_STATUS_FAILED = 5;
   RUN_STATUS_COMPENSATING = 6;
   RUN_STATUS_STUCK = 7;         // a compensation failed; needs a human
+  RUN_STATUS_CANCELLED = 8;     // cancelled explicitly (cooperative: agent checks at the next model/tool boundary)
 }
 
 message RunState {

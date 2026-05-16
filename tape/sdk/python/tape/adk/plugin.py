@@ -58,12 +58,17 @@ def _refusal_response(reason: str):
 class TapePlugin(BasePlugin):
     def __init__(self, url: str = DEFAULT_URL, *, client: Optional[TapeClient] = None,
                  budget: Optional[Budget] = None, lease_owner: Optional[str] = None,
-                 lease_ttl_ms: Optional[int] = None, name: str = "tape"):
+                 lease_ttl_ms: Optional[int] = None,
+                 check_cancellation: bool = False, cancel_check_interval_s: float = 5.0,
+                 name: str = "tape"):
         super().__init__(name=name)
         self._client = client or TapeClient(url)
         self._budget = budget
         self._owner = lease_owner or f"{socket.gethostname()}:{os.getpid()}"
         self._lease_ttl_ms = lease_ttl_ms if lease_ttl_ms is not None else _default_lease_ms()
+        self._check_cancel = check_cancellation
+        self._cancel_check_interval_s = cancel_check_interval_s
+        self._last_cancel_check: dict[str, float] = {}    # invocation_id -> ts
         # per-invocation bookkeeping
         self._run: dict[str, str] = {}            # invocation_id -> run_id
         self._dnext: dict[str, int] = {}          # invocation_id -> next decision index
@@ -127,6 +132,12 @@ class TapePlugin(BasePlugin):
         idx = self._dnext.get(inv, 0)
         self._dnext[inv] = idx + 1
         self._dlast[inv] = idx
+        if self._check_cancel and self._should_check_cancel(inv):
+            try:
+                if self._client.get_run(run_id).status == pb.RUN_STATUS_CANCELLED:
+                    return _refusal_response("run cancelled")
+            except Exception:
+                pass
         if run_id in self._has_budget:
             adm = self._client.admit_budget(run_id=run_id)
             if not adm.admitted:
@@ -273,6 +284,17 @@ class TapePlugin(BasePlugin):
         return None  # don't swallow the error
 
     # ── internal ────────────────────────────────────────────────────────────
+
+    def _should_check_cancel(self, inv: Optional[str]) -> bool:
+        if inv is None:
+            return False
+        import time as _t
+        now = _t.time()
+        last = self._last_cancel_check.get(inv, 0.0)
+        if now - last < self._cancel_check_interval_s:
+            return False
+        self._last_cancel_check[inv] = now
+        return True
 
     def _count_decisions(self, run_id: str, hard_cap: int = 10_000) -> int:
         n = 0
