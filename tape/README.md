@@ -142,6 +142,38 @@ needs `roles/run.invoker`. The full GCP topology — Tape server on Cloud Run
 Agent Engine, the reactors on Cloud Run — is in [`deploy/gcp/`](deploy/gcp/)
 (the [`deploy/k8s/`](deploy/k8s/) manifest is the self-managed-Kubernetes version).
 
+## The reactive key-value store — coordinate through state, not messages
+
+Sometimes one agent has to react when another agent (or an oracle, or a
+human-edited config) changes a value. Tape ships a journaled, versioned,
+watchable key-value store as a first-class primitive (treatise §IX ⑥):
+
+```python
+import tape
+
+# write — monotonic version + optional CAS via if_version
+tape.set_value("counters", "X", 70, writer="seed")        # version=1
+tape.set_value("counters", "X", 90, writer="updater")     # version=2
+
+# read — never blocks
+tape.get_value("counters", "X").value.value_json          # '90'
+
+# watch — streams the snapshot + every change, with the PREVIOUS value attached
+for evt in tape.watch_value("counters", "X", from_version=0):
+    print(evt.prev_version, "→", evt.value.version, ":",
+          evt.prev_value_json, "→", evt.value.value_json)
+#  0 → 1 :    → 70           (snapshot)
+#  1 → 2 : 70 → 90           (the transition)
+```
+
+The point isn't "yet another KV." The point is the *transition* is observable:
+a watcher sees X 70 → 90, not just "X is 90 now" — so a reactor that re-prices
+on FX moves can act on the *change*. Different from signals (point-to-point,
+single-consumer) and the WAL tail (cross-run, everything-in-order); this is
+shared state, fan-out, by-key — Tape as the connective tissue between agents.
+
+## Zero-touch mode
+
 There is also a zero-touch mode for an app you'd rather not edit:
 
 ```bash
@@ -158,6 +190,7 @@ tape run -- python my_adk_app.py        # monkeypatches Runner to inject the plu
 | action gate = durable suspend-until-signal | `LongRunningFunctionTool` + `SessionService.append_event` |
 | budget admit/charge | the `before_*` / `after_*` callbacks |
 | run identity & resumption | ADK's `invocation_id` (`runner.run_async(..., invocation_id=...)`) |
+| reactive shared state across agents | a Tape-native primitive — `WriteValue`/`WatchValue`/`GetValue`/`DeleteValue`; no ADK hook needed (any process with a `TapeClient` can read or watch) |
 
 ## License
 

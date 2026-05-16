@@ -649,6 +649,64 @@ impl RunStore for SqlRunStore {
         Ok(out)
     }
 
+    // ── reactive key-value store ────────────────────────────────────────────
+    async fn write_value(&self, namespace: &str, key: &str, value_json: &str, if_version: i64, writer: &str) -> StoreResult<ValueRecord> {
+        // Best-effort CAS: read, check, then unconditional upsert (TOCTOU race
+        // is acceptable for v1; a single-statement conditional UPDATE per
+        // backend would tighten it).
+        if if_version >= 0 {
+            let cur = self.get_value(namespace, key).await?;
+            let cur_v = cur.as_ref().map(|r| r.version).unwrap_or(0);
+            if cur_v != if_version {
+                return Err(StoreError::msg(format!("write_value: version conflict (have {cur_v}, expected {if_version})")));
+            }
+        }
+        let ts = now_ms();
+        self.d().exec(
+            "INSERT INTO tape_values (namespace, key, value_json, version, ts_ms, writer, deleted) \
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, 0) \
+             ON CONFLICT(namespace, key) DO UPDATE SET \
+               value_json = excluded.value_json, \
+               version = tape_values.version + 1, \
+               ts_ms = excluded.ts_ms, \
+               writer = excluded.writer, \
+               deleted = 0",
+            vec![namespace.into(), key.into(), value_json.into(), ts.into(), writer.into()],
+        ).await?;
+        self.get_value(namespace, key).await?.ok_or_else(|| StoreError::msg("write_value: row vanished after upsert"))
+    }
+    async fn get_value(&self, namespace: &str, key: &str) -> StoreResult<Option<ValueRecord>> {
+        Ok(self.d().query_opt(
+            "SELECT namespace, key, value_json, version, ts_ms, writer, deleted FROM tape_values \
+             WHERE namespace = ?1 AND key = ?2",
+            vec![namespace.into(), key.into()],
+        ).await?.map(|r| ValueRecord {
+            namespace: r.str(0), key: r.str(1), value_json: r.str(2),
+            version: r.i64(3), ts_ms: r.i64(4), writer: r.str(5),
+            deleted: r.i64(6) != 0,
+        }))
+    }
+    async fn get_value_if_newer(&self, namespace: &str, key: &str, from_version: i64) -> StoreResult<Option<ValueRecord>> {
+        let cur = self.get_value(namespace, key).await?;
+        Ok(cur.filter(|r| r.version > from_version))
+    }
+    async fn delete_value(&self, namespace: &str, key: &str) -> StoreResult<(bool, i64)> {
+        // tombstone: keep the row, bump version, set deleted=1, so subscribers
+        // see the delete as a ValueEvent.
+        let cur = self.get_value(namespace, key).await?;
+        if cur.is_none() {
+            return Ok((false, 0));
+        }
+        let ts = now_ms();
+        self.d().exec(
+            "UPDATE tape_values SET version = version + 1, ts_ms = ?3, value_json = '', deleted = 1 \
+             WHERE namespace = ?1 AND key = ?2",
+            vec![namespace.into(), key.into(), ts.into()],
+        ).await?;
+        let new_v = self.get_value(namespace, key).await?.map(|r| r.version).unwrap_or(0);
+        Ok((true, new_v))
+    }
+
     // ── the WAL tail ────────────────────────────────────────────────────────
     async fn events_since(&self, from_ts_ms: i64, run_id: &str, kind: &str, limit: i64) -> StoreResult<Vec<EventEntry>> {
         let rows = self.d().query(

@@ -60,6 +60,15 @@ service Tape {
   // ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
   rpc SubscribeEvents (SubscribeEventsRequest) returns (stream EventEntry);
 
+  // ── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
+  // Coordination through journaled state, not messages (treatise §IX ⑥).
+  // Writes are atomic and versioned; WatchValue streams the current value plus
+  // every change (with the prior value, so subscribers see the transition).
+  rpc WriteValue   (WriteValueRequest)   returns (ValueRecord);
+  rpc GetValue     (GetValueRequest)     returns (GetValueResponse);
+  rpc WatchValue   (WatchValueRequest)   returns (stream ValueEvent);
+  rpc DeleteValue  (DeleteValueRequest)  returns (DeleteValueResponse);
+
   // ── ADK SessionService shim ───────────────────────────────────────────────
   rpc CreateSession   (CreateSessionRequest)   returns (Session);
   rpc GetSession      (GetSessionRequest)      returns (GetSessionResponse);
@@ -390,6 +399,43 @@ message EventEntry {
   string payload_json = 4;
   int64  ts_ms = 5;
 }
+
+// ── reactive key-value store ───────────────────────────────────────────────
+
+message ValueRecord {
+  string namespace = 1;         // user-chosen namespace (e.g. "treasury", "user:<id>", "run:<run_id>", "")
+  string key = 2;
+  string value_json = 3;
+  int64  version = 4;            // monotonic per (namespace, key); CAS uses this
+  int64  ts_ms = 5;
+  string writer = 6;             // free-form attribution (a process id, an agent name, …)
+  bool   deleted = 7;            // set on the event emitted by DeleteValue
+}
+
+message WriteValueRequest {
+  string namespace = 1;
+  string key = 2;
+  string value_json = 3;
+  int64  if_version = 4;         // optimistic CAS: only write if the current version == if_version. < 0 disables.
+  string writer = 5;
+}
+
+message GetValueRequest { string namespace = 1; string key = 2; }
+message GetValueResponse { bool found = 1; ValueRecord value = 2; }
+
+message WatchValueRequest {
+  string namespace = 1;
+  string key = 2;
+  int64  from_version = 3;       // 0 => start from the current value (one snapshot, then changes)
+}
+message ValueEvent {
+  ValueRecord value = 1;         // the new value (or `deleted = true`)
+  int64  prev_version = 2;       // 0 if no prior value
+  string prev_value_json = 3;    // "" if no prior value
+}
+
+message DeleteValueRequest { string namespace = 1; string key = 2; }
+message DeleteValueResponse { bool deleted = 1; int64 version = 2; }
 
 // ── ADK SessionService shim ─────────────────────────────────────────────────
 

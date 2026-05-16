@@ -159,6 +159,26 @@ class TapeStub(object):
                 request_serializer=tape__pb2.SubscribeEventsRequest.SerializeToString,
                 response_deserializer=tape__pb2.EventEntry.FromString,
                 _registered_method=True)
+        self.WriteValue = channel.unary_unary(
+                '/tape.v1.Tape/WriteValue',
+                request_serializer=tape__pb2.WriteValueRequest.SerializeToString,
+                response_deserializer=tape__pb2.ValueRecord.FromString,
+                _registered_method=True)
+        self.GetValue = channel.unary_unary(
+                '/tape.v1.Tape/GetValue',
+                request_serializer=tape__pb2.GetValueRequest.SerializeToString,
+                response_deserializer=tape__pb2.GetValueResponse.FromString,
+                _registered_method=True)
+        self.WatchValue = channel.unary_stream(
+                '/tape.v1.Tape/WatchValue',
+                request_serializer=tape__pb2.WatchValueRequest.SerializeToString,
+                response_deserializer=tape__pb2.ValueEvent.FromString,
+                _registered_method=True)
+        self.DeleteValue = channel.unary_unary(
+                '/tape.v1.Tape/DeleteValue',
+                request_serializer=tape__pb2.DeleteValueRequest.SerializeToString,
+                response_deserializer=tape__pb2.DeleteValueResponse.FromString,
+                _registered_method=True)
         self.CreateSession = channel.unary_unary(
                 '/tape.v1.Tape/CreateSession',
                 request_serializer=tape__pb2.CreateSessionRequest.SerializeToString,
@@ -358,6 +378,34 @@ class TapeServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def WriteValue(self, request, context):
+        """── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
+        Coordination through journaled state, not messages (treatise §IX ⑥).
+        Writes are atomic and versioned; WatchValue streams the current value plus
+        every change (with the prior value, so subscribers see the transition).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetValue(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WatchValue(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteValue(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CreateSession(self, request, context):
         """── ADK SessionService shim ───────────────────────────────────────────────
         """
@@ -517,6 +565,26 @@ def add_TapeServicer_to_server(servicer, server):
                     servicer.SubscribeEvents,
                     request_deserializer=tape__pb2.SubscribeEventsRequest.FromString,
                     response_serializer=tape__pb2.EventEntry.SerializeToString,
+            ),
+            'WriteValue': grpc.unary_unary_rpc_method_handler(
+                    servicer.WriteValue,
+                    request_deserializer=tape__pb2.WriteValueRequest.FromString,
+                    response_serializer=tape__pb2.ValueRecord.SerializeToString,
+            ),
+            'GetValue': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetValue,
+                    request_deserializer=tape__pb2.GetValueRequest.FromString,
+                    response_serializer=tape__pb2.GetValueResponse.SerializeToString,
+            ),
+            'WatchValue': grpc.unary_stream_rpc_method_handler(
+                    servicer.WatchValue,
+                    request_deserializer=tape__pb2.WatchValueRequest.FromString,
+                    response_serializer=tape__pb2.ValueEvent.SerializeToString,
+            ),
+            'DeleteValue': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteValue,
+                    request_deserializer=tape__pb2.DeleteValueRequest.FromString,
+                    response_serializer=tape__pb2.DeleteValueResponse.SerializeToString,
             ),
             'CreateSession': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateSession,
@@ -1219,6 +1287,114 @@ class Tape(object):
             '/tape.v1.Tape/SubscribeEvents',
             tape__pb2.SubscribeEventsRequest.SerializeToString,
             tape__pb2.EventEntry.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WriteValue(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/WriteValue',
+            tape__pb2.WriteValueRequest.SerializeToString,
+            tape__pb2.ValueRecord.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetValue(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/GetValue',
+            tape__pb2.GetValueRequest.SerializeToString,
+            tape__pb2.GetValueResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WatchValue(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/tape.v1.Tape/WatchValue',
+            tape__pb2.WatchValueRequest.SerializeToString,
+            tape__pb2.ValueEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteValue(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/DeleteValue',
+            tape__pb2.DeleteValueRequest.SerializeToString,
+            tape__pb2.DeleteValueResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -136,6 +136,23 @@ pub trait RunStore: Send + Sync {
     /// re-polls with `from_ts_ms` = the last seen ts to follow the WAL.
     async fn events_since(&self, from_ts_ms: i64, run_id: &str, kind: &str, limit: i64)
         -> StoreResult<Vec<EventEntry>>;
+
+    // ── reactive key-value store (treatise §IX ⑥: coordination through state) ─
+    /// Atomic versioned write. Returns the new ValueRecord. If `if_version >= 0`,
+    /// the write is conditional on `current_version == if_version` (CAS); a
+    /// mismatch returns `Err(StoreError::Msg("version conflict ..."))`. Also
+    /// emits a journal entry of kind "value" so the WAL tail catches it.
+    async fn write_value(&self, namespace: &str, key: &str, value_json: &str,
+                         if_version: i64, writer: &str) -> StoreResult<ValueRecord>;
+    /// Read the current value (or None if absent / tombstoned).
+    async fn get_value(&self, namespace: &str, key: &str) -> StoreResult<Option<ValueRecord>>;
+    /// Return the current record if its version > `from_version`. The streaming
+    /// `WatchValue` handler polls this with the last-seen version each tick.
+    async fn get_value_if_newer(&self, namespace: &str, key: &str, from_version: i64)
+        -> StoreResult<Option<ValueRecord>>;
+    /// Delete (writes a tombstone with `deleted = true`, incrementing version,
+    /// so subscribers see the delete as a ValueEvent).
+    async fn delete_value(&self, namespace: &str, key: &str) -> StoreResult<(bool, i64)>;
 }
 
 /// Parse a store URL and build the matching `RunStore`, migrated and ready.

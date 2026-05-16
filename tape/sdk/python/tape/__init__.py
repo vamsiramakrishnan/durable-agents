@@ -52,6 +52,7 @@ __all__ = [
     "sample", "now", "uuid", "random",
     "resume", "recover_once", "compensate_run", "send_signal", "set_timer", "cancel_timer",
     "cancel_run", "is_cancelled", "heartbeat", "policy_is",
+    "set_value", "get_value", "watch_value", "delete_value",
     "get_compensator", "get_status_check",
     "RUN_STATUS_RUNNABLE", "RUN_STATUS_RUNNING", "RUN_STATUS_WAITING", "RUN_STATUS_TERMINAL",
     "RUN_STATUS_FAILED", "RUN_STATUS_STUCK",
@@ -119,6 +120,45 @@ def heartbeat(tool_context, *, lease_ttl_ms: int = 120_000, url: str = DEFAULT_U
     owner = _os.environ.get("TAPE_LEASE_OWNER", f"{_socket.gethostname()}:{_os.getpid()}")
     with TapeClient(url) as c:
         return c.resume_run(run_id=rid, lease_owner=owner, lease_ttl_ms=lease_ttl_ms)
+
+
+def set_value(namespace: str, key: str, value, *, if_version: int = -1,
+              writer: str = "", url: str = DEFAULT_URL):
+    """Write `value` (JSON-serializable) at `(namespace, key)`. Optional CAS
+    via `if_version` (-1 = unconditional, 0 = create-only, >0 = expect that
+    exact version). Returns the post-write `ValueRecord` whose `version` is
+    the new monotonic version. Anyone watching the key gets pushed the new
+    record."""
+    with TapeClient(url) as c:
+        return c.write_value(namespace=namespace, key=key,
+                             value_json=_json.dumps(value),
+                             if_version=if_version, writer=writer)
+
+
+def get_value(namespace: str, key: str, *, url: str = DEFAULT_URL):
+    """Read the current `(namespace, key)`. Returns the `GetValueResponse`
+    (`.found`, `.value`, `.value.version` etc.); the value isn't auto-decoded
+    so callers can choose."""
+    with TapeClient(url) as c:
+        return c.get_value(namespace=namespace, key=key)
+
+
+def watch_value(namespace: str, key: str, *, from_version: int = 0,
+                url: str = DEFAULT_URL):
+    """Stream `ValueEvent`s for `(namespace, key)` starting at `from_version`
+    (0 = current snapshot + future changes). Each event carries `value` (the
+    new `ValueRecord`) plus `prev_version` and `prev_value_json` so the
+    receiver sees the transition (X: 70 → 90). The iterator is a long-lived
+    gRPC streaming response; iterate it in a thread, and `.cancel()` it to
+    stop."""
+    c = TapeClient(url)
+    return c.watch_value(namespace=namespace, key=key, from_version=from_version)
+
+
+def delete_value(namespace: str, key: str, *, url: str = DEFAULT_URL):
+    """Tombstone the key. Watchers see one final event with `value.deleted = True`."""
+    with TapeClient(url) as c:
+        return c.delete_value(namespace=namespace, key=key)
 
 
 def policy_is(tool_context, version: str) -> bool:

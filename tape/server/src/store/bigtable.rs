@@ -542,6 +542,53 @@ impl RunStore for BigtableRunStore {
         Ok(out)
     }
 
+    // ── reactive key-value store ────────────────────────────────────────────
+    async fn write_value(&self, namespace: &str, key: &str, value_json: &str, if_version: i64, writer: &str) -> StoreResult<ValueRecord> {
+        let rk = rk_value(namespace, key);
+        if if_version >= 0 {
+            let cur = self.read_row(&rk).await?;
+            let cur_v = cur.as_ref().map(|m| m.gi("version")).unwrap_or(0);
+            if cur_v != if_version {
+                return Err(StoreError::msg(format!("write_value: version conflict (have {cur_v}, expected {if_version})")));
+            }
+        }
+        let ts = now_ms();
+        let cur = self.read_row(&rk).await?;
+        let next_v = cur.as_ref().map(|m| m.gi("version")).unwrap_or(0) + 1;
+        self.write_row(&rk, vec![
+            set("ns", sv(namespace)), set("k", sv(key)), set("value", sv(value_json)),
+            set("version", iv(next_v)), set("ts", iv(ts)), set("writer", sv(writer)), set("deleted", iv(0)),
+        ]).await?;
+        Ok(ValueRecord {
+            namespace: namespace.into(), key: key.into(), value_json: value_json.into(),
+            version: next_v, ts_ms: ts, writer: writer.into(), deleted: false,
+        })
+    }
+    async fn get_value(&self, namespace: &str, key: &str) -> StoreResult<Option<ValueRecord>> {
+        Ok(self.read_row(&rk_value(namespace, key)).await?.map(|m| ValueRecord {
+            namespace: namespace.into(), key: key.into(), value_json: m.gs("value"),
+            version: m.gi("version"), ts_ms: m.gi("ts"), writer: m.gs("writer"),
+            deleted: m.gi("deleted") != 0,
+        }))
+    }
+    async fn get_value_if_newer(&self, namespace: &str, key: &str, from_version: i64) -> StoreResult<Option<ValueRecord>> {
+        Ok(self.get_value(namespace, key).await?.filter(|r| r.version > from_version))
+    }
+    async fn delete_value(&self, namespace: &str, key: &str) -> StoreResult<(bool, i64)> {
+        let rk = rk_value(namespace, key);
+        let cur = self.read_row(&rk).await?;
+        if cur.is_none() {
+            return Ok((false, 0));
+        }
+        let next_v = cur.unwrap().gi("version") + 1;
+        let ts = now_ms();
+        self.write_row(&rk, vec![
+            set("value", sv("")), set("version", iv(next_v)),
+            set("ts", iv(ts)), set("deleted", iv(1)),
+        ]).await?;
+        Ok((true, next_v))
+    }
+
     // ── the WAL tail ────────────────────────────────────────────────────────
     async fn events_since(&self, _from_ts_ms: i64, run_id: &str, kind: &str, limit: i64) -> StoreResult<Vec<EventEntry>> {
         // A cross-run, time-ordered tail isn't expressible against Bigtable's
@@ -561,3 +608,4 @@ impl RunStore for BigtableRunStore {
 }
 
 fn rk_timer(run_id: &str, timer_id: &str) -> String { format!("tmr#{run_id}#{timer_id}") }
+fn rk_value(namespace: &str, key: &str) -> String { format!("val#{namespace}#{key}") }

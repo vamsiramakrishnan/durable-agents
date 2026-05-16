@@ -224,6 +224,53 @@ impl Tape for TapeService {
         Ok(Response::new(ListDueTimersResponse { timers: self.store.list_due_timers(now, limit, r.claim).await.map_err(db)? }))
     }
 
+    // ── reactive key-value store ────────────────────────────────────────────
+    async fn write_value(&self, req: Request<WriteValueRequest>) -> Result<Response<ValueRecord>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(self.store.write_value(&r.namespace, &r.key, &r.value_json, r.if_version, &r.writer).await.map_err(db)?))
+    }
+    async fn get_value(&self, req: Request<GetValueRequest>) -> Result<Response<GetValueResponse>, Status> {
+        let r = req.into_inner();
+        let v = self.store.get_value(&r.namespace, &r.key).await.map_err(db)?;
+        Ok(Response::new(GetValueResponse { found: v.is_some() && !v.as_ref().map(|x| x.deleted).unwrap_or(false), value: v }))
+    }
+    async fn delete_value(&self, req: Request<DeleteValueRequest>) -> Result<Response<DeleteValueResponse>, Status> {
+        let r = req.into_inner();
+        let (deleted, version) = self.store.delete_value(&r.namespace, &r.key).await.map_err(db)?;
+        Ok(Response::new(DeleteValueResponse { deleted, version }))
+    }
+
+    type WatchValueStream = Pin<Box<dyn Stream<Item = Result<ValueEvent, Status>> + Send + 'static>>;
+    async fn watch_value(&self, req: Request<WatchValueRequest>) -> Result<Response<Self::WatchValueStream>, Status> {
+        let r = req.into_inner();
+        let store = self.store.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            let mut from = r.from_version;
+            let mut prev_version: i64 = 0;
+            let mut prev_value_json = String::new();
+            loop {
+                match store.get_value_if_newer(&r.namespace, &r.key, from).await {
+                    Ok(Some(rec)) => {
+                        let evt = ValueEvent {
+                            value: Some(rec.clone()), prev_version, prev_value_json: prev_value_json.clone(),
+                        };
+                        from = rec.version;
+                        prev_version = rec.version;
+                        prev_value_json = rec.value_json.clone();
+                        if tx.send(Ok(evt)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
     // ── the WAL tail (at-least-once; entries at the boundary ts may repeat — the
     //    reactors / fan-out de-dup on (run_id, seq), which is harmless since
     //    re-processing a journal entry is idempotent) ─────────────────────────

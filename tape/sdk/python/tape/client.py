@@ -257,6 +257,23 @@ class TapeClient:
     def subscribe_events(self, *, from_ts_ms=0, run_id="", kind=""):
         return self.stub.SubscribeEvents(pb.SubscribeEventsRequest(from_ts_ms=from_ts_ms, run_id=run_id, kind=kind))
 
+    # ── reactive key-value store (treatise §IX ⑥: coordinate through state) ──
+
+    def write_value(self, *, namespace, key, value_json, if_version=-1, writer=""):
+        return self.stub.WriteValue(pb.WriteValueRequest(
+            namespace=namespace, key=key, value_json=value_json,
+            if_version=if_version, writer=writer))
+
+    def get_value(self, *, namespace, key):
+        return self.stub.GetValue(pb.GetValueRequest(namespace=namespace, key=key))
+
+    def watch_value(self, *, namespace, key, from_version=0):
+        return self.stub.WatchValue(pb.WatchValueRequest(
+            namespace=namespace, key=key, from_version=from_version))
+
+    def delete_value(self, *, namespace, key):
+        return self.stub.DeleteValue(pb.DeleteValueRequest(namespace=namespace, key=key))
+
     # ── ADK SessionService shim ─────────────────────────────────────────────
 
     def create_session(self, *, app_name, user_id, session_id="", state_json="{}"):

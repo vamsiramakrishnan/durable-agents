@@ -142,3 +142,15 @@ CREATE TABLE IF NOT EXISTS tape_timers (
   PRIMARY KEY (run_id, timer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_timers_due ON tape_timers(fired, fire_at_ms);
+
+CREATE TABLE IF NOT EXISTS tape_values (
+  namespace    TEXT NOT NULL,
+  key          TEXT NOT NULL,
+  value_json   TEXT NOT NULL DEFAULT '',
+  version      INTEGER NOT NULL DEFAULT 0,
+  ts_ms        INTEGER NOT NULL,
+  writer       TEXT NOT NULL DEFAULT '',
+  deleted      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (namespace, key)
+);
+CREATE INDEX IF NOT EXISTS idx_values_changed ON tape_values(namespace, key, version);
