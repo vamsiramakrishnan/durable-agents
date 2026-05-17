@@ -36,9 +36,61 @@ caller. The caller's service account needs `roles/run.invoker`.
 
 A full `dev.tape.TapeClient` covering every RPC (run lifecycle, decisions,
 effects with the dedup short-circuit, obligations, budget, gates, timers,
-reconciliation, the WAL tail, sessions) plus a JUnit 5 smoke test (`mvn test`)
-that round-trips the full lifecycle against a real `tape-server`. gRPC stubs are
-generated at build time via the `protobuf-maven-plugin` (proto + grpc-java).
+reconciliation, the WAL tail, sessions, **reactions / tasks / subject-routed
+bus**) plus a JUnit 5 smoke test (`mvn test`) that round-trips the full
+lifecycle against a real `tape-server`. gRPC stubs are generated at build time
+via the `protobuf-maven-plugin` (proto + grpc-java).
+
+### Reactions — the event-bus surface
+
+See [`../../design-principles/tape-event-bus.md`](../../../design-principles/tape-event-bus.md)
+for the model. The Java surface mirrors the Python `tape.reactions` module:
+
+```java
+import dev.tape.*;
+import java.time.Duration;
+
+// 1. Declare reactions at startup.
+Reactions.onValueChange("treasury", "fx_rate",
+    env -> {
+        // env.payload  → parsed task.payload_json (Map<String,Object>)
+        // env.subject(), env.sourceRunId(), env.attempts(), env.traceId() …
+        System.out.println("fx_rate changed: " + env.payloadJson);
+    },
+    rd -> {
+        rd.predicate = "double(payload.value.value_json) > 1.10";
+        rd.maxConcurrency = 8;
+        rd.debounceMs = 500;
+    });
+
+Reactions.onEffectConfirmed("execute_sweep",
+    /* AGENT handlers have no body — the server creates the run */ null,
+    rd -> { rd.agent = "treasury-followup"; rd.maxConcurrency = 4; });
+
+// 2. Run the in-proc dispatcher: ClaimTasks → handler → CompleteTask / NackTask.
+try (TapeClient c = new TapeClient("tape://localhost:7878")) {
+    Reactions.runDispatcher(c, new Reactions.RunDispatcherOpts()
+            .pollInterval(Duration.ofMillis(500)));
+}
+
+// Or: start the Pub/Sub bridge for PUBLISH-kind reactions. Soft-requires
+// google-cloud-pubsub on the classpath; throws if it isn't there.
+try (TapeClient c = new TapeClient("tape://localhost:7878")) {
+    Reactions.runPubSubBridge(c, new Reactions.RunPubSubBridgeOpts()
+            .project("my-proj").topic("tape-tasks"));
+}
+```
+
+Per-reaction back-pressure (`maxConcurrency`, `rateLimitPerS`, `debounceMs`,
+`retryMax`, `dlqAfterN`) is honoured by the in-proc dispatcher and enforced by
+the server (retries / DLQ).
+
+Lower-level: every new RPC is also on `TapeClient` directly —
+`registerReaction(RegisterReactionOpts)`, `claimTasks(ClaimTasksOpts)`,
+`completeTask`, `nackTask`, `listTasks`, `subscribeBySubject(pattern,
+predicateCel, fromGlobalSeq)`. The Java SDK does **not** ship subject helpers
+(`@on_value_change` etc.) as a separate package — they're static methods on
+`Reactions`.
 
 ### What's a scaffold
 
