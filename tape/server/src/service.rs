@@ -274,28 +274,130 @@ impl Tape for TapeService {
     // ── the WAL tail (at-least-once; entries at the boundary ts may repeat — the
     //    reactors / fan-out de-dup on (run_id, seq), which is harmless since
     //    re-processing a journal entry is idempotent) ─────────────────────────
+    //
+    // Honors three filter shapes:
+    //   * legacy: from_ts_ms (+ optional run_id / kind)  → events_since
+    //   * event-bus (preferred): from_global_seq (+ optional subject_pattern) → events_by_subject
     type SubscribeEventsStream = Pin<Box<dyn Stream<Item = Result<EventEntry, Status>> + Send + 'static>>;
     async fn subscribe_events(&self, req: Request<SubscribeEventsRequest>) -> Result<Response<Self::SubscribeEventsStream>, Status> {
         let r = req.into_inner();
         let store = self.store.clone();
+        let notify = store.journal_notify();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let use_global = r.from_global_seq > 0 || !r.subject_pattern.is_empty();
         tokio::spawn(async move {
-            let mut from = r.from_ts_ms;
+            if use_global {
+                let mut from = r.from_global_seq;
+                loop {
+                    let batch = match store.events_by_subject(from, &r.subject_pattern, 512).await {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    };
+                    for e in batch {
+                        from = from.max(e.global_seq);
+                        if tx.send(Ok(e)).await.is_err() { return; }
+                    }
+                    let _ = tokio::time::timeout(std::time::Duration::from_millis(1_000), notify.notified()).await;
+                }
+            } else {
+                let mut from = r.from_ts_ms;
+                loop {
+                    let batch = match store.events_since(from, &r.run_id, &r.kind, 512).await {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    };
+                    for e in batch {
+                        from = from.max(e.ts_ms);
+                        if tx.send(Ok(e)).await.is_err() { return; }
+                    }
+                    let _ = tokio::time::timeout(std::time::Duration::from_millis(300), notify.notified()).await;
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    // ── subject-routed bus (the new surface) ────────────────────────────────
+    type SubscribeBySubjectStream = Pin<Box<dyn Stream<Item = Result<EventEntry, Status>> + Send + 'static>>;
+    async fn subscribe_by_subject(&self, req: Request<SubscribeBySubjectRequest>) -> Result<Response<Self::SubscribeBySubjectStream>, Status> {
+        let r = req.into_inner();
+        let store = self.store.clone();
+        let notify = store.journal_notify();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        // CEL predicate compiled lazily inside the loop so an error returns
+        // the stream cleanly via Status::invalid_argument.
+        tokio::spawn(async move {
+            let mut from = r.from_global_seq;
             loop {
-                let batch = match store.events_since(from, &r.run_id, &r.kind, 512).await {
+                let batch = match store.events_by_subject(from, &r.subject_pattern, 512).await {
                     Ok(b) => b,
                     Err(_) => break,
                 };
                 for e in batch {
-                    from = from.max(e.ts_ms);
-                    if tx.send(Ok(e)).await.is_err() {
-                        return;
+                    from = from.max(e.global_seq);
+                    if !r.predicate_cel.is_empty() {
+                        let env = crate::cel::envelope(
+                            e.global_seq, &e.run_id, e.seq, &e.kind, &e.subject,
+                            e.ts_ms, e.schema_version, &e.payload_json, &e.trace_id,
+                        );
+                        match crate::cel::evaluate(&r.predicate_cel, &env) {
+                            Ok(true) => {}
+                            Ok(false) => continue,
+                            Err(err) => {
+                                tracing::warn!(%err, "subscribe_by_subject: cel error, skipping entry");
+                                continue;
+                            }
+                        }
                     }
+                    if tx.send(Ok(e)).await.is_err() { return; }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(1_000), notify.notified()).await;
             }
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    // ── reactions ───────────────────────────────────────────────────────────
+    async fn register_reaction(&self, req: Request<Reaction>) -> Result<Response<Reaction>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(self.store.register_reaction(&r).await.map_err(db)?))
+    }
+    async fn deregister_reaction(&self, req: Request<DeregisterReactionRequest>) -> Result<Response<DeregisterReactionResponse>, Status> {
+        let r = req.into_inner();
+        let ok = self.store.deregister_reaction(&r.reaction_id).await.map_err(db)?;
+        Ok(Response::new(DeregisterReactionResponse { deregistered: ok }))
+    }
+    async fn list_reactions(&self, req: Request<ListReactionsRequest>) -> Result<Response<ListReactionsResponse>, Status> {
+        let r = req.into_inner();
+        let reactions = self.store.list_reactions(&r.subject_pattern).await.map_err(db)?;
+        Ok(Response::new(ListReactionsResponse { reactions }))
+    }
+
+    // ── tasks ───────────────────────────────────────────────────────────────
+    async fn claim_tasks(&self, req: Request<ClaimTasksRequest>) -> Result<Response<ClaimTasksResponse>, Status> {
+        let r = req.into_inner();
+        let lease = if r.lease_ms > 0 { r.lease_ms } else { 60_000 };
+        let max = if r.max > 0 { r.max } else { 16 };
+        let now = if r.now_ms > 0 { r.now_ms } else { now_ms() };
+        let tasks = self.store.claim_tasks(&r.reaction_id, r.shard, &r.owner, lease, max, now).await.map_err(db)?;
+        Ok(Response::new(ClaimTasksResponse { tasks }))
+    }
+    async fn complete_task(&self, req: Request<CompleteTaskRequest>) -> Result<Response<CompleteTaskResponse>, Status> {
+        let r = req.into_inner();
+        let task = self.store.complete_task(&r.task_id, &r.owner).await.map_err(db)?
+            .ok_or_else(|| Status::not_found("no such task or lease mismatch"))?;
+        Ok(Response::new(CompleteTaskResponse { task: Some(task) }))
+    }
+    async fn nack_task(&self, req: Request<NackTaskRequest>) -> Result<Response<NackTaskResponse>, Status> {
+        let r = req.into_inner();
+        let task = self.store.nack_task(&r.task_id, &r.owner, &r.error, r.permanent, now_ms()).await.map_err(db)?
+            .ok_or_else(|| Status::not_found("no such task or lease mismatch"))?;
+        Ok(Response::new(NackTaskResponse { task: Some(task) }))
+    }
+    async fn list_tasks(&self, req: Request<ListTasksRequest>) -> Result<Response<ListTasksResponse>, Status> {
+        let r = req.into_inner();
+        let tasks = self.store.list_tasks(&r.reaction_id, r.status, r.limit as i64).await.map_err(db)?;
+        Ok(Response::new(ListTasksResponse { tasks }))
     }
 }
 

@@ -27,9 +27,12 @@ use rusqlite::ToSql as SqliteToSql;
 
 use super::{derive_key, merge_json, now_ms, RunStore, StoreError, StoreResult};
 use crate::pb::*;
+use crate::subjects;
 
 const SCHEMA_SQLITE: &str = include_str!("../../migrations/0001_init.sqlite.sql");
 const SCHEMA_PG: &str = include_str!("../../migrations/0001_init.postgres.sql");
+const SCHEMA_SQLITE_002: &str = include_str!("../../migrations/0002_event_bus.sqlite.sql");
+const SCHEMA_PG_002: &str = include_str!("../../migrations/0002_event_bus.postgres.sql");
 
 fn e<E: std::fmt::Display>(err: E) -> StoreError {
     StoreError::Msg(err.to_string())
@@ -112,6 +115,16 @@ pub trait SqlBackend: Send + Sync {
         Ok(self.query(sql, params).await?.into_iter().next())
     }
     async fn tx(&self, stmts: Vec<(String, Vec<Val>)>) -> StoreResult<()>;
+    /// Allocate the next `global_seq` value. SQLite bumps a single-row counter;
+    /// Postgres calls `nextval` on the journal sequence (the column default
+    /// would do the same on insert, but the matcher and the SQLite path both
+    /// want the value up front).
+    async fn next_global_seq(&self) -> StoreResult<i64>;
+    /// `true` for Postgres / AlloyDB. Lets the SqlRunStore branch on dialect
+    /// (LIKE-ESCAPE, FOR UPDATE SKIP LOCKED, etc.).
+    fn is_postgres(&self) -> bool {
+        false
+    }
 }
 
 // ── SQLite backend ──────────────────────────────────────────────────────────
@@ -168,7 +181,25 @@ fn sqlite_query(conn: &rusqlite::Connection, sql: &str, params: &[Val]) -> Store
 }
 #[async_trait]
 impl SqlBackend for SqliteBackend {
-    async fn migrate(&self) -> StoreResult<()> { self.with(|c| c.execute_batch(SCHEMA_SQLITE).map_err(e)).await }
+    async fn migrate(&self) -> StoreResult<()> {
+        self.with(|c| {
+            c.execute_batch(SCHEMA_SQLITE).map_err(e)?;
+            // Apply 0002 only if its first column (global_seq) is missing —
+            // old SQLite doesn't honour ADD COLUMN IF NOT EXISTS.
+            let mut stmt = c.prepare("PRAGMA table_info(tape_journal)").map_err(e)?;
+            let cols: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(e)?
+                .filter_map(|r| r.ok())
+                .map(|n| n.to_lowercase())
+                .collect();
+            if !cols.iter().any(|n| n == "global_seq") {
+                c.execute_batch(SCHEMA_SQLITE_002).map_err(e)?;
+            }
+            Ok(())
+        })
+        .await
+    }
     async fn exec(&self, sql: &str, params: Vec<Val>) -> StoreResult<u64> {
         let sql = sql.to_string();
         self.with(move |c| {
@@ -189,6 +220,20 @@ impl SqlBackend for SqliteBackend {
             }
             t.commit().map_err(e)
         }).await
+    }
+    async fn next_global_seq(&self) -> StoreResult<i64> {
+        // SQLite serializes writes (WAL); the UPDATE+SELECT under one
+        // connection is effectively atomic for the counter row.
+        self.with(|c| {
+            let t = c.transaction().map_err(e)?;
+            t.execute("UPDATE tape_global_seq SET v = v + 1 WHERE id = 1", []).map_err(e)?;
+            let v: i64 = t
+                .query_row("SELECT v FROM tape_global_seq WHERE id = 1", [], |r| r.get(0))
+                .map_err(e)?;
+            t.commit().map_err(e)?;
+            Ok(v)
+        })
+        .await
     }
 }
 
@@ -235,7 +280,26 @@ fn pg_col(row: &postgres::Row, i: usize) -> Val {
 }
 #[async_trait]
 impl SqlBackend for PostgresBackend {
-    async fn migrate(&self) -> StoreResult<()> { self.with(|c| c.batch_execute(SCHEMA_PG).map_err(e)).await }
+    async fn migrate(&self) -> StoreResult<()> {
+        self.with(|c| {
+            c.batch_execute(SCHEMA_PG).map_err(e)?;
+            c.batch_execute(SCHEMA_PG_002).map_err(e)?;
+            Ok(())
+        })
+        .await
+    }
+    async fn next_global_seq(&self) -> StoreResult<i64> {
+        self.with(|c| {
+            let row = c
+                .query_one("SELECT nextval('tape_journal_global_seq_seq')", &[])
+                .map_err(e)?;
+            Ok(row.get::<_, i64>(0))
+        })
+        .await
+    }
+    fn is_postgres(&self) -> bool {
+        true
+    }
     async fn exec(&self, sql: &str, params: Vec<Val>) -> StoreResult<u64> {
         let sql = pg_sql(sql);
         self.with(move |c| { let bx = pg_boxed(&params); c.execute(sql.as_str(), pg_refs(&bx).as_slice()).map_err(e) }).await
@@ -264,23 +328,31 @@ impl SqlBackend for PostgresBackend {
 
 pub struct SqlRunStore {
     db: Arc<dyn SqlBackend>,
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl SqlRunStore {
     pub async fn sqlite_file(path: &str) -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::file(path)?);
         db.migrate().await?;
-        Ok(Self { db })
+        Ok(Self { db, notify: Arc::new(tokio::sync::Notify::new()) })
     }
     pub async fn sqlite_memory() -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::memory()?);
         db.migrate().await?;
-        Ok(Self { db })
+        Ok(Self { db, notify: Arc::new(tokio::sync::Notify::new()) })
     }
     pub async fn postgres(url: &str) -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(PostgresBackend::connect(url)?);
         db.migrate().await?;
-        Ok(Self { db })
+        let notify = Arc::new(tokio::sync::Notify::new());
+        // Best-effort Postgres LISTEN/NOTIFY listener: pumps `pg_notify` from
+        // the `tape_journal_notify_trg` trigger into the in-process notify so
+        // subscribers wake on insert instead of polling. If the connection
+        // drops we reconnect with exponential backoff and the polling fallback
+        // (1s in subscribe_*) keeps things moving in the meantime.
+        spawn_pg_listener(url.to_string(), notify.clone());
+        Ok(Self { db, notify })
     }
 
     fn d(&self) -> &dyn SqlBackend { self.db.as_ref() }
@@ -291,9 +363,63 @@ impl SqlRunStore {
         Ok(self.d().query_opt("SELECT seq_cursor FROM tape_runs WHERE run_id = ?1", vec![run_id.into()])
             .await?.map(|r| r.i64(0)).unwrap_or(0))
     }
-    async fn journal(&self, run_id: &str, seq: i64, kind: &str, payload: &str, ts: i64) -> StoreResult<()> {
-        self.d().exec("INSERT INTO tape_journal (run_id, seq, kind, payload_json, ts_ms) VALUES (?1,?2,?3,?4,?5)",
-                      vec![run_id.into(), seq.into(), kind.into(), payload.into(), ts.into()]).await.map(|_| ())
+
+    /// Append a journal row with the event-bus fields populated.
+    /// `payload` is the canonical payload_json; `subject` is derived by the
+    /// caller via [`subjects::derive`]. OTel fields default to empty when the
+    /// caller has no current span. Pulses the in-process notify so streams
+    /// wake immediately.
+    async fn journal_full(
+        &self,
+        run_id: &str,
+        seq: i64,
+        kind: &str,
+        subject: &str,
+        payload: &str,
+        ts: i64,
+        schema_version: i32,
+        trace_id: &str,
+        span_id: &str,
+        parent_span_id: &str,
+    ) -> StoreResult<()> {
+        let gs = self.d().next_global_seq().await?;
+        self.d()
+            .exec(
+                "INSERT INTO tape_journal (run_id, seq, kind, payload_json, ts_ms, global_seq, subject, schema_version, trace_id, span_id, parent_span_id) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                vec![
+                    run_id.into(), seq.into(), kind.into(), payload.into(), ts.into(),
+                    gs.into(), subject.into(), schema_version.into(),
+                    trace_id.into(), span_id.into(), parent_span_id.into(),
+                ],
+            )
+            .await?;
+        self.notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Convenience: subject is derived from `kind` + parsed `payload`. OTel
+    /// fields are empty (the RPC layer doesn't propagate them yet).
+    async fn journal(
+        &self,
+        run_id: &str,
+        seq: i64,
+        kind: &str,
+        payload: &str,
+        ts: i64,
+    ) -> StoreResult<()> {
+        let payload_v: serde_json::Value =
+            serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+        // Inject run_id into the payload so subjects::derive can find it; it's
+        // also helpful for downstream consumers.
+        let mut p = payload_v;
+        if let Some(o) = p.as_object_mut() {
+            if !o.contains_key("run_id") {
+                o.insert("run_id".to_string(), serde_json::Value::String(run_id.to_string()));
+            }
+        }
+        let subject = subjects::derive(kind, &p);
+        self.journal_full(run_id, seq, kind, &subject, payload, ts, 1, "", "", "").await
     }
 }
 
@@ -357,6 +483,13 @@ impl RunStore for SqlRunStore {
              VALUES (?1,?2,?3,?4,?5,?6,0,?7,?8,?9)",
             vec![run_id.clone().into(), app.into(), user.into(), session.into(), invocation.into(),
                  (RunStatus::Running as i32).into(), lease_owner.into(), lease_exp.into(), ts.into()]).await?;
+        // Run-lifecycle journal: /tape/run/running/<app>/<user>/<session>/<run_id>
+        let seq = self.next_seq(&run_id).await.unwrap_or(0);
+        let payload = serde_json::json!({
+            "app": app, "user": user, "session": session,
+            "run_id": run_id, "invocation_id": invocation, "status": "running",
+        }).to_string();
+        let _ = self.journal(&run_id, seq, "run", &payload, ts).await;
         Ok(BeginRunResponse { run_id, resumed: false, next_seq: 0, status: RunStatus::Running as i32 })
     }
     async fn resume_run(&self, run_id: &str, lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<Option<RunState>> {
@@ -365,9 +498,27 @@ impl RunStore for SqlRunStore {
         self.get_run(run_id).await
     }
     async fn end_run(&self, run_id: &str, status: i32, detail_json: &str) -> StoreResult<Option<RunState>> {
+        let ts = now_ms();
         self.d().exec("UPDATE tape_runs SET status=?2, ended_at_ms=?3, detail_json=?4, lease_owner='' WHERE run_id=?1",
-            vec![run_id.into(), status.into(), now_ms().into(), detail_json.into()]).await?;
-        self.get_run(run_id).await
+            vec![run_id.into(), status.into(), ts.into(), detail_json.into()]).await?;
+        let cur = self.get_run(run_id).await?;
+        if let Some(ref r) = cur {
+            let status_str = match RunStatus::try_from(status) {
+                Ok(RunStatus::Terminal) => "terminal",
+                Ok(RunStatus::Failed) => "failed",
+                Ok(RunStatus::Stuck) => "stuck",
+                Ok(RunStatus::Cancelled) => "cancelled",
+                Ok(RunStatus::Compensating) => "compensating",
+                _ => "ended",
+            };
+            let seq = self.next_seq(run_id).await.unwrap_or(0);
+            let payload = serde_json::json!({
+                "app": r.app_name, "user": r.user_id, "session": r.session_id,
+                "run_id": run_id, "status": status_str,
+            }).to_string();
+            let _ = self.journal(run_id, seq, "run", &payload, ts).await;
+        }
+        Ok(cur)
     }
     async fn get_run(&self, run_id: &str) -> StoreResult<Option<RunState>> {
         Ok(self.d().query_opt(&format!("SELECT {RUN_COLS} FROM tape_runs WHERE run_id=?1"), vec![run_id.into()]).await?.map(|r| run_of(&r)))
@@ -383,9 +534,16 @@ impl RunStore for SqlRunStore {
         Ok(rows.iter().map(run_of).collect())
     }
     async fn journal_range(&self, run_id: &str, from_seq: i64) -> StoreResult<Vec<JournalEntry>> {
-        let rows = self.d().query("SELECT seq, kind, payload_json, ts_ms FROM tape_journal WHERE run_id=?1 AND seq>=?2 ORDER BY seq",
+        let rows = self.d().query(
+            "SELECT seq, kind, payload_json, ts_ms, COALESCE(global_seq, 0), COALESCE(subject, ''), \
+                    COALESCE(schema_version, 1), COALESCE(trace_id, ''), COALESCE(span_id, ''), COALESCE(parent_span_id, '') \
+             FROM tape_journal WHERE run_id=?1 AND seq>=?2 ORDER BY seq",
             vec![run_id.into(), from_seq.into()]).await?;
-        Ok(rows.iter().map(|r| JournalEntry { seq: r.i64(0), kind: r.str(1), payload_json: r.str(2), ts_ms: r.i64(3) }).collect())
+        Ok(rows.iter().map(|r| JournalEntry {
+            seq: r.i64(0), kind: r.str(1), payload_json: r.str(2), ts_ms: r.i64(3),
+            global_seq: r.i64(4), subject: r.str(5), schema_version: r.i32(6),
+            trace_id: r.str(7), span_id: r.str(8), parent_span_id: r.str(9),
+        }).collect())
     }
 
     // ── decisions ───────────────────────────────────────────────────────────
@@ -673,7 +831,18 @@ impl RunStore for SqlRunStore {
                deleted = 0",
             vec![namespace.into(), key.into(), value_json.into(), ts.into(), writer.into()],
         ).await?;
-        self.get_value(namespace, key).await?.ok_or_else(|| StoreError::msg("write_value: row vanished after upsert"))
+        let rec = self.get_value(namespace, key).await?.ok_or_else(|| StoreError::msg("write_value: row vanished after upsert"))?;
+        // Journal: /tape/value/changed/<ns>/<key>. run_id is empty; the value
+        // surface is run-agnostic. Errors here are best-effort (the value
+        // write committed; a missed journal row is recoverable).
+        let payload = serde_json::json!({
+            "namespace": namespace, "key": key, "version": rec.version, "writer": writer,
+            "value": {"namespace": namespace, "key": key, "value_json": value_json, "version": rec.version},
+        }).to_string();
+        let _ = self.journal_full("", 0, "value", &subjects::derive("value", &serde_json::json!({
+            "namespace": namespace, "key": key,
+        })), &payload, ts, 1, "", "", "").await;
+        Ok(rec)
     }
     async fn get_value(&self, namespace: &str, key: &str) -> StoreResult<Option<ValueRecord>> {
         Ok(self.d().query_opt(
@@ -704,15 +873,344 @@ impl RunStore for SqlRunStore {
             vec![namespace.into(), key.into(), ts.into()],
         ).await?;
         let new_v = self.get_value(namespace, key).await?.map(|r| r.version).unwrap_or(0);
+        // Journal: /tape/value/deleted/<ns>/<key>.
+        let payload = serde_json::json!({
+            "namespace": namespace, "key": key, "version": new_v, "deleted": true,
+        }).to_string();
+        let _ = self.journal_full("", 0, "value", &subjects::derive("value", &serde_json::json!({
+            "namespace": namespace, "key": key, "deleted": true,
+        })), &payload, ts, 1, "", "", "").await;
         Ok((true, new_v))
     }
 
     // ── the WAL tail ────────────────────────────────────────────────────────
     async fn events_since(&self, from_ts_ms: i64, run_id: &str, kind: &str, limit: i64) -> StoreResult<Vec<EventEntry>> {
         let rows = self.d().query(
-            "SELECT run_id, seq, kind, payload_json, ts_ms FROM tape_journal WHERE ts_ms >= ?1 AND (?2 = '' OR run_id = ?2) AND (?3 = '' OR kind = ?3) ORDER BY ts_ms, run_id, seq LIMIT ?4",
+            "SELECT run_id, seq, kind, payload_json, ts_ms, COALESCE(global_seq, 0), COALESCE(subject, ''), \
+                    COALESCE(schema_version, 1), COALESCE(trace_id, ''), COALESCE(span_id, ''), COALESCE(parent_span_id, '') \
+             FROM tape_journal WHERE ts_ms >= ?1 AND (?2 = '' OR run_id = ?2) AND (?3 = '' OR kind = ?3) \
+             ORDER BY ts_ms, run_id, seq LIMIT ?4",
             vec![from_ts_ms.into(), run_id.into(), kind.into(), limit.max(1).into()]).await?;
-        Ok(rows.iter().map(|r| EventEntry { run_id: r.str(0), seq: r.i64(1), kind: r.str(2), payload_json: r.str(3), ts_ms: r.i64(4) }).collect())
+        Ok(rows.iter().map(|r| EventEntry {
+            run_id: r.str(0), seq: r.i64(1), kind: r.str(2), payload_json: r.str(3), ts_ms: r.i64(4),
+            global_seq: r.i64(5), subject: r.str(6), schema_version: r.i32(7),
+            trace_id: r.str(8), span_id: r.str(9), parent_span_id: r.str(10),
+        }).collect())
+    }
+
+    // ── event-bus surface (subject-routed, global_seq-cursored) ─────────────
+    async fn events_by_subject(&self, from_global_seq: i64, subject_pattern: &str, limit: i64)
+        -> StoreResult<Vec<EventEntry>> {
+        let like = subjects::pattern_to_sql_like(subject_pattern);
+        let rows = self.d().query(
+            "SELECT run_id, seq, kind, payload_json, ts_ms, COALESCE(global_seq, 0), COALESCE(subject, ''), \
+                    COALESCE(schema_version, 1), COALESCE(trace_id, ''), COALESCE(span_id, ''), COALESCE(parent_span_id, '') \
+             FROM tape_journal WHERE COALESCE(global_seq, 0) > ?1 AND COALESCE(subject, '') LIKE ?2 ESCAPE '\\' \
+             ORDER BY global_seq ASC LIMIT ?3",
+            vec![from_global_seq.into(), like.into(), limit.max(1).into()]).await?;
+        let mut out = Vec::new();
+        for r in &rows {
+            let e = EventEntry {
+                run_id: r.str(0), seq: r.i64(1), kind: r.str(2), payload_json: r.str(3), ts_ms: r.i64(4),
+                global_seq: r.i64(5), subject: r.str(6), schema_version: r.i32(7),
+                trace_id: r.str(8), span_id: r.str(9), parent_span_id: r.str(10),
+            };
+            // Second-pass strict matcher: SQL LIKE can't enforce single-segment
+            // semantics, so we filter precisely here.
+            if subjects::matches(subject_pattern, &e.subject) {
+                out.push(e);
+            }
+        }
+        Ok(out)
+    }
+    async fn read_journal_after(&self, from_global_seq: i64, limit: i64) -> StoreResult<Vec<EventEntry>> {
+        let rows = self.d().query(
+            "SELECT run_id, seq, kind, payload_json, ts_ms, COALESCE(global_seq, 0), COALESCE(subject, ''), \
+                    COALESCE(schema_version, 1), COALESCE(trace_id, ''), COALESCE(span_id, ''), COALESCE(parent_span_id, '') \
+             FROM tape_journal WHERE COALESCE(global_seq, 0) > ?1 ORDER BY global_seq ASC LIMIT ?2",
+            vec![from_global_seq.into(), limit.max(1).into()]).await?;
+        Ok(rows.iter().map(|r| EventEntry {
+            run_id: r.str(0), seq: r.i64(1), kind: r.str(2), payload_json: r.str(3), ts_ms: r.i64(4),
+            global_seq: r.i64(5), subject: r.str(6), schema_version: r.i32(7),
+            trace_id: r.str(8), span_id: r.str(9), parent_span_id: r.str(10),
+        }).collect())
+    }
+
+    fn journal_notify(&self) -> Arc<tokio::sync::Notify> { self.notify.clone() }
+
+    // ── reactions ───────────────────────────────────────────────────────────
+    async fn register_reaction(&self, r: &Reaction) -> StoreResult<Reaction> {
+        let rid = if r.reaction_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { r.reaction_id.clone() };
+        let now = now_ms();
+        let max_conc = if r.max_concurrency > 0 { r.max_concurrency } else { 1 };
+        let num_shards = if r.num_shards > 0 { r.num_shards } else { 1 };
+        let created = if r.created_at_ms > 0 { r.created_at_ms } else { now };
+        let dlq = if r.dlq_after_n > 0 { r.dlq_after_n } else { 5 };
+        let retry_max = if r.retry_max > 0 { r.retry_max } else { 5 };
+        let backoff = if r.retry_backoff_ms > 0 { r.retry_backoff_ms } else { 1000 };
+        // Upsert. Use ON CONFLICT (reaction_id) DO UPDATE … on both backends.
+        self.d().exec(
+            "INSERT INTO tape_reactions (reaction_id, name, subject_pattern, predicate_cel, handler_kind, \
+                                          agent_app, publish_target, max_concurrency, rate_limit_per_s, \
+                                          debounce_ms, retry_max, retry_backoff_ms, dlq_after_n, num_shards, \
+                                          created_at_ms, deleted) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0) \
+             ON CONFLICT(reaction_id) DO UPDATE SET \
+                 name=excluded.name, subject_pattern=excluded.subject_pattern, predicate_cel=excluded.predicate_cel, \
+                 handler_kind=excluded.handler_kind, agent_app=excluded.agent_app, publish_target=excluded.publish_target, \
+                 max_concurrency=excluded.max_concurrency, rate_limit_per_s=excluded.rate_limit_per_s, \
+                 debounce_ms=excluded.debounce_ms, retry_max=excluded.retry_max, retry_backoff_ms=excluded.retry_backoff_ms, \
+                 dlq_after_n=excluded.dlq_after_n, num_shards=excluded.num_shards, deleted=0",
+            vec![rid.clone().into(), r.name.clone().into(), r.subject_pattern.clone().into(),
+                 r.predicate_cel.clone().into(), (r.handler_kind as i32).into(),
+                 r.agent_app.clone().into(), r.publish_target.clone().into(),
+                 max_conc.into(), r.rate_limit_per_s.into(), r.debounce_ms.into(),
+                 retry_max.into(), backoff.into(), dlq.into(), num_shards.into(),
+                 created.into()],
+        ).await?;
+        Ok(self
+            .list_reactions("")
+            .await?
+            .into_iter()
+            .find(|x| x.reaction_id == rid)
+            .ok_or_else(|| StoreError::msg("register_reaction: row vanished after upsert"))?)
+    }
+    async fn deregister_reaction(&self, reaction_id: &str) -> StoreResult<bool> {
+        let n = self.d().exec(
+            "UPDATE tape_reactions SET deleted=1 WHERE reaction_id=?1",
+            vec![reaction_id.into()],
+        ).await?;
+        Ok(n > 0)
+    }
+    async fn list_reactions(&self, subject_pattern: &str) -> StoreResult<Vec<Reaction>> {
+        let (sql, params): (String, Vec<Val>) = if subject_pattern.is_empty() {
+            ("SELECT reaction_id, name, subject_pattern, predicate_cel, handler_kind, agent_app, publish_target, \
+                     max_concurrency, rate_limit_per_s, debounce_ms, retry_max, retry_backoff_ms, dlq_after_n, \
+                     num_shards, created_at_ms, deleted \
+              FROM tape_reactions WHERE deleted=0 ORDER BY created_at_ms".to_string(), vec![])
+        } else {
+            ("SELECT reaction_id, name, subject_pattern, predicate_cel, handler_kind, agent_app, publish_target, \
+                     max_concurrency, rate_limit_per_s, debounce_ms, retry_max, retry_backoff_ms, dlq_after_n, \
+                     num_shards, created_at_ms, deleted \
+              FROM tape_reactions WHERE deleted=0 AND subject_pattern=?1 ORDER BY created_at_ms".to_string(),
+             vec![subject_pattern.into()])
+        };
+        let rows = self.d().query(&sql, params).await?;
+        Ok(rows.iter().map(|r| Reaction {
+            reaction_id: r.str(0), name: r.str(1), subject_pattern: r.str(2), predicate_cel: r.str(3),
+            handler_kind: r.i32(4), agent_app: r.str(5), publish_target: r.str(6),
+            max_concurrency: r.i32(7), rate_limit_per_s: r.i32(8), debounce_ms: r.i32(9),
+            retry_max: r.i32(10), retry_backoff_ms: r.i32(11), dlq_after_n: r.i32(12),
+            num_shards: r.i32(13), created_at_ms: r.i64(14), deleted: r.i64(15) != 0,
+        }).collect())
+    }
+    async fn get_reaction_cursor(&self, reaction_id: &str, shard: i32) -> StoreResult<i64> {
+        Ok(self.d().query_opt(
+            "SELECT last_global_seq FROM tape_reaction_cursors WHERE reaction_id=?1 AND shard=?2",
+            vec![reaction_id.into(), shard.into()],
+        ).await?.map(|r| r.i64(0)).unwrap_or(0))
+    }
+    async fn set_reaction_cursor(&self, reaction_id: &str, shard: i32, global_seq: i64, now_ms: i64)
+        -> StoreResult<()> {
+        self.d().exec(
+            "INSERT INTO tape_reaction_cursors (reaction_id, shard, last_global_seq, last_processed_at_ms) \
+             VALUES (?1,?2,?3,?4) ON CONFLICT(reaction_id, shard) DO UPDATE SET \
+               last_global_seq=excluded.last_global_seq, last_processed_at_ms=excluded.last_processed_at_ms",
+            vec![reaction_id.into(), shard.into(), global_seq.into(), now_ms.into()],
+        ).await.map(|_| ())
+    }
+
+    // ── tasks ───────────────────────────────────────────────────────────────
+    async fn create_task(&self, t: &Task) -> StoreResult<Task> {
+        let tid = if t.task_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { t.task_id.clone() };
+        let created = if t.created_at_ms > 0 { t.created_at_ms } else { now_ms() };
+        // ON CONFLICT (reaction_id, shard, source_global_seq) DO NOTHING; if a
+        // duplicate matcher run hits, we just keep the existing row.
+        self.d().exec(
+            "INSERT INTO tape_tasks (task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                                     status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                                     created_at_ms, trace_id, parent_span_id) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,0,'',0,'',?9,?10,?11) \
+             ON CONFLICT (reaction_id, shard, source_global_seq) DO NOTHING",
+            vec![tid.clone().into(), t.reaction_id.clone().into(), t.shard.into(),
+                 t.source_run_id.clone().into(), t.source_global_seq.into(),
+                 t.subject.clone().into(), t.payload_json.clone().into(),
+                 (TaskStatus::Pending as i32).into(),
+                 created.into(),
+                 t.trace_id.clone().into(), t.parent_span_id.clone().into()],
+        ).await?;
+        // Return the row that ended up there (may be the existing one).
+        let row = self.d().query_opt(
+            "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                    status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                    created_at_ms, trace_id, parent_span_id \
+             FROM tape_tasks WHERE reaction_id=?1 AND shard=?2 AND source_global_seq=?3",
+            vec![t.reaction_id.clone().into(), t.shard.into(), t.source_global_seq.into()],
+        ).await?.ok_or_else(|| StoreError::msg("create_task: row vanished after upsert"))?;
+        Ok(task_of(&row))
+    }
+    async fn claim_tasks(&self, reaction_id: &str, shard: i32, owner: &str, lease_ms: i64,
+                         max: i32, now_ms: i64) -> StoreResult<Vec<Task>> {
+        let lease_ms = if lease_ms > 0 { lease_ms } else { 60_000 };
+        let max = if max > 0 { max } else { 16 };
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let lease_exp = now + lease_ms;
+        // Eligibility: PENDING with next_attempt_at_ms <= now, OR CLAIMED with
+        // lease_expires_at_ms < now (stolen lease — the previous owner died).
+        let pending = TaskStatus::Pending as i32;
+        let claimed = TaskStatus::Claimed as i32;
+
+        if self.d().is_postgres() {
+            // Postgres path: SELECT … FOR UPDATE SKIP LOCKED then UPDATE.
+            // We do it in a single CTE-style UPDATE … RETURNING for atomicity.
+            let shard_clause = if shard < 0 { "" } else { " AND shard=?7" };
+            let sql = format!(
+                "WITH picked AS ( \
+                   SELECT task_id FROM tape_tasks \
+                   WHERE reaction_id=?1 \
+                     AND ((status=?2 AND next_attempt_at_ms<=?3) OR (status=?4 AND lease_expires_at_ms<?3)) {shard_clause} \
+                   ORDER BY next_attempt_at_ms, created_at_ms \
+                   FOR UPDATE SKIP LOCKED \
+                   LIMIT ?5 \
+                 ) \
+                 UPDATE tape_tasks t SET status=?4, lease_owner=?6, lease_expires_at_ms=?8, attempts=attempts+1 \
+                 FROM picked WHERE t.task_id = picked.task_id \
+                 RETURNING t.task_id, t.reaction_id, t.shard, t.source_run_id, t.source_global_seq, t.subject, t.payload_json, \
+                           t.status, t.attempts, t.next_attempt_at_ms, t.lease_owner, t.lease_expires_at_ms, t.last_error, \
+                           t.created_at_ms, t.trace_id, t.parent_span_id"
+            );
+            let mut params: Vec<Val> = vec![
+                reaction_id.into(), pending.into(), now.into(), claimed.into(),
+                (max as i64).into(), owner.into(),
+            ];
+            if shard >= 0 { params.push(shard.into()); }
+            params.push(lease_exp.into());
+            let rows = self.d().query(&sql, params).await?;
+            return Ok(rows.iter().map(task_of).collect());
+        }
+
+        // SQLite path: pick candidates, then claim each with a conditional UPDATE.
+        let shard_clause = if shard < 0 { "".to_string() } else { format!(" AND shard={}", shard) };
+        let sql = format!(
+            "SELECT task_id FROM tape_tasks \
+             WHERE reaction_id=?1 \
+               AND ((status=?2 AND next_attempt_at_ms<=?3) OR (status=?4 AND lease_expires_at_ms<?3)) {shard_clause} \
+             ORDER BY next_attempt_at_ms, created_at_ms LIMIT ?5"
+        );
+        let candidates = self.d().query(
+            &sql,
+            vec![reaction_id.into(), pending.into(), now.into(), claimed.into(), (max as i64).into()],
+        ).await?;
+        let mut out = Vec::new();
+        for c in candidates {
+            let tid = c.str(0);
+            let n = self.d().exec(
+                "UPDATE tape_tasks SET status=?2, lease_owner=?3, lease_expires_at_ms=?4, attempts=attempts+1 \
+                 WHERE task_id=?1 AND ((status=?5 AND next_attempt_at_ms<=?6) OR (status=?2 AND lease_expires_at_ms<?6))",
+                vec![tid.clone().into(), claimed.into(), owner.into(), lease_exp.into(), pending.into(), now.into()],
+            ).await?;
+            if n == 0 { continue; }
+            let row = self.d().query_opt(
+                "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                        status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                        created_at_ms, trace_id, parent_span_id \
+                 FROM tape_tasks WHERE task_id=?1",
+                vec![tid.into()],
+            ).await?;
+            if let Some(r) = row { out.push(task_of(&r)); }
+        }
+        Ok(out)
+    }
+    async fn complete_task(&self, task_id: &str, owner: &str) -> StoreResult<Option<Task>> {
+        let now = now_ms();
+        let n = self.d().exec(
+            "UPDATE tape_tasks SET status=?2, completed_at_ms=?3, lease_owner='', lease_expires_at_ms=0 \
+             WHERE task_id=?1 AND lease_owner=?4",
+            vec![task_id.into(), (TaskStatus::Done as i32).into(), now.into(), owner.into()],
+        ).await?;
+        if n == 0 { return Ok(None); }
+        let row = self.d().query_opt(
+            "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                    status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                    created_at_ms, trace_id, parent_span_id \
+             FROM tape_tasks WHERE task_id=?1",
+            vec![task_id.into()],
+        ).await?;
+        Ok(row.as_ref().map(task_of))
+    }
+    async fn nack_task(&self, task_id: &str, owner: &str, error: &str, permanent: bool, now_ms: i64)
+        -> StoreResult<Option<Task>> {
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        // Read the task; decide between retry and DLQ.
+        let cur = self.d().query_opt(
+            "SELECT attempts, COALESCE((SELECT retry_backoff_ms FROM tape_reactions WHERE reaction_id=t.reaction_id),1000), \
+                    COALESCE((SELECT dlq_after_n FROM tape_reactions WHERE reaction_id=t.reaction_id),5) \
+             FROM tape_tasks t WHERE task_id=?1 AND lease_owner=?2",
+            vec![task_id.into(), owner.into()],
+        ).await?;
+        let Some(row) = cur else { return Ok(None); };
+        let attempts = row.i32(0);
+        let backoff = row.i64(1).max(0);
+        let dlq_after = row.i32(2);
+        let to_dlq = permanent || attempts >= dlq_after;
+        if to_dlq {
+            self.d().exec(
+                "UPDATE tape_tasks SET status=?2, last_error=?3, lease_owner='', lease_expires_at_ms=0 \
+                 WHERE task_id=?1",
+                vec![task_id.into(), (TaskStatus::Dlq as i32).into(), error.into()],
+            ).await?;
+        } else {
+            // exponential backoff: backoff * 2^(attempts-1), capped at 1h.
+            let shift = (attempts.max(1) - 1).min(20) as u32;
+            let delay = backoff.saturating_mul(1i64.checked_shl(shift).unwrap_or(i64::MAX));
+            let delay = delay.min(3_600_000);
+            self.d().exec(
+                "UPDATE tape_tasks SET status=?2, next_attempt_at_ms=?3, last_error=?4, \
+                                       lease_owner='', lease_expires_at_ms=0 \
+                 WHERE task_id=?1",
+                vec![task_id.into(), (TaskStatus::Pending as i32).into(), (now + delay).into(), error.into()],
+            ).await?;
+        }
+        let row = self.d().query_opt(
+            "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                    status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                    created_at_ms, trace_id, parent_span_id \
+             FROM tape_tasks WHERE task_id=?1",
+            vec![task_id.into()],
+        ).await?;
+        Ok(row.as_ref().map(task_of))
+    }
+    async fn list_tasks(&self, reaction_id: &str, status: i32, limit: i64) -> StoreResult<Vec<Task>> {
+        let limit = if limit > 0 { limit } else { 200 };
+        let rows = if status == 0 {
+            self.d().query(
+                "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                        status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                        created_at_ms, trace_id, parent_span_id \
+                 FROM tape_tasks WHERE reaction_id=?1 ORDER BY created_at_ms DESC LIMIT ?2",
+                vec![reaction_id.into(), limit.into()],
+            ).await?
+        } else {
+            self.d().query(
+                "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                        status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                        created_at_ms, trace_id, parent_span_id \
+                 FROM tape_tasks WHERE reaction_id=?1 AND status=?2 ORDER BY created_at_ms DESC LIMIT ?3",
+                vec![reaction_id.into(), status.into(), limit.into()],
+            ).await?
+        };
+        Ok(rows.iter().map(task_of).collect())
+    }
+}
+
+fn task_of(r: &Row) -> Task {
+    Task {
+        task_id: r.str(0), reaction_id: r.str(1), shard: r.i32(2),
+        source_run_id: r.str(3), source_global_seq: r.i64(4),
+        subject: r.str(5), payload_json: r.str(6),
+        status: r.i32(7), attempts: r.i32(8), next_attempt_at_ms: r.i64(9),
+        lease_owner: r.str(10), lease_expires_at_ms: r.i64(11), last_error: r.str(12),
+        created_at_ms: r.i64(13), trace_id: r.str(14), parent_span_id: r.str(15),
     }
 }
 
@@ -721,4 +1219,66 @@ fn timer_of(r: &Row) -> TimerRecord {
         run_id: r.str(0), timer_id: r.str(1), fire_at_ms: r.i64(2), kind: r.str(3),
         payload_json: r.str(4), fired: r.i64(5) != 0, created_at_ms: r.i64(6),
     }
+}
+
+/// Spawn a long-running task that LISTENs on `tape_journal` and pulses
+/// `notify` on every NOTIFY payload. Reconnects with exponential backoff on
+/// connection loss. The payload (per migration 0002 trigger) is
+/// `<global_seq>:<subject>` but we only need the wake-up here.
+fn spawn_pg_listener(url: String, notify: Arc<tokio::sync::Notify>) {
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+        let mut backoff_ms: u64 = 250;
+        loop {
+            // tokio-postgres uses a slightly different URL flavour than the
+            // sync `postgres` crate but they accept the same DSN.
+            let (client, mut conn) = match tokio_postgres::connect(&url, tokio_postgres::NoTls).await {
+                Ok(pair) => pair,
+                Err(err) => {
+                    tracing::warn!(%err, "pg listen: connect failed, retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = (backoff_ms * 2).min(30_000);
+                    continue;
+                }
+            };
+            backoff_ms = 250;
+
+            // tokio-postgres requires polling the connection on a separate task
+            // and exposes notifications via a stream-like API on the connection.
+            // We use the lower-level approach: poll_message via futures::stream.
+            let (notif_tx, mut notif_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            let conn_task = tokio::spawn(async move {
+                // Stream all messages; forward AsyncMessage::Notification as a wake-up.
+                let mut stream = futures_util::stream::poll_fn(move |cx| conn.poll_message(cx));
+                while let Some(msg) = stream.next().await {
+                    match msg {
+                        Ok(tokio_postgres::AsyncMessage::Notification(_n)) => {
+                            let _ = notif_tx.send(());
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::warn!(%err, "pg listen: connection error");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            if let Err(err) = client.batch_execute("LISTEN tape_journal").await {
+                tracing::warn!(%err, "pg listen: LISTEN failed");
+                let _ = conn_task.abort();
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                continue;
+            }
+            tracing::info!("pg listen: LISTEN tape_journal active");
+
+            // Drain notifications, waking the in-process Notify on each.
+            while notif_rx.recv().await.is_some() {
+                notify.notify_waiters();
+            }
+            tracing::warn!("pg listen: notification channel closed, reconnecting");
+            conn_task.abort();
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+        }
+    });
 }

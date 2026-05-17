@@ -295,7 +295,11 @@ impl RunStore for BigtableRunStore {
         let rows = self.read_prefix(&format!("j#{run_id}#"), 100_000).await?;
         let mut out: Vec<JournalEntry> = rows.into_iter().filter_map(|(key, m)| {
             let seq: i64 = key.rsplit('#').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            if seq >= from_seq { Some(JournalEntry { seq, kind: m.gs("kind"), payload_json: m.gs("payload"), ts_ms: m.gi("ts") }) } else { None }
+            if seq >= from_seq { Some(JournalEntry {
+                seq, kind: m.gs("kind"), payload_json: m.gs("payload"), ts_ms: m.gi("ts"),
+                global_seq: 0, subject: String::new(), schema_version: 1,
+                trace_id: String::new(), span_id: String::new(), parent_span_id: String::new(),
+            }) } else { None }
         }).collect();
         out.sort_by_key(|j| j.seq);
         Ok(out)
@@ -599,7 +603,12 @@ impl RunStore for BigtableRunStore {
             return Ok(self.journal_range(run_id, 0).await?.into_iter()
                 .filter(|j| kind.is_empty() || j.kind == kind)
                 .take(limit.max(1) as usize)
-                .map(|j| EventEntry { run_id: run_id.into(), seq: j.seq, kind: j.kind, payload_json: j.payload_json, ts_ms: j.ts_ms })
+                .map(|j| EventEntry {
+                    run_id: run_id.into(), seq: j.seq, kind: j.kind,
+                    payload_json: j.payload_json, ts_ms: j.ts_ms,
+                    global_seq: 0, subject: String::new(), schema_version: 1,
+                    trace_id: String::new(), span_id: String::new(), parent_span_id: String::new(),
+                })
                 .collect());
         }
         tracing::warn!("SubscribeEvents (cross-run) is not supported on the Bigtable backend — use Bigtable change streams (design-principles/tape.md §12); returning empty");

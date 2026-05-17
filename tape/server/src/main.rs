@@ -10,9 +10,12 @@
 //! run at a time" is the per-run lease in `tape_runs`; every mutating RPC is
 //! idempotent, so a double-drive (two recovery workers racing) is harmless.
 
+mod cel;
+mod matcher;
 mod pb;
 mod service;
 mod store;
+mod subjects;
 
 use clap::Parser;
 use tonic::transport::Server;
@@ -54,6 +57,10 @@ async fn main() -> anyhow::Result<()> {
     let addr = args.listen.parse()?;
     let store = store::open(&store_url).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
     tracing::info!(store = %store_url, listen = %args.listen, "tape server starting");
+
+    // In-server matcher: tails the journal, produces tasks/runs for matching
+    // reactions. See design-principles/tape-event-bus.md §2.3.
+    matcher::spawn(store.clone());
 
     let svc = TapeServer::new(TapeService::new(store));
     Server::builder()
