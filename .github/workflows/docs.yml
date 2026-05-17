@@ -12,34 +12,28 @@ on:
       - "mkdocs.yml"
       - "docs/requirements.txt"
       - ".github/workflows/docs.yml"
+      - "README.md"
+      - "tape/README.md"
+      - "index.html"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to publish under (`mike deploy <version>`). Use `latest` for the rolling tip."
-        required: false
-        default: "latest"
 
 permissions:
-  contents: write   # mike pushes to gh-pages
+  contents: read
   pages: write
   id-token: write
 
+# Allow one concurrent deployment; cancel in-progress runs of the same group
+# so a fast-typed push supersedes its predecessor without clobbering the live
+# site.
 concurrency:
-  group: docs
-  cancel-in-progress: false
+  group: pages
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # mike needs full history to compare versions
-
-      - name: Configure git for mike
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       # ── Toolchain ────────────────────────────────────────────────────────
       - uses: actions/setup-python@v5
@@ -66,35 +60,46 @@ jobs:
         working-directory: tape/sdk/typescript
         run: npm ci
 
-      # ── Generate (Python is generated inline by mkdocstrings) ───────────
-      - name: Generate design / go / typescript / java / cli
-        run: |
-          bash scripts/docs/gen_design.sh
-          bash scripts/docs/gen_go.sh
-          bash scripts/docs/gen_typescript.sh
-          bash scripts/docs/gen_java.sh
-          python scripts/docs/gen_cli.py
+      # ── Generate per-language SDK reference ─────────────────────────────
+      # Each generator is allowed to fail without taking the whole build down:
+      # the site is more valuable shipped-with-stale-Go-docs than not shipped.
+      # A failure is surfaced as a warning step so the regression is visible
+      # in the run summary without being fatal.
+      - name: Generate design pages
+        run: bash scripts/docs/gen_design.sh
 
-      # ── Build + publish via mike ────────────────────────────────────────
-      - name: Determine version
-        id: ver
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=latest" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Generate Go reference (gomarkdoc)
+        run: bash scripts/docs/gen_go.sh
+        continue-on-error: true
 
-      - name: mike deploy
-        run: |
-          # First-time setup: create the gh-pages branch if it doesn't exist.
-          if ! git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            git checkout --orphan gh-pages
-            git rm -rf . >/dev/null 2>&1 || true
-            git commit --allow-empty -m "init gh-pages"
-            git push origin gh-pages
-            git checkout -
-          fi
-          # Deploy this version + repoint `latest`.
-          mike deploy --push --update-aliases "${{ steps.ver.outputs.version }}" latest
-          mike set-default --push latest
+      - name: Generate TypeScript reference (typedoc)
+        run: bash scripts/docs/gen_typescript.sh
+        continue-on-error: true
+
+      - name: Generate Java reference (mvn javadoc)
+        run: bash scripts/docs/gen_java.sh
+        continue-on-error: true
+
+      - name: Generate CLI reference (typer introspection)
+        run: python scripts/docs/gen_cli.py
+        continue-on-error: true
+
+      # ── Build the site ─────────────────────────────────────────────────
+      - name: mkdocs build
+        run: mkdocs build --site-dir ./site
+
+      # ── Upload as a Pages artifact ─────────────────────────────────────
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

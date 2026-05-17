@@ -4,14 +4,34 @@ A **durable-execution substrate for ADK agents**. Tape is the runtime the
 treatise [*When the Orchestrator Isn't Code*](../design-principles/agents-that-act-treatise.md)
 argues for, scoped to one framework — Google's
 [Agent Development Kit](https://google.github.io/adk-docs/) — and built as a
-*separate system*: a high-concurrency, low-latency server (Rust, Postgres- or
-SQLite-backed) with a language-agnostic gRPC protocol and thin SDKs that plug
-into ADK **with no changes to ADK**, riding only on extension points ADK already
-exposes (the plugin system, custom `SessionService`s, `LongRunningFunctionTool`,
-`invocation_id`-based resume).
+*separate system*: a high-concurrency, low-latency server (Rust, Postgres- /
+SQLite- / Bigtable-backed) with a language-agnostic gRPC protocol and thin SDKs
+that plug into ADK **with no changes to ADK**, riding only on extension points
+ADK already exposes (the plugin system, custom `SessionService`s,
+`LongRunningFunctionTool`, `invocation_id`-based resume).
 
-The design is [`design-principles/tape.md`](../design-principles/tape.md). This
-directory is the implementation.
+> Tape is **not** checkpointing Python. Tape is:
+> record every model decision · record every external effect intent & result ·
+> replay decisions on resume · skip confirmed effects · stop on ambiguity ·
+> reconcile reality · compensate when reality disagrees.
+
+The mental model is one journal with semantic projections:
+
+```text
+1 append-only execution journal
++
+semantic projections:
+  - decisions      — memory of reasoning
+  - effects        — memory of reality
+  - obligations    — memory of responsibility
+  - timers · gates · budgets · reactive KV
+```
+
+> The WAL tells you what happened. **The projections tell you what is true now.**
+
+The design is [`design-principles/tape.md`](../design-principles/tape.md). The
+canonical engineering explanation is [`docs/architecture.md`](docs/architecture.md).
+This directory is the implementation.
 
 ```
 tape/

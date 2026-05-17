@@ -144,9 +144,6 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/vamsiramakrishnan/durable-agents
       name: durable-agents on GitHub
-  version:
-    provider: mike
-    default: latest
   status:
     new: New page
     deprecated: Deprecated
@@ -176,13 +173,17 @@ nav:
   - Concepts:
       - concepts/index.md
       - Why Tape exists: concepts/why-tape.md
+      - Architecture: architecture.md
       - The journal: concepts/journal.md
       - Effects & idempotency: concepts/effects.md
       - UNKNOWN — the third outcome: concepts/unknown.md
       - Reactors: concepts/reactors.md
+      - Leases: leases.md
       - Compensation & sagas: concepts/compensation.md
       - Replay & resume: concepts/replay.md
       - Reactive shared state: concepts/reactive-state.md
+      - Why not just a WAL?: why-not-just-a-wal.md
+      - Runtime vs. framework: runtime-vs-framework.md
       - Tape vs. alternatives: concepts/alternatives.md
 
   - How-to guides:
