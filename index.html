@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tape — durable-execution substrate for ADK agents</title>
+  <meta name="description" content="A durable journal underneath your ADK agent. Crash-survival, exactly-once-effective tool calls, and an explicit UNKNOWN outcome — without changing your agent code.">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="canonical" href="https://vamsiramakrishnan.github.io/durable-agents/">
+  <meta property="og:title" content="Tape — durable-execution substrate for ADK agents">
+  <meta property="og:description" content="A durable journal underneath your ADK agent. Journal, recover, dispatch exactly-once.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://vamsiramakrishnan.github.io/durable-agents/">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0b0d10;
+      --fg: #e7ebef;
+      --muted: #9aa4af;
+      --rule: #1c2127;
+      --accent: #8ab4ff;
+      --panel: #11151a;
+      --code: #161b22;
+    }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #ffffff; --fg: #0d1116; --muted: #57606a; --rule: #d0d7de; --accent: #0969da; --panel: #f6f8fa; --code: #f3f5f7; }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+    body {
+      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+    main { max-width: 920px; margin: 0 auto; padding: 4rem 1.5rem 6rem; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    .brand { font-weight: 600; letter-spacing: -0.01em; font-size: 1.05rem; }
+    .brand small { color: var(--muted); font-weight: 400; margin-left: .35rem; }
+    nav a { color: var(--muted); margin-left: 1.25rem; font-size: .95rem; }
+    nav a:hover { color: var(--fg); }
+    h1 {
+      margin: 3rem 0 1.25rem;
+      font-size: clamp(2rem, 4.5vw, 3.25rem);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      font-weight: 600;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: clamp(1rem, 1.5vw, 1.2rem);
+      max-width: 42rem;
+      margin: 0 0 2rem;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 3rem; }
+    .btn {
+      display: inline-flex; align-items: center; gap: .5rem;
+      padding: .65rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--rule);
+      color: var(--fg);
+      font-size: .95rem;
+      font-weight: 500;
+      background: var(--panel);
+    }
+    .btn.primary { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
+    .btn:hover { text-decoration: none; transform: translateY(-1px); }
+    pre.code {
+      background: var(--code);
+      border: 1px solid var(--rule);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      overflow-x: auto;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 2rem 0; }
+    .card { padding: 1.1rem 1.2rem; border: 1px solid var(--rule); border-radius: 10px; background: var(--panel); }
+    .card h3 { margin: 0 0 .35rem; font-size: 1rem; font-weight: 600; }
+    .card p { margin: 0; color: var(--muted); font-size: .92rem; }
+    .ledger { margin: 2rem 0; padding: 1.25rem 1.5rem; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 8px 8px 0; }
+    .ledger b { color: var(--fg); }
+    hr { border: 0; border-top: 1px solid var(--rule); margin: 3rem 0; }
+    footer { color: var(--muted); font-size: .9rem; margin-top: 4rem; }
+    .note { font-size: .85rem; color: var(--muted); margin-top: 1.25rem; }
+    .note code { background: var(--code); padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand">Tape <small>· durable-execution substrate for ADK agents</small></div>
+      <nav>
+        <a href="https://github.com/vamsiramakrishnan/durable-agents">GitHub</a>
+        <a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/design-principles/agents-that-act-treatise.md">Treatise</a>
+        <a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/docs">Docs source</a>
+      </nav>
+    </header>
+
+    <h1>A durable journal underneath your ADK agent.</h1>
+    <p class="sub">
+      Crash-survival, exactly-once-effective tool calls, and an explicit
+      <code>UNKNOWN</code> outcome — without changing one line of your ADK agent code.
+    </p>
+
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/vamsiramakrishnan/durable-agents#readme">Get started</a>
+      <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/quickstart.md">Quickstart</a>
+      <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/concepts/why-tape.md">Why Tape</a>
+      <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/design-principles/agents-that-act-treatise.md">The treatise</a>
+    </div>
+
+    <pre class="code"><span style="color: var(--muted);"># wire a durable runtime under an ADK agent — fifteen lines</span>
+<b>import</b> tape
+<b>from</b> tape.adk <b>import</b> durable_app
+
+app, runner = durable_app(
+    name=<span style="color:#79c0ff;">"treasury"</span>,
+    agent=root_agent,                            <span style="color: var(--muted);"># your ADK LlmAgent</span>
+    budget=tape.Budget(usd_cap=50, token_cap=2_000_000),
+)</pre>
+
+    <div class="ledger">
+      Tape is <b>not</b> checkpointing Python. Tape is:<br>
+      record every model decision · record every external effect intent &amp; result ·
+      replay decisions on resume · skip confirmed effects · stop on ambiguity ·
+      reconcile reality · compensate when reality disagrees.
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>One execution journal</h3>
+        <p>Append-only. Per-run. The source of truth for what happened — and what is still in flight.</p>
+      </div>
+      <div class="card">
+        <h3>Semantic projections</h3>
+        <p>Decisions (memory of reasoning), Effects (memory of reality), Obligations (memory of responsibility).</p>
+      </div>
+      <div class="card">
+        <h3>Reactors close the gap</h3>
+        <p>Recovery · reconciler · outbox · timers · compensation. Each idempotent. Each under a lease.</p>
+      </div>
+      <div class="card">
+        <h3>UNKNOWN is first-class</h3>
+        <p>The third outcome of any external effect. Blind retry on a non-idempotent upstream is structurally impossible.</p>
+      </div>
+    </div>
+
+    <hr>
+
+    <p class="note">
+      If you are the repository owner and you see this static page instead of the full MkDocs
+      site, set <b>Settings → Pages → Source</b> to <code>GitHub Actions</code>. The
+      <code>docs</code> workflow builds and deploys the full site on every push to
+      <code>main</code>.
+    </p>
+
+    <footer>
+      © the durable-agents authors · Apache-2.0 · built with care.
+    </footer>
+  </main>
+</body>
+</html>
