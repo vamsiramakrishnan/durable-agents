@@ -240,10 +240,19 @@ class TapePlugin(BasePlugin):
                 dispatch_mode=_dispatch_to_pb(dispatch_str),
                 business_key=bk, connector=connector)
         except Exception as ex:
-            # If the server refused the contract (e.g. NON_IDEMPOTENT + INLINE),
-            # surface that as a tool error rather than silently letting the body
-            # run unprotected.
-            return {"error": f"tape: begin_effect refused: {ex}"}
+            # Split the failure handling by contract so the new strictness
+            # doesn't reduce the v1 behaviour:
+            #  * For idempotent + inline (the v1 default), a transient gRPC
+            #    blip should let the body run — the counterparty's idempotency
+            #    key handling is what guarantees safety on retry; failing the
+            #    tool just because Tape is briefly unreachable is a regression
+            #    versus the prior behaviour, which returned None here.
+            #  * For non-idempotent or outbox, the body MUST NOT run without a
+            #    journaled intent (that's the safety claim of the whole
+            #    Phase 1+2 work), so surface the error to the agent.
+            if semantics_str == "non_idempotent" or dispatch_str == "outbox":
+                return {"error": f"tape: begin_effect refused: {ex}"}
+            return None
         try:
             tool_context.state["temp:_tape_idempotency_key"] = resp.idempotency_key
             tool_context.state["temp:_tape_run_id"] = run_id
