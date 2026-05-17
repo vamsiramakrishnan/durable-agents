@@ -1,18 +1,6 @@
 # When the Orchestrator Isn't Code
 
 *A treatise on agents that act*
-
-> This is the combined edition. It keeps the rhythmic spine — short numbered
-> beats, an argument built one stroke at a time — folds back the longer prose
-> where the long prose said it better, and then extends both with the working
-> code the argument was pointing at all along: the bug in each of the six
-> agent classes, the six primitives of the ceiling, the whole agent loop
-> made durable end to end, and — last — an honest accounting of what it is
-> still glossing over. Every figure appears twice: once as a diagram, once
-> as a plain-text plate, so the argument survives whether you are reading the
-> rendered page or the raw source. The small monospace couplets set between
-> paragraphs are sentence-breakers; read them as breath marks.
-
 ---
 
 ## Prelude
