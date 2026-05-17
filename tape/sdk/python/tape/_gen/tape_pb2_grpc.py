@@ -159,6 +159,46 @@ class TapeStub(object):
                 request_serializer=tape__pb2.SubscribeEventsRequest.SerializeToString,
                 response_deserializer=tape__pb2.EventEntry.FromString,
                 _registered_method=True)
+        self.SubscribeBySubject = channel.unary_stream(
+                '/tape.v1.Tape/SubscribeBySubject',
+                request_serializer=tape__pb2.SubscribeBySubjectRequest.SerializeToString,
+                response_deserializer=tape__pb2.EventEntry.FromString,
+                _registered_method=True)
+        self.RegisterReaction = channel.unary_unary(
+                '/tape.v1.Tape/RegisterReaction',
+                request_serializer=tape__pb2.Reaction.SerializeToString,
+                response_deserializer=tape__pb2.Reaction.FromString,
+                _registered_method=True)
+        self.DeregisterReaction = channel.unary_unary(
+                '/tape.v1.Tape/DeregisterReaction',
+                request_serializer=tape__pb2.DeregisterReactionRequest.SerializeToString,
+                response_deserializer=tape__pb2.DeregisterReactionResponse.FromString,
+                _registered_method=True)
+        self.ListReactions = channel.unary_unary(
+                '/tape.v1.Tape/ListReactions',
+                request_serializer=tape__pb2.ListReactionsRequest.SerializeToString,
+                response_deserializer=tape__pb2.ListReactionsResponse.FromString,
+                _registered_method=True)
+        self.ClaimTasks = channel.unary_unary(
+                '/tape.v1.Tape/ClaimTasks',
+                request_serializer=tape__pb2.ClaimTasksRequest.SerializeToString,
+                response_deserializer=tape__pb2.ClaimTasksResponse.FromString,
+                _registered_method=True)
+        self.CompleteTask = channel.unary_unary(
+                '/tape.v1.Tape/CompleteTask',
+                request_serializer=tape__pb2.CompleteTaskRequest.SerializeToString,
+                response_deserializer=tape__pb2.CompleteTaskResponse.FromString,
+                _registered_method=True)
+        self.NackTask = channel.unary_unary(
+                '/tape.v1.Tape/NackTask',
+                request_serializer=tape__pb2.NackTaskRequest.SerializeToString,
+                response_deserializer=tape__pb2.NackTaskResponse.FromString,
+                _registered_method=True)
+        self.ListTasks = channel.unary_unary(
+                '/tape.v1.Tape/ListTasks',
+                request_serializer=tape__pb2.ListTasksRequest.SerializeToString,
+                response_deserializer=tape__pb2.ListTasksResponse.FromString,
+                _registered_method=True)
         self.WriteValue = channel.unary_unary(
                 '/tape.v1.Tape/WriteValue',
                 request_serializer=tape__pb2.WriteValueRequest.SerializeToString,
@@ -373,7 +413,65 @@ class TapeServicer(object):
 
     def SubscribeEvents(self, request, context):
         """── the WAL → reactors feed (cross-run journal tail) ──────────────────────
+        The legacy cross-run journal stream; preserved for back-compat.
+        `SubscribeEventsRequest` now also accepts `from_global_seq` and
+        `subject_pattern`; pass them instead of `from_ts_ms` for new code.
         """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeBySubject(self, request, context):
+        """The subject-routed, global-seq-cursored bus. Path-style subjects with
+        `*` (one segment) / `**` (rest) wildcards; optional CEL predicate.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RegisterReaction(self, request, context):
+        """── reactions & tasks (the event-bus surface; see design-principles/tape-event-bus.md) ─
+        Reactions are server-side subscriptions: a subject pattern + optional CEL
+        predicate + a handler kind (agent | task | publish) + back-pressure config.
+        Matching journal entries become `tape_tasks` rows that dispatchers claim,
+        run, and complete/nack.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeregisterReaction(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListReactions(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ClaimTasks(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CompleteTask(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def NackTask(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListTasks(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -565,6 +663,46 @@ def add_TapeServicer_to_server(servicer, server):
                     servicer.SubscribeEvents,
                     request_deserializer=tape__pb2.SubscribeEventsRequest.FromString,
                     response_serializer=tape__pb2.EventEntry.SerializeToString,
+            ),
+            'SubscribeBySubject': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeBySubject,
+                    request_deserializer=tape__pb2.SubscribeBySubjectRequest.FromString,
+                    response_serializer=tape__pb2.EventEntry.SerializeToString,
+            ),
+            'RegisterReaction': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterReaction,
+                    request_deserializer=tape__pb2.Reaction.FromString,
+                    response_serializer=tape__pb2.Reaction.SerializeToString,
+            ),
+            'DeregisterReaction': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeregisterReaction,
+                    request_deserializer=tape__pb2.DeregisterReactionRequest.FromString,
+                    response_serializer=tape__pb2.DeregisterReactionResponse.SerializeToString,
+            ),
+            'ListReactions': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListReactions,
+                    request_deserializer=tape__pb2.ListReactionsRequest.FromString,
+                    response_serializer=tape__pb2.ListReactionsResponse.SerializeToString,
+            ),
+            'ClaimTasks': grpc.unary_unary_rpc_method_handler(
+                    servicer.ClaimTasks,
+                    request_deserializer=tape__pb2.ClaimTasksRequest.FromString,
+                    response_serializer=tape__pb2.ClaimTasksResponse.SerializeToString,
+            ),
+            'CompleteTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.CompleteTask,
+                    request_deserializer=tape__pb2.CompleteTaskRequest.FromString,
+                    response_serializer=tape__pb2.CompleteTaskResponse.SerializeToString,
+            ),
+            'NackTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.NackTask,
+                    request_deserializer=tape__pb2.NackTaskRequest.FromString,
+                    response_serializer=tape__pb2.NackTaskResponse.SerializeToString,
+            ),
+            'ListTasks': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListTasks,
+                    request_deserializer=tape__pb2.ListTasksRequest.FromString,
+                    response_serializer=tape__pb2.ListTasksResponse.SerializeToString,
             ),
             'WriteValue': grpc.unary_unary_rpc_method_handler(
                     servicer.WriteValue,
@@ -1287,6 +1425,222 @@ class Tape(object):
             '/tape.v1.Tape/SubscribeEvents',
             tape__pb2.SubscribeEventsRequest.SerializeToString,
             tape__pb2.EventEntry.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeBySubject(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/tape.v1.Tape/SubscribeBySubject',
+            tape__pb2.SubscribeBySubjectRequest.SerializeToString,
+            tape__pb2.EventEntry.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterReaction(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/RegisterReaction',
+            tape__pb2.Reaction.SerializeToString,
+            tape__pb2.Reaction.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeregisterReaction(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/DeregisterReaction',
+            tape__pb2.DeregisterReactionRequest.SerializeToString,
+            tape__pb2.DeregisterReactionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListReactions(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ListReactions',
+            tape__pb2.ListReactionsRequest.SerializeToString,
+            tape__pb2.ListReactionsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ClaimTasks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ClaimTasks',
+            tape__pb2.ClaimTasksRequest.SerializeToString,
+            tape__pb2.ClaimTasksResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CompleteTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/CompleteTask',
+            tape__pb2.CompleteTaskRequest.SerializeToString,
+            tape__pb2.CompleteTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def NackTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/NackTask',
+            tape__pb2.NackTaskRequest.SerializeToString,
+            tape__pb2.NackTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListTasks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ListTasks',
+            tape__pb2.ListTasksRequest.SerializeToString,
+            tape__pb2.ListTasksResponse.FromString,
             options,
             channel_credentials,
             insecure,
