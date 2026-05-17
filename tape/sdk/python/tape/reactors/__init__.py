@@ -43,26 +43,80 @@ import json
 import time
 from typing import Any, Callable, Optional
 
-from .client import (
+from ..client import (
     TapeClient,
     DEFAULT_URL,
     EFFECT_STATUS_CONFIRMED,
     EFFECT_STATUS_FAILED,
     EFFECT_STATUS_UNKNOWN,
     EFFECT_STATUS_PENDING,
+    EFFECT_SEMANTICS_NON_IDEMPOTENT,
+    EFFECT_SEMANTICS_IDEMPOTENT,
+    EFFECT_RESOLUTION_CONFIRMED,
+    EFFECT_RESOLUTION_FAILED,
+    EFFECT_RESOLUTION_ABSENT,
+    EFFECT_RESOLUTION_DUPLICATE,
+    EFFECT_RESOLUTION_STUCK,
     RUN_STATUS_TERMINAL,
 )
-from .effect import get_status_check
-from ._recover import resume as _resume, compensate_one as _compensate_one, _compensator_id
-from ._gen import tape_pb2 as pb
+from ..effect import get_status_check
+from .. import connectors as _connectors
+from .._recover import resume as _resume, compensate_one as _compensate_one, _compensator_id
+from .._gen import tape_pb2 as pb
 
 
 # ── the reconciler reactor ──────────────────────────────────────────────────
 
+def _observe_via_connector(eff) -> Optional[dict]:
+    """If a connector is registered for this effect, call its `observe()` and
+    return a dict matching the reconciler's resolution shape. Returns None if
+    no connector or the observe path is a no-op."""
+    if not eff.connector:
+        return None
+    connector = _connectors.get(eff.connector)
+    if connector is None:
+        return None
+    try:
+        obs = _connectors.call_observe(connector, eff)
+    except Exception as ex:  # noqa: BLE001
+        return {"status": "stuck", "error": str(ex)}
+    return {
+        "status": obs.status,
+        "external_ref": obs.external_ref,
+        "response": obs.response,
+    }
+
+
+def _status_str_to_resolution(s: str) -> int:
+    return {
+        "confirmed": EFFECT_RESOLUTION_CONFIRMED,
+        "absent":    EFFECT_RESOLUTION_ABSENT,
+        "duplicate": EFFECT_RESOLUTION_DUPLICATE,
+        "failed":    EFFECT_RESOLUTION_FAILED,
+        "stuck":     EFFECT_RESOLUTION_STUCK,
+    }.get(s, EFFECT_RESOLUTION_STUCK)
+
+
 def reconcile_once(url: str = DEFAULT_URL, *, reconcile_pending_after_ms: int = 0,
                    client: Optional[TapeClient] = None) -> list[dict]:
-    """Resolve UNKNOWN effects (and PENDING ones older than `reconcile_pending_after_ms`,
-    if > 0) via the registered status checks. Returns a list of {key, resolved}."""
+    """Resolve UNKNOWN effects (and PENDING ones older than
+    `reconcile_pending_after_ms`, if > 0) via the connector's `observe()` (the
+    new, semantics-aware path) or the per-tool `status_check` (the v1 path).
+    Returns a list of `{key, resolved, ...}` dicts.
+
+    The semantics-aware rules:
+
+      * UNKNOWN + IDEMPOTENT  — observation `absent` is safe to re-issue: the
+        server moves the effect back to PENDING with `next_dispatch_at_ms=now`
+        and the outbox loop retries.
+      * UNKNOWN + NON_IDEMPOTENT — observation `absent` is **not** retried.
+        The effect is marked FAILED; a human or saga decides whether to issue
+        a fresh, fresh-keyed attempt. (The server enforces this mapping in
+        `record_external_observation`.)
+      * `duplicate` for either — register a compensation obligation atomically
+        with the observation, then mark the effect CONFIRMED.
+      * `stuck` for either — mark the effect UNKNOWN; the operator triages.
+    """
     c = client or TapeClient(url)
     out: list[dict] = []
     include_pending = reconcile_pending_after_ms > 0
@@ -70,9 +124,39 @@ def reconcile_once(url: str = DEFAULT_URL, *, reconcile_pending_after_ms: int = 
     effects = c.list_pending_effects(older_than_ms=older, include_pending=include_pending,
                                      include_unknown=True, limit=500).effects
     for e in effects:
+        # Resolve via the connector first (semantics-aware), then fall back to
+        # the legacy per-tool status_check (idempotent contract, found/not-found).
+        observation = _observe_via_connector(e)
+        if observation is not None:
+            status_str = observation.get("status") or "absent"
+            ext = str(observation.get("external_ref") or "")
+            resp = json.dumps(observation.get("response") or {}, default=str)
+            # If the effect's tool has a compensation handler registered, use
+            # its name for `compensate_on_duplicate_kind` so the server
+            # registers the inverse atomically with the observation.
+            comp_kind = ""
+            try:
+                from ..effect import get_compensator as _gc
+                cb = _gc(e.tool_name)
+                if cb is not None:
+                    comp_kind = getattr(cb, "__name__", "")
+            except Exception:
+                pass
+            c.record_external_observation(
+                run_id=e.run_id, idempotency_key=e.idempotency_key,
+                resolution=_status_str_to_resolution(status_str),
+                external_ref=ext, response_json=resp,
+                compensate_on_duplicate_kind=comp_kind if status_str == "duplicate" else "")
+            out.append({"key": e.idempotency_key, "resolved": f"observed-{status_str}",
+                        "external_ref": ext, "semantics": int(e.semantics)})
+            continue
+
+        # No connector observe path → legacy status_check.
         check = get_status_check(e.tool_name)
         if check is None:
-            continue  # no status check for this tool — leave it for a human / the re-drive
+            # No way to observe. For NON_IDEMPOTENT this is the unsafe case;
+            # leave the row UNKNOWN for human triage rather than guess.
+            continue
         try:
             res = check(e.idempotency_key)
         except Exception as ex:  # noqa: BLE001
@@ -85,12 +169,23 @@ def reconcile_once(url: str = DEFAULT_URL, *, reconcile_pending_after_ms: int = 
                                response_json=json.dumps(res, default=str) if isinstance(res, dict) else "{}")
             out.append({"key": e.idempotency_key, "resolved": "confirmed"})
         elif e.status == EFFECT_STATUS_UNKNOWN:
-            # The counterparty says it definitively didn't land — and the run is
-            # done (UNKNOWN only persists past run end), so mark it FAILED.
-            c.reconcile_effect(run_id=e.run_id, idempotency_key=e.idempotency_key,
-                               resolved_status=EFFECT_STATUS_FAILED,
-                               error_json=json.dumps({"reconciled": "absent at counterparty"}))
-            out.append({"key": e.idempotency_key, "resolved": "failed"})
+            # The legacy status_check found nothing AND the effect is UNKNOWN.
+            # For IDEMPOTENT: safe to mark FAILED (a re-drive can re-issue
+            # with the same key — counterparty would dedupe if it actually
+            # landed). For NON_IDEMPOTENT: also FAILED — but the row had to
+            # have come from an OUTBOX dispatch that returned `unknown`, so
+            # the semantically-safer route is to leave it UNKNOWN and surface
+            # to humans. Default to legacy behaviour for idempotent and an
+            # explicit no-op for non-idempotent (the connector observe path is
+            # the proper resolution).
+            if e.semantics == EFFECT_SEMANTICS_NON_IDEMPOTENT:
+                out.append({"key": e.idempotency_key, "resolved": "left-unknown",
+                            "reason": "non-idempotent + no observe()"})
+            else:
+                c.reconcile_effect(run_id=e.run_id, idempotency_key=e.idempotency_key,
+                                   resolved_status=EFFECT_STATUS_FAILED,
+                                   error_json=json.dumps({"reconciled": "absent at counterparty"}))
+                out.append({"key": e.idempotency_key, "resolved": "failed"})
         # PENDING + not-found: leave it — the recovery re-drive will re-attempt it.
     if client is None:
         c.close()
@@ -245,7 +340,7 @@ def run_compensations_event_driven(url: str = DEFAULT_URL, *, claimer: str = "",
 
 # ── recovery (re-exported from _recover for one-stop-shopping) ───────────────
 
-from ._recover import recover_once  # noqa: E402,F401
+from .._recover import recover_once  # noqa: E402,F401
 
 
 # ── the loop ────────────────────────────────────────────────────────────────
@@ -334,7 +429,7 @@ def outbox_relay_tick(url: str, sink: Any, *, cursor_path: str = "",
     c = client or TapeClient(url)
     try:
         from_ts, last_run, last_seq = _read_cursor(cursor_path)
-        from ._gen import tape_pb2 as _pb
+        from .._gen import tape_pb2 as _pb
         req = _pb.SubscribeEventsRequest(from_ts_ms=from_ts, run_id=run_id, kind=kind)
         # Per-call timeout: the server-side SubscribeEvents stream polls forever.
         # We set a short timeout so the iterator surfaces DEADLINE_EXCEEDED when
