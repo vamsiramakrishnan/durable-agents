@@ -33,36 +33,43 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Tape_BeginRun_FullMethodName             = "/tape.v1.Tape/BeginRun"
-	Tape_ResumeRun_FullMethodName            = "/tape.v1.Tape/ResumeRun"
-	Tape_EndRun_FullMethodName               = "/tape.v1.Tape/EndRun"
-	Tape_GetRun_FullMethodName               = "/tape.v1.Tape/GetRun"
-	Tape_ListRunsToRecover_FullMethodName    = "/tape.v1.Tape/ListRunsToRecover"
-	Tape_SubscribeRun_FullMethodName         = "/tape.v1.Tape/SubscribeRun"
-	Tape_RecordDecision_FullMethodName       = "/tape.v1.Tape/RecordDecision"
-	Tape_GetDecision_FullMethodName          = "/tape.v1.Tape/GetDecision"
-	Tape_BeginEffect_FullMethodName          = "/tape.v1.Tape/BeginEffect"
-	Tape_CompleteEffect_FullMethodName       = "/tape.v1.Tape/CompleteEffect"
-	Tape_GetEffect_FullMethodName            = "/tape.v1.Tape/GetEffect"
-	Tape_ReconcileEffect_FullMethodName      = "/tape.v1.Tape/ReconcileEffect"
-	Tape_RegisterCompensation_FullMethodName = "/tape.v1.Tape/RegisterCompensation"
-	Tape_ListObligations_FullMethodName      = "/tape.v1.Tape/ListObligations"
-	Tape_ResolveObligation_FullMethodName    = "/tape.v1.Tape/ResolveObligation"
-	Tape_SetBudget_FullMethodName            = "/tape.v1.Tape/SetBudget"
-	Tape_AdmitBudget_FullMethodName          = "/tape.v1.Tape/AdmitBudget"
-	Tape_ChargeBudget_FullMethodName         = "/tape.v1.Tape/ChargeBudget"
-	Tape_AwaitSignal_FullMethodName          = "/tape.v1.Tape/AwaitSignal"
-	Tape_SendSignal_FullMethodName           = "/tape.v1.Tape/SendSignal"
-	Tape_ListPendingEffects_FullMethodName   = "/tape.v1.Tape/ListPendingEffects"
-	Tape_SetTimer_FullMethodName             = "/tape.v1.Tape/SetTimer"
-	Tape_CancelTimer_FullMethodName          = "/tape.v1.Tape/CancelTimer"
-	Tape_ListDueTimers_FullMethodName        = "/tape.v1.Tape/ListDueTimers"
-	Tape_SubscribeEvents_FullMethodName      = "/tape.v1.Tape/SubscribeEvents"
-	Tape_CreateSession_FullMethodName        = "/tape.v1.Tape/CreateSession"
-	Tape_GetSession_FullMethodName           = "/tape.v1.Tape/GetSession"
-	Tape_ListSessions_FullMethodName         = "/tape.v1.Tape/ListSessions"
-	Tape_DeleteSession_FullMethodName        = "/tape.v1.Tape/DeleteSession"
-	Tape_AppendEvent_FullMethodName          = "/tape.v1.Tape/AppendEvent"
+	Tape_BeginRun_FullMethodName                  = "/tape.v1.Tape/BeginRun"
+	Tape_ResumeRun_FullMethodName                 = "/tape.v1.Tape/ResumeRun"
+	Tape_EndRun_FullMethodName                    = "/tape.v1.Tape/EndRun"
+	Tape_GetRun_FullMethodName                    = "/tape.v1.Tape/GetRun"
+	Tape_ListRunsToRecover_FullMethodName         = "/tape.v1.Tape/ListRunsToRecover"
+	Tape_SubscribeRun_FullMethodName              = "/tape.v1.Tape/SubscribeRun"
+	Tape_RecordDecision_FullMethodName            = "/tape.v1.Tape/RecordDecision"
+	Tape_GetDecision_FullMethodName               = "/tape.v1.Tape/GetDecision"
+	Tape_BeginEffect_FullMethodName               = "/tape.v1.Tape/BeginEffect"
+	Tape_CompleteEffect_FullMethodName            = "/tape.v1.Tape/CompleteEffect"
+	Tape_GetEffect_FullMethodName                 = "/tape.v1.Tape/GetEffect"
+	Tape_ReconcileEffect_FullMethodName           = "/tape.v1.Tape/ReconcileEffect"
+	Tape_RegisterCompensation_FullMethodName      = "/tape.v1.Tape/RegisterCompensation"
+	Tape_ListObligations_FullMethodName           = "/tape.v1.Tape/ListObligations"
+	Tape_ResolveObligation_FullMethodName         = "/tape.v1.Tape/ResolveObligation"
+	Tape_ListUnresolvedObligations_FullMethodName = "/tape.v1.Tape/ListUnresolvedObligations"
+	Tape_ClaimObligation_FullMethodName           = "/tape.v1.Tape/ClaimObligation"
+	Tape_RecordObligationAttempt_FullMethodName   = "/tape.v1.Tape/RecordObligationAttempt"
+	Tape_SetBudget_FullMethodName                 = "/tape.v1.Tape/SetBudget"
+	Tape_AdmitBudget_FullMethodName               = "/tape.v1.Tape/AdmitBudget"
+	Tape_ChargeBudget_FullMethodName              = "/tape.v1.Tape/ChargeBudget"
+	Tape_AwaitSignal_FullMethodName               = "/tape.v1.Tape/AwaitSignal"
+	Tape_SendSignal_FullMethodName                = "/tape.v1.Tape/SendSignal"
+	Tape_ListPendingEffects_FullMethodName        = "/tape.v1.Tape/ListPendingEffects"
+	Tape_SetTimer_FullMethodName                  = "/tape.v1.Tape/SetTimer"
+	Tape_CancelTimer_FullMethodName               = "/tape.v1.Tape/CancelTimer"
+	Tape_ListDueTimers_FullMethodName             = "/tape.v1.Tape/ListDueTimers"
+	Tape_SubscribeEvents_FullMethodName           = "/tape.v1.Tape/SubscribeEvents"
+	Tape_WriteValue_FullMethodName                = "/tape.v1.Tape/WriteValue"
+	Tape_GetValue_FullMethodName                  = "/tape.v1.Tape/GetValue"
+	Tape_WatchValue_FullMethodName                = "/tape.v1.Tape/WatchValue"
+	Tape_DeleteValue_FullMethodName               = "/tape.v1.Tape/DeleteValue"
+	Tape_CreateSession_FullMethodName             = "/tape.v1.Tape/CreateSession"
+	Tape_GetSession_FullMethodName                = "/tape.v1.Tape/GetSession"
+	Tape_ListSessions_FullMethodName              = "/tape.v1.Tape/ListSessions"
+	Tape_DeleteSession_FullMethodName             = "/tape.v1.Tape/DeleteSession"
+	Tape_AppendEvent_FullMethodName               = "/tape.v1.Tape/AppendEvent"
 )
 
 // TapeClient is the client API for Tape service.
@@ -88,6 +95,10 @@ type TapeClient interface {
 	RegisterCompensation(ctx context.Context, in *RegisterCompensationRequest, opts ...grpc.CallOption) (*ObligationRecord, error)
 	ListObligations(ctx context.Context, in *ListObligationsRequest, opts ...grpc.CallOption) (*ListObligationsResponse, error)
 	ResolveObligation(ctx context.Context, in *ResolveObligationRequest, opts ...grpc.CallOption) (*ObligationRecord, error)
+	// The drainer surface — for the obligations reactor and operator queries.
+	ListUnresolvedObligations(ctx context.Context, in *ListUnresolvedObligationsRequest, opts ...grpc.CallOption) (*ListUnresolvedObligationsResponse, error)
+	ClaimObligation(ctx context.Context, in *ClaimObligationRequest, opts ...grpc.CallOption) (*ClaimObligationResponse, error)
+	RecordObligationAttempt(ctx context.Context, in *RecordObligationAttemptRequest, opts ...grpc.CallOption) (*ObligationRecord, error)
 	// ── budget ────────────────────────────────────────────────────────────────
 	SetBudget(ctx context.Context, in *SetBudgetRequest, opts ...grpc.CallOption) (*BudgetState, error)
 	AdmitBudget(ctx context.Context, in *AdmitBudgetRequest, opts ...grpc.CallOption) (*AdmitBudgetResponse, error)
@@ -103,6 +114,14 @@ type TapeClient interface {
 	ListDueTimers(ctx context.Context, in *ListDueTimersRequest, opts ...grpc.CallOption) (*ListDueTimersResponse, error)
 	// ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
 	SubscribeEvents(ctx context.Context, in *SubscribeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[EventEntry], error)
+	// ── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
+	// Coordination through journaled state, not messages (treatise §IX ⑥).
+	// Writes are atomic and versioned; WatchValue streams the current value plus
+	// every change (with the prior value, so subscribers see the transition).
+	WriteValue(ctx context.Context, in *WriteValueRequest, opts ...grpc.CallOption) (*ValueRecord, error)
+	GetValue(ctx context.Context, in *GetValueRequest, opts ...grpc.CallOption) (*GetValueResponse, error)
+	WatchValue(ctx context.Context, in *WatchValueRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ValueEvent], error)
+	DeleteValue(ctx context.Context, in *DeleteValueRequest, opts ...grpc.CallOption) (*DeleteValueResponse, error)
 	// ── ADK SessionService shim ───────────────────────────────────────────────
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*Session, error)
 	GetSession(ctx context.Context, in *GetSessionRequest, opts ...grpc.CallOption) (*GetSessionResponse, error)
@@ -278,6 +297,36 @@ func (c *tapeClient) ResolveObligation(ctx context.Context, in *ResolveObligatio
 	return out, nil
 }
 
+func (c *tapeClient) ListUnresolvedObligations(ctx context.Context, in *ListUnresolvedObligationsRequest, opts ...grpc.CallOption) (*ListUnresolvedObligationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListUnresolvedObligationsResponse)
+	err := c.cc.Invoke(ctx, Tape_ListUnresolvedObligations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ClaimObligation(ctx context.Context, in *ClaimObligationRequest, opts ...grpc.CallOption) (*ClaimObligationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimObligationResponse)
+	err := c.cc.Invoke(ctx, Tape_ClaimObligation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) RecordObligationAttempt(ctx context.Context, in *RecordObligationAttemptRequest, opts ...grpc.CallOption) (*ObligationRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ObligationRecord)
+	err := c.cc.Invoke(ctx, Tape_RecordObligationAttempt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *tapeClient) SetBudget(ctx context.Context, in *SetBudgetRequest, opts ...grpc.CallOption) (*BudgetState, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BudgetState)
@@ -387,6 +436,55 @@ func (c *tapeClient) SubscribeEvents(ctx context.Context, in *SubscribeEventsReq
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Tape_SubscribeEventsClient = grpc.ServerStreamingClient[EventEntry]
 
+func (c *tapeClient) WriteValue(ctx context.Context, in *WriteValueRequest, opts ...grpc.CallOption) (*ValueRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValueRecord)
+	err := c.cc.Invoke(ctx, Tape_WriteValue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) GetValue(ctx context.Context, in *GetValueRequest, opts ...grpc.CallOption) (*GetValueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetValueResponse)
+	err := c.cc.Invoke(ctx, Tape_GetValue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) WatchValue(ctx context.Context, in *WatchValueRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ValueEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Tape_ServiceDesc.Streams[2], Tape_WatchValue_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchValueRequest, ValueEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Tape_WatchValueClient = grpc.ServerStreamingClient[ValueEvent]
+
+func (c *tapeClient) DeleteValue(ctx context.Context, in *DeleteValueRequest, opts ...grpc.CallOption) (*DeleteValueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteValueResponse)
+	err := c.cc.Invoke(ctx, Tape_DeleteValue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *tapeClient) CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*Session, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Session)
@@ -460,6 +558,10 @@ type TapeServer interface {
 	RegisterCompensation(context.Context, *RegisterCompensationRequest) (*ObligationRecord, error)
 	ListObligations(context.Context, *ListObligationsRequest) (*ListObligationsResponse, error)
 	ResolveObligation(context.Context, *ResolveObligationRequest) (*ObligationRecord, error)
+	// The drainer surface — for the obligations reactor and operator queries.
+	ListUnresolvedObligations(context.Context, *ListUnresolvedObligationsRequest) (*ListUnresolvedObligationsResponse, error)
+	ClaimObligation(context.Context, *ClaimObligationRequest) (*ClaimObligationResponse, error)
+	RecordObligationAttempt(context.Context, *RecordObligationAttemptRequest) (*ObligationRecord, error)
 	// ── budget ────────────────────────────────────────────────────────────────
 	SetBudget(context.Context, *SetBudgetRequest) (*BudgetState, error)
 	AdmitBudget(context.Context, *AdmitBudgetRequest) (*AdmitBudgetResponse, error)
@@ -475,6 +577,14 @@ type TapeServer interface {
 	ListDueTimers(context.Context, *ListDueTimersRequest) (*ListDueTimersResponse, error)
 	// ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
 	SubscribeEvents(*SubscribeEventsRequest, grpc.ServerStreamingServer[EventEntry]) error
+	// ── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
+	// Coordination through journaled state, not messages (treatise §IX ⑥).
+	// Writes are atomic and versioned; WatchValue streams the current value plus
+	// every change (with the prior value, so subscribers see the transition).
+	WriteValue(context.Context, *WriteValueRequest) (*ValueRecord, error)
+	GetValue(context.Context, *GetValueRequest) (*GetValueResponse, error)
+	WatchValue(*WatchValueRequest, grpc.ServerStreamingServer[ValueEvent]) error
+	DeleteValue(context.Context, *DeleteValueRequest) (*DeleteValueResponse, error)
 	// ── ADK SessionService shim ───────────────────────────────────────────────
 	CreateSession(context.Context, *CreateSessionRequest) (*Session, error)
 	GetSession(context.Context, *GetSessionRequest) (*GetSessionResponse, error)
@@ -536,6 +646,15 @@ func (UnimplementedTapeServer) ListObligations(context.Context, *ListObligations
 func (UnimplementedTapeServer) ResolveObligation(context.Context, *ResolveObligationRequest) (*ObligationRecord, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveObligation not implemented")
 }
+func (UnimplementedTapeServer) ListUnresolvedObligations(context.Context, *ListUnresolvedObligationsRequest) (*ListUnresolvedObligationsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListUnresolvedObligations not implemented")
+}
+func (UnimplementedTapeServer) ClaimObligation(context.Context, *ClaimObligationRequest) (*ClaimObligationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClaimObligation not implemented")
+}
+func (UnimplementedTapeServer) RecordObligationAttempt(context.Context, *RecordObligationAttemptRequest) (*ObligationRecord, error) {
+	return nil, status.Error(codes.Unimplemented, "method RecordObligationAttempt not implemented")
+}
 func (UnimplementedTapeServer) SetBudget(context.Context, *SetBudgetRequest) (*BudgetState, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetBudget not implemented")
 }
@@ -565,6 +684,18 @@ func (UnimplementedTapeServer) ListDueTimers(context.Context, *ListDueTimersRequ
 }
 func (UnimplementedTapeServer) SubscribeEvents(*SubscribeEventsRequest, grpc.ServerStreamingServer[EventEntry]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeEvents not implemented")
+}
+func (UnimplementedTapeServer) WriteValue(context.Context, *WriteValueRequest) (*ValueRecord, error) {
+	return nil, status.Error(codes.Unimplemented, "method WriteValue not implemented")
+}
+func (UnimplementedTapeServer) GetValue(context.Context, *GetValueRequest) (*GetValueResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetValue not implemented")
+}
+func (UnimplementedTapeServer) WatchValue(*WatchValueRequest, grpc.ServerStreamingServer[ValueEvent]) error {
+	return status.Error(codes.Unimplemented, "method WatchValue not implemented")
+}
+func (UnimplementedTapeServer) DeleteValue(context.Context, *DeleteValueRequest) (*DeleteValueResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteValue not implemented")
 }
 func (UnimplementedTapeServer) CreateSession(context.Context, *CreateSessionRequest) (*Session, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateSession not implemented")
@@ -865,6 +996,60 @@ func _Tape_ResolveObligation_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Tape_ListUnresolvedObligations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListUnresolvedObligationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ListUnresolvedObligations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ListUnresolvedObligations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ListUnresolvedObligations(ctx, req.(*ListUnresolvedObligationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ClaimObligation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimObligationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ClaimObligation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ClaimObligation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ClaimObligation(ctx, req.(*ClaimObligationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_RecordObligationAttempt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordObligationAttemptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).RecordObligationAttempt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_RecordObligationAttempt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).RecordObligationAttempt(ctx, req.(*RecordObligationAttemptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Tape_SetBudget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetBudgetRequest)
 	if err := dec(in); err != nil {
@@ -1038,6 +1223,71 @@ func _Tape_SubscribeEvents_Handler(srv interface{}, stream grpc.ServerStream) er
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Tape_SubscribeEventsServer = grpc.ServerStreamingServer[EventEntry]
 
+func _Tape_WriteValue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WriteValueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).WriteValue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_WriteValue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).WriteValue(ctx, req.(*WriteValueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_GetValue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetValueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).GetValue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_GetValue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).GetValue(ctx, req.(*GetValueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_WatchValue_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchValueRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(TapeServer).WatchValue(m, &grpc.GenericServerStream[WatchValueRequest, ValueEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Tape_WatchValueServer = grpc.ServerStreamingServer[ValueEvent]
+
+func _Tape_DeleteValue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteValueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).DeleteValue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_DeleteValue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).DeleteValue(ctx, req.(*DeleteValueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Tape_CreateSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateSessionRequest)
 	if err := dec(in); err != nil {
@@ -1192,6 +1442,18 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Tape_ResolveObligation_Handler,
 		},
 		{
+			MethodName: "ListUnresolvedObligations",
+			Handler:    _Tape_ListUnresolvedObligations_Handler,
+		},
+		{
+			MethodName: "ClaimObligation",
+			Handler:    _Tape_ClaimObligation_Handler,
+		},
+		{
+			MethodName: "RecordObligationAttempt",
+			Handler:    _Tape_RecordObligationAttempt_Handler,
+		},
+		{
 			MethodName: "SetBudget",
 			Handler:    _Tape_SetBudget_Handler,
 		},
@@ -1228,6 +1490,18 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Tape_ListDueTimers_Handler,
 		},
 		{
+			MethodName: "WriteValue",
+			Handler:    _Tape_WriteValue_Handler,
+		},
+		{
+			MethodName: "GetValue",
+			Handler:    _Tape_GetValue_Handler,
+		},
+		{
+			MethodName: "DeleteValue",
+			Handler:    _Tape_DeleteValue_Handler,
+		},
+		{
 			MethodName: "CreateSession",
 			Handler:    _Tape_CreateSession_Handler,
 		},
@@ -1257,6 +1531,11 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SubscribeEvents",
 			Handler:       _Tape_SubscribeEvents_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchValue",
+			Handler:       _Tape_WatchValue_Handler,
 			ServerStreams: true,
 		},
 	},

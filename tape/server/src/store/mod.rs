@@ -84,9 +84,40 @@ pub trait RunStore: Send + Sync {
                               response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>>;
 
     // ── obligations / compensation ──────────────────────────────────────────
+    /// Register an obligation in PENDING with `next_attempt_at_ms = now` (immediately
+    /// eligible for the drainer). Idempotent on (run_id, effect_key, kind): a
+    /// repeat returns the existing row untouched. `max_attempts == 0` uses the
+    /// server default (5). `compensator_ref` is optional — empty when the inverse
+    /// is resolved from the in-process registry by `kind`.
     async fn register_compensation(&self, run_id: &str, effect_key: &str, kind: &str,
-                                   payload_json: &str) -> StoreResult<ObligationRecord>;
-    async fn list_obligations(&self, run_id: &str, only_unresolved: bool) -> StoreResult<Vec<ObligationRecord>>;
+                                   payload_json: &str, compensator_ref: &str,
+                                   max_attempts: i32) -> StoreResult<ObligationRecord>;
+    /// LIFO list, per-run. `status_filter` is the obligation status to match
+    /// exactly (or `ObligationStatus::Unspecified` / 0 for any). `only_unresolved`
+    /// is a shorthand that excludes COMPENSATED and STUCK.
+    async fn list_obligations(&self, run_id: &str, only_unresolved: bool,
+                              status_filter: i32) -> StoreResult<Vec<ObligationRecord>>;
+    /// Cross-run drainer feed. Returns rows in `(next_attempt_at_ms, ts_ms)` order
+    /// (oldest-first) so the drainer makes forward progress on the most-stale work.
+    async fn list_unresolved_obligations(&self, now_ms: i64, include_pending: bool,
+                                         include_stuck: bool, include_committed_expired: bool,
+                                         limit: i64) -> StoreResult<Vec<ObligationRecord>>;
+    /// Atomic CAS lease: PENDING (with `next_attempt_at_ms <= now`) — or COMMITTED
+    /// with `claim_expires_at_ms <= now` (a stale lease) — becomes COMMITTED with
+    /// `claimed_by = claimer` and `claim_expires_at_ms = now + lease_ttl_ms`.
+    /// Returns `(true, row)` on success, `(false, current_row)` on contention.
+    async fn claim_obligation(&self, run_id: &str, obligation_seq: i64, claimer: &str,
+                              lease_ttl_ms: i64, now_ms: i64)
+        -> StoreResult<(bool, Option<ObligationRecord>)>;
+    /// Record a failed attempt. Bumps `attempts`, sets `last_error`, clears the
+    /// lease, and either schedules a retry (status → PENDING with `next_attempt_at_ms`)
+    /// or marks terminally STUCK (when `next_attempt_at_ms == 0`, or when the
+    /// new attempt count >= `max_attempts`).
+    async fn record_obligation_attempt(&self, run_id: &str, obligation_seq: i64,
+                                       error: &str, next_attempt_at_ms: i64)
+        -> StoreResult<Option<ObligationRecord>>;
+    /// Terminal transition: COMPENSATED | STUCK. Stores `result_json` and clears
+    /// the lease fields.
     async fn resolve_obligation(&self, run_id: &str, obligation_seq: i64, status: i32,
                                 result_json: &str) -> StoreResult<Option<ObligationRecord>>;
 

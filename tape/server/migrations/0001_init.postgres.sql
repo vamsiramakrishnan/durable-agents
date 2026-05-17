@@ -59,15 +59,26 @@ CREATE TABLE IF NOT EXISTS tape_effects (
 CREATE INDEX IF NOT EXISTS idx_effects_status ON tape_effects(status);
 
 CREATE TABLE IF NOT EXISTS tape_obligations (
-  run_id       TEXT NOT NULL,
-  seq          BIGINT NOT NULL,
-  effect_key   TEXT NOT NULL,
-  kind         TEXT NOT NULL,
-  payload_json TEXT NOT NULL DEFAULT '',
-  status       BIGINT NOT NULL,
-  ts_ms        BIGINT NOT NULL,
+  run_id              TEXT NOT NULL,
+  seq                 BIGINT NOT NULL,
+  effect_key          TEXT NOT NULL,
+  kind                TEXT NOT NULL,
+  payload_json        TEXT NOT NULL DEFAULT '',
+  status              BIGINT NOT NULL,
+  ts_ms               BIGINT NOT NULL,
+  compensator_ref     TEXT NOT NULL DEFAULT '',
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  max_attempts        INTEGER NOT NULL DEFAULT 5,
+  next_attempt_at_ms  BIGINT NOT NULL DEFAULT 0,
+  last_error          TEXT NOT NULL DEFAULT '',
+  claimed_by          TEXT NOT NULL DEFAULT '',
+  claim_expires_at_ms BIGINT NOT NULL DEFAULT 0,
+  result_json         TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (run_id, seq)
 );
+-- The drainer's hot query: ready-to-run PENDING and expired-lease COMMITTED.
+CREATE INDEX IF NOT EXISTS idx_obligations_drain ON tape_obligations(status, next_attempt_at_ms);
+CREATE INDEX IF NOT EXISTS idx_obligations_lease ON tape_obligations(status, claim_expires_at_ms);
 
 CREATE TABLE IF NOT EXISTS tape_budget (
   run_id       TEXT PRIMARY KEY,
