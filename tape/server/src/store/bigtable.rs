@@ -210,10 +210,24 @@ fn run_from(run_id: &str, m: &RowMap) -> RunState {
     }
 }
 fn effect_from(key: &str, m: &RowMap) -> EffectRecord {
+    // Outbox/non-idempotent fields default to UNSPECIFIED/empty on Bigtable —
+    // the outbox dispatch RPCs are not implemented for this backend yet (see
+    // the stubs below). Reads still surface whatever was written via SQL or
+    // via begin_effect's new args (which we persist on this row).
     EffectRecord {
         run_id: m.gs("run"), seq: m.gi("seq"), decision_index: m.gi("decision_index"),
         tool_name: m.gs("tool"), idempotency_key: key.to_string(), status: m.gi("status") as i32,
         request_json: m.gs("request"), response_json: m.gs("response"), error_json: m.gs("error"), ts_ms: m.gi("ts"),
+        semantics: m.gi("semantics") as i32,
+        dispatch_mode: m.gi("dispatch_mode") as i32,
+        business_key: m.gs("business_key"),
+        connector: m.gs("connector"),
+        dispatch_attempts: m.gi("dispatch_attempts") as i32,
+        next_dispatch_at_ms: m.gi("next_dispatch_at_ms"),
+        external_ref: m.gs("external_ref"),
+        dispatch_claimed_by: m.gs("dispatch_claimed_by"),
+        dispatch_claim_expires_at_ms: m.gi("dispatch_claim_expires_at_ms"),
+        last_dispatch_error: m.gs("last_dispatch_error"),
     }
 }
 fn decision_from(run_id: &str, idx: i64, m: &RowMap) -> DecisionRecord {
@@ -328,20 +342,69 @@ impl RunStore for BigtableRunStore {
     }
 
     // ── effects ─────────────────────────────────────────────────────────────
-    async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32, request_json: &str, custom_key: &str) -> StoreResult<EffectRecord> {
+    async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
+                          request_json: &str, custom_key: &str,
+                          semantics: i32, dispatch_mode: i32,
+                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+        let sem = if semantics == EffectSemantics::Unspecified as i32 {
+            EffectSemantics::Idempotent as i32
+        } else { semantics };
+        let dmode = if dispatch_mode == EffectDispatchMode::Unspecified as i32 {
+            EffectDispatchMode::Inline as i32
+        } else { dispatch_mode };
+        if sem == EffectSemantics::NonIdempotent as i32 && dmode == EffectDispatchMode::Inline as i32 {
+            return Err(StoreError::msg(
+                "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch"));
+        }
         let key = if custom_key.is_empty() { derive_key(run_id, decision_index, tool_name, call_index) } else { custom_key.to_string() };
         if let Some(m) = self.read_row(&rk_effect(&key)).await? {
             return Ok(effect_from(&key, &m));
         }
         let ts = now_ms();
         let seq = self.next_seq(run_id).await?;
+        let next_dispatch = if dmode == EffectDispatchMode::Outbox as i32 { ts } else { 0 };
         // intent first — Bigtable single-row writes are atomic & durable; the tool body runs only after this returns.
         self.write_row(&rk_effect(&key), vec![
             set("run", sv(run_id)), set("seq", iv(seq)), set("decision_index", iv(decision_index)), set("tool", sv(tool_name)),
             set("status", iv(EffectStatus::Pending as i64)), set("request", sv(request_json)), set("ts", iv(ts)),
+            set("semantics", iv(sem as i64)), set("dispatch_mode", iv(dmode as i64)),
+            set("business_key", sv(business_key)), set("connector", sv(connector)),
+            set("next_dispatch_at_ms", iv(next_dispatch)),
         ]).await?;
-        self.journal(run_id, seq, "effect", &serde_json::json!({"tool": tool_name, "decision_index": decision_index, "idempotency_key": key, "status": "pending"}).to_string(), ts).await?;
-        Ok(EffectRecord { run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(), idempotency_key: key, status: EffectStatus::Pending as i32, request_json: request_json.into(), response_json: String::new(), error_json: String::new(), ts_ms: ts })
+        self.journal(run_id, seq, "effect",
+            &serde_json::json!({"tool": tool_name, "decision_index": decision_index,
+                                "idempotency_key": key, "status": "pending",
+                                "semantics": sem, "dispatch_mode": dmode,
+                                "business_key": business_key, "connector": connector}).to_string(), ts).await?;
+        Ok(EffectRecord {
+            run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(),
+            idempotency_key: key, status: EffectStatus::Pending as i32,
+            request_json: request_json.into(), response_json: String::new(),
+            error_json: String::new(), ts_ms: ts,
+            semantics: sem, dispatch_mode: dmode,
+            business_key: business_key.into(), connector: connector.into(),
+            dispatch_attempts: 0, next_dispatch_at_ms: next_dispatch,
+            external_ref: String::new(), dispatch_claimed_by: String::new(),
+            dispatch_claim_expires_at_ms: 0, last_dispatch_error: String::new(),
+        })
+    }
+
+    // The outbox/observation methods need indexed scans + a CAS over multiple
+    // cells; on Bigtable that's a real design pass (a separate `tape_outbox#`
+    // index table + CheckAndMutate on the lease cells). Tracked as Phase 2
+    // follow-up — the SQL backend ships first; this stub keeps the trait
+    // implementation honest and tells operators clearly.
+    async fn list_effects_to_dispatch(&self, _now_ms: i64, _connector: &str, _limit: i64) -> StoreResult<Vec<EffectRecord>> {
+        Err(StoreError::msg("bigtable: list_effects_to_dispatch not implemented (use SQL/AlloyDB; tracked as a follow-up)"))
+    }
+    async fn claim_effect_dispatch(&self, _run_id: &str, _key: &str, _claimer: &str, _lease_ttl_ms: i64, _now_ms: i64) -> StoreResult<(bool, Option<EffectRecord>)> {
+        Err(StoreError::msg("bigtable: claim_effect_dispatch not implemented (use SQL/AlloyDB; tracked as a follow-up)"))
+    }
+    async fn record_dispatch_attempt(&self, _run_id: &str, _key: &str, _error: &str, _next_dispatch_at_ms: i64) -> StoreResult<Option<EffectRecord>> {
+        Err(StoreError::msg("bigtable: record_dispatch_attempt not implemented (use SQL/AlloyDB; tracked as a follow-up)"))
+    }
+    async fn record_external_observation(&self, _run_id: &str, _key: &str, _resolution: i32, _external_ref: &str, _response_json: &str, _error_json: &str, _compensate_on_duplicate_kind: &str) -> StoreResult<Option<EffectRecord>> {
+        Err(StoreError::msg("bigtable: record_external_observation not implemented (use SQL/AlloyDB; tracked as a follow-up)"))
     }
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>> {
         let Some(m) = self.read_row(&rk_effect(key)).await? else { return Ok(None); };

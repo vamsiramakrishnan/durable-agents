@@ -307,12 +307,21 @@ fn run_of(r: &Row) -> RunState {
     }
 }
 const EFFECT_COLS: &str = "run_id, seq, decision_index, tool_name, idempotency_key, status, \
-    request_json, response_json, error_json, ts_ms";
+    request_json, response_json, error_json, ts_ms, \
+    semantics, dispatch_mode, business_key, connector, dispatch_attempts, \
+    next_dispatch_at_ms, external_ref, dispatch_claimed_by, \
+    dispatch_claim_expires_at_ms, last_dispatch_error";
 fn effect_of(r: &Row) -> EffectRecord {
     EffectRecord {
         run_id: r.str(0), seq: r.i64(1), decision_index: r.i64(2), tool_name: r.str(3),
         idempotency_key: r.str(4), status: r.i32(5), request_json: r.str(6),
         response_json: r.str(7), error_json: r.str(8), ts_ms: r.i64(9),
+        semantics: r.i32(10), dispatch_mode: r.i32(11),
+        business_key: r.str(12), connector: r.str(13),
+        dispatch_attempts: r.i32(14), next_dispatch_at_ms: r.i64(15),
+        external_ref: r.str(16),
+        dispatch_claimed_by: r.str(17), dispatch_claim_expires_at_ms: r.i64(18),
+        last_dispatch_error: r.str(19),
     }
 }
 const DECISION_COLS: &str =
@@ -422,23 +431,76 @@ impl RunStore for SqlRunStore {
 
     // ── effects ─────────────────────────────────────────────────────────────
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
-                          request_json: &str, custom_key: &str) -> StoreResult<EffectRecord> {
-        let key = if custom_key.is_empty() { derive_key(run_id, decision_index, tool_name, call_index) } else { custom_key.to_string() };
+                          request_json: &str, custom_key: &str,
+                          semantics: i32, dispatch_mode: i32,
+                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+        // Default semantics/dispatch_mode are IDEMPOTENT/INLINE — preserves the
+        // original contract for callers that don't opt into the outbox model.
+        let sem = if semantics == EffectSemantics::Unspecified as i32 {
+            EffectSemantics::Idempotent as i32
+        } else { semantics };
+        let dmode = if dispatch_mode == EffectDispatchMode::Unspecified as i32 {
+            EffectDispatchMode::Inline as i32
+        } else { dispatch_mode };
+        // The safety rule the whole plan is built around: NON_IDEMPOTENT
+        // upstreams cannot be dispatched inline. The tool body would call the
+        // counterparty directly, and a crash mid-call leaves a no-blind-retry
+        // ambiguity the server can't resolve — by construction the outbox
+        // reactor + reconciler are the only safe path. Refuse at registration.
+        if sem == EffectSemantics::NonIdempotent as i32 && dmode == EffectDispatchMode::Inline as i32 {
+            return Err(StoreError::msg(
+                "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch \
+                 (a non-idempotent counterparty cannot be safely re-driven inline)"));
+        }
+        let key = if custom_key.is_empty() {
+            derive_key(run_id, decision_index, tool_name, call_index)
+        } else { custom_key.to_string() };
+        // (run_id, idempotency_key) is the primary key → idempotent on retry.
         if let Some(rec) = self.get_effect(run_id, &key).await? {
             return Ok(rec);
         }
+        // (connector, business_key) is the cross-run business-level dedupe key:
+        // if a different run already claimed this business identity, return
+        // *that* row rather than inserting a new effect that would race the
+        // unique index — this is what "deduplicate by the operation's identity,
+        // not by the call site" means.
+        if !business_key.is_empty() && !connector.is_empty() {
+            let sql = format!("SELECT {EFFECT_COLS} FROM tape_effects WHERE connector=?1 AND business_key=?2");
+            if let Some(row) = self.d().query_opt(&sql, vec![connector.into(), business_key.into()]).await? {
+                return Ok(effect_of(&row));
+            }
+        }
         let ts = now_ms();
         let seq = self.next_seq(run_id).await?;
+        // OUTBOX effects are eligible immediately (next_dispatch_at_ms = ts).
+        let next_dispatch = if dmode == EffectDispatchMode::Outbox as i32 { ts } else { 0 };
         self.d().exec(
-            "INSERT INTO tape_effects (run_id, seq, decision_index, tool_name, idempotency_key, status, request_json, response_json, error_json, ts_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8)",
+            "INSERT INTO tape_effects (run_id, seq, decision_index, tool_name, idempotency_key, status, \
+                 request_json, response_json, error_json, ts_ms, \
+                 semantics, dispatch_mode, business_key, connector, dispatch_attempts, \
+                 next_dispatch_at_ms, external_ref, dispatch_claimed_by, dispatch_claim_expires_at_ms, \
+                 last_dispatch_error) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8, ?9,?10,?11,?12,0,?13,'','',0,'')",
             vec![run_id.into(), seq.into(), decision_index.into(), tool_name.into(), key.clone().into(),
-                 (EffectStatus::Pending as i32).into(), request_json.into(), ts.into()]).await?;
-        let payload = serde_json::json!({"tool": tool_name, "decision_index": decision_index, "idempotency_key": key, "status": "pending"}).to_string();
+                 (EffectStatus::Pending as i32).into(), request_json.into(), ts.into(),
+                 sem.into(), dmode.into(), business_key.into(), connector.into(), next_dispatch.into()]).await?;
+        let payload = serde_json::json!({
+            "tool": tool_name, "decision_index": decision_index, "idempotency_key": key,
+            "status": "pending", "semantics": sem, "dispatch_mode": dmode,
+            "business_key": business_key, "connector": connector,
+        }).to_string();
         self.journal(run_id, seq, "effect", &payload, ts).await?;
-        Ok(EffectRecord { run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(),
+        Ok(EffectRecord {
+            run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(),
             idempotency_key: key, status: EffectStatus::Pending as i32, request_json: request_json.into(),
-            response_json: String::new(), error_json: String::new(), ts_ms: ts })
+            response_json: String::new(), error_json: String::new(), ts_ms: ts,
+            semantics: sem, dispatch_mode: dmode,
+            business_key: business_key.into(), connector: connector.into(),
+            dispatch_attempts: 0, next_dispatch_at_ms: next_dispatch,
+            external_ref: String::new(),
+            dispatch_claimed_by: String::new(), dispatch_claim_expires_at_ms: 0,
+            last_dispatch_error: String::new(),
+        })
     }
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>> {
         let Some(existing) = self.get_effect(run_id, key).await? else { return Ok(None); };
@@ -464,6 +526,163 @@ impl RunStore for SqlRunStore {
         let seq = self.next_seq(run_id).await?;
         self.journal(run_id, seq, "effect", &serde_json::json!({"tool": existing.tool_name, "idempotency_key": key, "status": "reconciled", "resolved_to": resolved_status}).to_string(), ts).await?;
         Ok(Some(EffectRecord { status: resolved_status, response_json: response_json.into(), error_json: error_json.into(), ts_ms: ts, ..existing }))
+    }
+
+    // ── outbox dispatch ─────────────────────────────────────────────────────
+    async fn list_effects_to_dispatch(&self, now_ms: i64, connector: &str, limit: i64)
+        -> StoreResult<Vec<EffectRecord>> {
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let lim = if limit > 0 { limit } else { 200 };
+        let pending = EffectStatus::Pending as i32;
+        let outbox = EffectDispatchMode::Outbox as i32;
+        let rows = if connector.is_empty() {
+            let sql = format!(
+                "SELECT {EFFECT_COLS} FROM tape_effects \
+                 WHERE status=?1 AND dispatch_mode=?2 AND next_dispatch_at_ms<=?3 \
+                   AND (dispatch_claimed_by='' OR dispatch_claim_expires_at_ms<=?3) \
+                 ORDER BY next_dispatch_at_ms ASC, ts_ms ASC LIMIT ?4");
+            self.d().query(&sql, vec![pending.into(), outbox.into(), now.into(), lim.into()]).await?
+        } else {
+            let sql = format!(
+                "SELECT {EFFECT_COLS} FROM tape_effects \
+                 WHERE status=?1 AND dispatch_mode=?2 AND next_dispatch_at_ms<=?3 \
+                   AND (dispatch_claimed_by='' OR dispatch_claim_expires_at_ms<=?3) \
+                   AND connector=?4 \
+                 ORDER BY next_dispatch_at_ms ASC, ts_ms ASC LIMIT ?5");
+            self.d().query(&sql, vec![pending.into(), outbox.into(), now.into(),
+                                       connector.into(), lim.into()]).await?
+        };
+        Ok(rows.iter().map(effect_of).collect())
+    }
+
+    async fn claim_effect_dispatch(&self, run_id: &str, key: &str, claimer: &str,
+                                   lease_ttl_ms: i64, now_ms: i64)
+        -> StoreResult<(bool, Option<EffectRecord>)> {
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let ttl = if lease_ttl_ms > 0 { lease_ttl_ms } else { DEFAULT_LEASE_MS };
+        let lease_exp = now + ttl;
+        let pending = EffectStatus::Pending as i32;
+        let outbox = EffectDispatchMode::Outbox as i32;
+        // Atomic CAS via the UPDATE … WHERE guard: succeeds only if the row is
+        // claimable right now (PENDING + OUTBOX + due, with no live lease or
+        // an expired one).
+        let updated = self.d().exec(
+            "UPDATE tape_effects \
+             SET dispatch_claimed_by=?5, dispatch_claim_expires_at_ms=?6, ts_ms=?6 \
+             WHERE run_id=?1 AND idempotency_key=?2 \
+               AND status=?3 AND dispatch_mode=?4 AND next_dispatch_at_ms<=?7 \
+               AND (dispatch_claimed_by='' OR dispatch_claim_expires_at_ms<=?7)",
+            vec![run_id.into(), key.into(),
+                 pending.into(), outbox.into(),
+                 claimer.into(), lease_exp.into(), now.into()]).await?;
+        let row = self.get_effect(run_id, key).await?;
+        Ok((updated > 0, row))
+    }
+
+    async fn record_dispatch_attempt(&self, run_id: &str, key: &str,
+                                     error: &str, next_dispatch_at_ms: i64)
+        -> StoreResult<Option<EffectRecord>> {
+        let Some(existing) = self.get_effect(run_id, key).await? else { return Ok(None); };
+        let ts = now_ms();
+        let new_attempts = existing.dispatch_attempts + 1;
+        let to_unknown = next_dispatch_at_ms <= 0;
+        // UNKNOWN here is the explicit "ambiguity" exit from the outbox loop —
+        // do *not* retry on next tick; the reconciler must resolve via
+        // observation. This is the safety claim for non-idempotent upstreams.
+        let new_status = if to_unknown {
+            EffectStatus::Unknown as i32
+        } else {
+            EffectStatus::Pending as i32
+        };
+        let next_at = if to_unknown { 0_i64 } else { next_dispatch_at_ms };
+        self.d().exec(
+            "UPDATE tape_effects \
+             SET status=?3, dispatch_attempts=?4, last_dispatch_error=?5, \
+                 next_dispatch_at_ms=?6, dispatch_claimed_by='', \
+                 dispatch_claim_expires_at_ms=0, ts_ms=?7 \
+             WHERE run_id=?1 AND idempotency_key=?2",
+            vec![run_id.into(), key.into(), new_status.into(), new_attempts.into(),
+                 error.into(), next_at.into(), ts.into()]).await?;
+        let seq = self.next_seq(run_id).await?;
+        let transition = if to_unknown { "dispatch-unknown" } else { "dispatch-retry-scheduled" };
+        let status_label = if to_unknown { "unknown" } else { "pending" };
+        self.journal(run_id, seq, "effect",
+            &serde_json::json!({
+                "tool": existing.tool_name, "idempotency_key": key,
+                "status": status_label, "transition": transition,
+                "dispatch_attempts": new_attempts, "error": error,
+                "next_dispatch_at_ms": next_at,
+            }).to_string(), ts).await?;
+        Ok(self.get_effect(run_id, key).await?)
+    }
+
+    async fn record_external_observation(&self, run_id: &str, key: &str,
+                                         resolution: i32, external_ref: &str,
+                                         response_json: &str, error_json: &str,
+                                         compensate_on_duplicate_kind: &str)
+        -> StoreResult<Option<EffectRecord>> {
+        let Some(existing) = self.get_effect(run_id, key).await? else { return Ok(None); };
+        // Map EffectResolution → EffectStatus. ABSENT for IDEMPOTENT reopens as
+        // PENDING (the outbox reactor may safely re-dispatch); ABSENT for
+        // NON_IDEMPOTENT lands FAILED (a human or the saga decides what to do
+        // — re-issuing without upstream confirmation would risk a duplicate).
+        let target_status = match resolution {
+            r if r == EffectResolution::Confirmed as i32 => EffectStatus::Confirmed as i32,
+            r if r == EffectResolution::Failed as i32 => EffectStatus::Failed as i32,
+            r if r == EffectResolution::Duplicate as i32 => EffectStatus::Confirmed as i32,
+            r if r == EffectResolution::Absent as i32 => {
+                if existing.semantics == EffectSemantics::Idempotent as i32 {
+                    EffectStatus::Pending as i32
+                } else {
+                    EffectStatus::Failed as i32
+                }
+            }
+            r if r == EffectResolution::Stuck as i32 => EffectStatus::Unknown as i32,
+            _ => existing.status,
+        };
+        let ts = now_ms();
+        // When ABSENT + IDEMPOTENT, also make the row immediately re-eligible
+        // for the outbox dispatcher (next_dispatch_at_ms = now).
+        let next_dispatch = if resolution == EffectResolution::Absent as i32
+            && existing.semantics == EffectSemantics::Idempotent as i32
+        { ts } else { existing.next_dispatch_at_ms };
+        self.d().exec(
+            "UPDATE tape_effects \
+             SET status=?3, response_json=?4, error_json=?5, external_ref=?6, \
+                 next_dispatch_at_ms=?7, dispatch_claimed_by='', \
+                 dispatch_claim_expires_at_ms=0, ts_ms=?8 \
+             WHERE run_id=?1 AND idempotency_key=?2",
+            vec![run_id.into(), key.into(), target_status.into(),
+                 response_json.into(), error_json.into(), external_ref.into(),
+                 next_dispatch.into(), ts.into()]).await?;
+        let seq = self.next_seq(run_id).await?;
+        let label = match resolution {
+            r if r == EffectResolution::Confirmed as i32 => "observed-confirmed",
+            r if r == EffectResolution::Failed as i32 => "observed-failed",
+            r if r == EffectResolution::Absent as i32 => "observed-absent",
+            r if r == EffectResolution::Duplicate as i32 => "observed-duplicate",
+            r if r == EffectResolution::Stuck as i32 => "observed-stuck",
+            _ => "observed-unspecified",
+        };
+        self.journal(run_id, seq, "effect",
+            &serde_json::json!({
+                "tool": existing.tool_name, "idempotency_key": key,
+                "status": "observed", "transition": label,
+                "external_ref": external_ref,
+            }).to_string(), ts).await?;
+        // DUPLICATE → register a compensation obligation if the caller named the
+        // inverse: an extra side effect landed at the counterparty (the same
+        // logical operation, executed twice), and the saga must unwind it.
+        if resolution == EffectResolution::Duplicate as i32 && !compensate_on_duplicate_kind.is_empty() {
+            let payload = serde_json::json!({
+                "reason": "duplicate-observed",
+                "external_ref": external_ref,
+                "idempotency_key": key,
+            }).to_string();
+            let _ = self.register_compensation(run_id, key, compensate_on_duplicate_kind,
+                                               &payload, "", 0).await?;
+        }
+        Ok(self.get_effect(run_id, key).await?)
     }
 
     // ── obligations ─────────────────────────────────────────────────────────

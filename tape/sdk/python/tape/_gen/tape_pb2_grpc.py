@@ -94,6 +94,26 @@ class TapeStub(object):
                 request_serializer=tape__pb2.ReconcileEffectRequest.SerializeToString,
                 response_deserializer=tape__pb2.EffectRecord.FromString,
                 _registered_method=True)
+        self.ListEffectsToDispatch = channel.unary_unary(
+                '/tape.v1.Tape/ListEffectsToDispatch',
+                request_serializer=tape__pb2.ListEffectsToDispatchRequest.SerializeToString,
+                response_deserializer=tape__pb2.ListEffectsToDispatchResponse.FromString,
+                _registered_method=True)
+        self.ClaimEffectDispatch = channel.unary_unary(
+                '/tape.v1.Tape/ClaimEffectDispatch',
+                request_serializer=tape__pb2.ClaimEffectDispatchRequest.SerializeToString,
+                response_deserializer=tape__pb2.ClaimEffectDispatchResponse.FromString,
+                _registered_method=True)
+        self.RecordDispatchAttempt = channel.unary_unary(
+                '/tape.v1.Tape/RecordDispatchAttempt',
+                request_serializer=tape__pb2.RecordDispatchAttemptRequest.SerializeToString,
+                response_deserializer=tape__pb2.EffectRecord.FromString,
+                _registered_method=True)
+        self.RecordExternalObservation = channel.unary_unary(
+                '/tape.v1.Tape/RecordExternalObservation',
+                request_serializer=tape__pb2.RecordExternalObservationRequest.SerializeToString,
+                response_deserializer=tape__pb2.EffectRecord.FromString,
+                _registered_method=True)
         self.RegisterCompensation = channel.unary_unary(
                 '/tape.v1.Tape/RegisterCompensation',
                 request_serializer=tape__pb2.RegisterCompensationRequest.SerializeToString,
@@ -298,6 +318,37 @@ class TapeServicer(object):
 
     def ReconcileEffect(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListEffectsToDispatch(self, request, context):
+        """── outbox dispatch (the GCP-native hardening: for non-idempotent upstreams,
+        intent and dispatch live in separate processes; the tool body records
+        intent, the outbox reactor dispatches via a connector, the reconciler
+        resolves UNKNOWN ambiguity by asking the counterparty) ────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ClaimEffectDispatch(self, request, context):
+        """CAS lease
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RecordDispatchAttempt(self, request, context):
+        """backoff or → UNKNOWN
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RecordExternalObservation(self, request, context):
+        """reconciler asks counterparty
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -536,6 +587,26 @@ def add_TapeServicer_to_server(servicer, server):
             'ReconcileEffect': grpc.unary_unary_rpc_method_handler(
                     servicer.ReconcileEffect,
                     request_deserializer=tape__pb2.ReconcileEffectRequest.FromString,
+                    response_serializer=tape__pb2.EffectRecord.SerializeToString,
+            ),
+            'ListEffectsToDispatch': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListEffectsToDispatch,
+                    request_deserializer=tape__pb2.ListEffectsToDispatchRequest.FromString,
+                    response_serializer=tape__pb2.ListEffectsToDispatchResponse.SerializeToString,
+            ),
+            'ClaimEffectDispatch': grpc.unary_unary_rpc_method_handler(
+                    servicer.ClaimEffectDispatch,
+                    request_deserializer=tape__pb2.ClaimEffectDispatchRequest.FromString,
+                    response_serializer=tape__pb2.ClaimEffectDispatchResponse.SerializeToString,
+            ),
+            'RecordDispatchAttempt': grpc.unary_unary_rpc_method_handler(
+                    servicer.RecordDispatchAttempt,
+                    request_deserializer=tape__pb2.RecordDispatchAttemptRequest.FromString,
+                    response_serializer=tape__pb2.EffectRecord.SerializeToString,
+            ),
+            'RecordExternalObservation': grpc.unary_unary_rpc_method_handler(
+                    servicer.RecordExternalObservation,
+                    request_deserializer=tape__pb2.RecordExternalObservationRequest.FromString,
                     response_serializer=tape__pb2.EffectRecord.SerializeToString,
             ),
             'RegisterCompensation': grpc.unary_unary_rpc_method_handler(
@@ -987,6 +1058,114 @@ class Tape(object):
             target,
             '/tape.v1.Tape/ReconcileEffect',
             tape__pb2.ReconcileEffectRequest.SerializeToString,
+            tape__pb2.EffectRecord.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListEffectsToDispatch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ListEffectsToDispatch',
+            tape__pb2.ListEffectsToDispatchRequest.SerializeToString,
+            tape__pb2.ListEffectsToDispatchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ClaimEffectDispatch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ClaimEffectDispatch',
+            tape__pb2.ClaimEffectDispatchRequest.SerializeToString,
+            tape__pb2.ClaimEffectDispatchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RecordDispatchAttempt(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/RecordDispatchAttempt',
+            tape__pb2.RecordDispatchAttemptRequest.SerializeToString,
+            tape__pb2.EffectRecord.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RecordExternalObservation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/RecordExternalObservation',
+            tape__pb2.RecordExternalObservationRequest.SerializeToString,
             tape__pb2.EffectRecord.FromString,
             options,
             channel_credentials,
