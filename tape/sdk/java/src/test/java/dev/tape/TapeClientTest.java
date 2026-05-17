@@ -105,4 +105,51 @@ public class TapeClientTest {
             assertEquals(RunStatus.RUN_STATUS_TERMINAL, again.getStatus());
         }
     }
+
+    @Test
+    void roundTripsOutboxContract() throws Exception {
+        try (TapeClient c = new TapeClient(url)) {
+            BeginRunResponse r = c.beginRun("a", "u", "java-outbox", "inv-java-outbox", "test", 60_000);
+            String rid = r.getRunId();
+
+            // Server refuses NON_IDEMPOTENT + INLINE.
+            assertThrows(io.grpc.StatusRuntimeException.class, () ->
+                c.beginEffect(rid, -1, "wire_money", 0, "{}", "",
+                        EffectSemantics.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                        EffectDispatchMode.EFFECT_DISPATCH_MODE_INLINE, "", ""));
+
+            // NON_IDEMPOTENT + OUTBOX + business_key is accepted.
+            BeginEffectResponse oe = c.beginEffect(rid, -1, "wire_money", 0,
+                    "{\"amount\":100}", "",
+                    EffectSemantics.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                    EffectDispatchMode.EFFECT_DISPATCH_MODE_OUTBOX,
+                    "java:bk-1", "bank.wire");
+            assertEquals(EffectStatus.EFFECT_STATUS_PENDING, oe.getStatus());
+
+            // Visible to the outbox dispatcher.
+            ListEffectsToDispatchResponse list = c.listEffectsToDispatch("bank.wire", 50, 0);
+            boolean seen = false;
+            for (EffectRecord e : list.getEffectsList()) {
+                if (e.getIdempotencyKey().equals(oe.getIdempotencyKey())) { seen = true; break; }
+            }
+            assertTrue(seen, "effect not in dispatch list");
+
+            // CAS lease: only one winner.
+            ClaimEffectDispatchResponse cl1 = c.claimEffectDispatch(rid, oe.getIdempotencyKey(), "java-A", 60_000);
+            ClaimEffectDispatchResponse cl2 = c.claimEffectDispatch(rid, oe.getIdempotencyKey(), "java-B", 60_000);
+            assertTrue(cl1.getAcquired());
+            assertFalse(cl2.getAcquired());
+
+            // Lost ack → UNKNOWN (no retry).
+            c.recordDispatchAttempt(rid, oe.getIdempotencyKey(), "simulated lost ack", 0);
+            assertEquals(EffectStatus.EFFECT_STATUS_UNKNOWN,
+                    c.getEffect(rid, oe.getIdempotencyKey()).getEffect().getStatus());
+
+            // Reconciler observes ABSENT — NON_IDEMPOTENT → FAILED.
+            c.recordExternalObservation(rid, oe.getIdempotencyKey(),
+                    EffectResolution.EFFECT_RESOLUTION_ABSENT, "", "", "", "");
+            assertEquals(EffectStatus.EFFECT_STATUS_FAILED,
+                    c.getEffect(rid, oe.getIdempotencyKey()).getEffect().getStatus());
+        }
+    }
 }

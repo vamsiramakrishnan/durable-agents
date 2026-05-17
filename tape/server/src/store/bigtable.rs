@@ -260,6 +260,23 @@ impl BigtableRunStore {
         self.write_row(key, vec![delete_row_mut()]).await
     }
 
+    /// Conditional write. Predicate matches when any cell satisfies `predicate`;
+    /// `true_mutations` apply on match, `false_mutations` on no-match.
+    /// Returns whether the predicate matched.
+    async fn check_and_mutate(&self, key: &str, predicate: RowFilter,
+                              true_mutations: Vec<Mutation>, false_mutations: Vec<Mutation>)
+        -> StoreResult<bool> {
+        let mut bt = self.bt();
+        let resp = bt.check_and_mutate_row(CheckAndMutateRowRequest {
+            table_name: self.table.clone(),
+            row_key: key.as_bytes().to_vec(),
+            predicate_filter: Some(predicate),
+            true_mutations, false_mutations,
+            ..Default::default()
+        }).await.map_err(e)?;
+        Ok(resp.predicate_matched)
+    }
+
     async fn next_seq(&self, run_id: &str) -> StoreResult<i64> {
         let cur = self.read_row(&rk_run(run_id)).await?.map(|m| m.gi("seq")).unwrap_or(0);
         let next = cur + 1;
@@ -405,6 +422,50 @@ fn rk_signal(run_id: &str, gate: &str) -> String { format!("sig#{run_id}#{gate}"
 fn rk_session(app: &str, user: &str, session: &str) -> String { format!("sess#{app}#{user}#{session}") }
 fn rk_event(app: &str, user: &str, session: &str, ord: i64) -> String { format!("ev#{app}#{user}#{session}#{ord:020}") }
 fn rk_journal(run_id: &str, seq: i64) -> String { format!("j#{run_id}#{seq:020}") }
+
+// ── outbox / non-idempotent contract (Phase L) ─────────────────────────────
+fn rk_business_key(connector: &str, business_key: &str) -> String {
+    format!("bk#{connector}#{business_key}")
+}
+
+/// RowFilter that matches when the named qualifier has *any* non-empty cell
+/// value. Chain of FamilyNameRegex + ColumnQualifierRegex + ValueRegex(".+"),
+/// limited to the latest cell. Used by the claim CAS to detect "row already
+/// has a claimer".
+fn col_has_nonempty(qualifier: &str) -> RowFilter {
+    use row_filter::Chain;
+    RowFilter {
+        filter: Some(row_filter::Filter::Chain(Chain {
+            filters: vec![
+                RowFilter { filter: Some(row_filter::Filter::FamilyNameRegexFilter(FAM.to_string())) },
+                RowFilter { filter: Some(row_filter::Filter::ColumnQualifierRegexFilter(qualifier.as_bytes().to_vec())) },
+                RowFilter { filter: Some(row_filter::Filter::CellsPerColumnLimitFilter(1)) },
+                RowFilter { filter: Some(row_filter::Filter::ValueRegexFilter(b".+".to_vec())) },
+            ],
+        })),
+    }
+}
+
+/// RowFilter that matches when the named qualifier has the *exact* given
+/// value. Used by the lease-renewal CAS: predicate succeeds iff the existing
+/// expiry equals the one we read — i.e., nobody else moved the lease under us.
+fn col_value_eq(qualifier: &str, value: &str) -> RowFilter {
+    use row_filter::Chain;
+    // Regex literal special chars must be escaped — but the values we use are
+    // always digit strings (epoch ms), so no escaping needed.
+    RowFilter {
+        filter: Some(row_filter::Filter::Chain(Chain {
+            filters: vec![
+                RowFilter { filter: Some(row_filter::Filter::FamilyNameRegexFilter(FAM.to_string())) },
+                RowFilter { filter: Some(row_filter::Filter::ColumnQualifierRegexFilter(qualifier.as_bytes().to_vec())) },
+                RowFilter { filter: Some(row_filter::Filter::CellsPerColumnLimitFilter(1)) },
+                RowFilter { filter: Some(row_filter::Filter::ValueRegexFilter(value.as_bytes().to_vec())) },
+            ],
+        })),
+    }
+}
+
+// ── event-bus (Phase K) ────────────────────────────────────────────────────
 fn rk_journal_gs(global_seq: i64) -> String { format!("jg#{global_seq:020}") }
 fn rk_meta_global_seq() -> String { "meta#global_seq".to_string() }
 fn rk_reaction(reaction_id: &str) -> String { format!("react#{reaction_id}") }
@@ -428,10 +489,24 @@ fn run_from(run_id: &str, m: &RowMap) -> RunState {
     }
 }
 fn effect_from(key: &str, m: &RowMap) -> EffectRecord {
+    // Outbox/non-idempotent fields default to UNSPECIFIED/empty on Bigtable —
+    // the outbox dispatch RPCs are not implemented for this backend yet (see
+    // the stubs below). Reads still surface whatever was written via SQL or
+    // via begin_effect's new args (which we persist on this row).
     EffectRecord {
         run_id: m.gs("run"), seq: m.gi("seq"), decision_index: m.gi("decision_index"),
         tool_name: m.gs("tool"), idempotency_key: key.to_string(), status: m.gi("status") as i32,
         request_json: m.gs("request"), response_json: m.gs("response"), error_json: m.gs("error"), ts_ms: m.gi("ts"),
+        semantics: m.gi("semantics") as i32,
+        dispatch_mode: m.gi("dispatch_mode") as i32,
+        business_key: m.gs("business_key"),
+        connector: m.gs("connector"),
+        dispatch_attempts: m.gi("dispatch_attempts") as i32,
+        next_dispatch_at_ms: m.gi("next_dispatch_at_ms"),
+        external_ref: m.gs("external_ref"),
+        dispatch_claimed_by: m.gs("dispatch_claimed_by"),
+        dispatch_claim_expires_at_ms: m.gi("dispatch_claim_expires_at_ms"),
+        last_dispatch_error: m.gs("last_dispatch_error"),
     }
 }
 fn decision_from(run_id: &str, idx: i64, m: &RowMap) -> DecisionRecord {
@@ -683,20 +758,332 @@ impl RunStore for BigtableRunStore {
     }
 
     // ── effects ─────────────────────────────────────────────────────────────
-    async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32, request_json: &str, custom_key: &str) -> StoreResult<EffectRecord> {
+    async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
+                          request_json: &str, custom_key: &str,
+                          semantics: i32, dispatch_mode: i32,
+                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+        let sem = if semantics == EffectSemantics::Unspecified as i32 {
+            EffectSemantics::Idempotent as i32
+        } else { semantics };
+        let dmode = if dispatch_mode == EffectDispatchMode::Unspecified as i32 {
+            EffectDispatchMode::Inline as i32
+        } else { dispatch_mode };
+        if sem == EffectSemantics::NonIdempotent as i32 && dmode == EffectDispatchMode::Inline as i32 {
+            return Err(StoreError::msg(
+                "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch"));
+        }
+        // P2 fix: business_key requires connector — same reasoning as SQL.
+        // On Bigtable the bk# pointer-row key is `bk#<connector>#<key>`, so
+        // an empty connector would collapse all keyless effects into one
+        // pointer-row collision (the inverse of dedupe). Refuse cleanly.
+        if !business_key.is_empty() && connector.is_empty() {
+            return Err(StoreError::msg(
+                "begin_effect: business_key requires connector \
+                 (cross-run dedupe is per-(connector, business_key))"));
+        }
         let key = if custom_key.is_empty() { derive_key(run_id, decision_index, tool_name, call_index) } else { custom_key.to_string() };
         if let Some(m) = self.read_row(&rk_effect(&key)).await? {
             return Ok(effect_from(&key, &m));
         }
+        // Business-key dedupe across runs. On the SQL backend this is a partial
+        // UNIQUE index that the database enforces atomically; on Bigtable we
+        // approximate with a CheckAndMutate-style claim on the bk# row. Race:
+        // two concurrent first-writers could both observe an empty bk row;
+        // CheckAndMutate makes only one succeed at writing it. The loser
+        // re-reads and returns the canonical effect.
+        if !business_key.is_empty() && !connector.is_empty() {
+            let bk_row = rk_business_key(connector, business_key);
+            if let Some(m) = self.read_row(&bk_row).await? {
+                let pointer = m.gs("effect_key");
+                if !pointer.is_empty() {
+                    if let Some(em) = self.read_row(&rk_effect(&pointer)).await? {
+                        return Ok(effect_from(&pointer, &em));
+                    }
+                }
+            }
+            // Try to claim the bk row for our key.
+            let won = self.check_and_mutate(
+                &bk_row,
+                col_has_nonempty("effect_key"),
+                vec![],  // someone else already claimed; no mutations
+                vec![set("effect_key", sv(&key)), set("ts", iv(now_ms()))],
+            ).await?;
+            if won {
+                // Predicate matched => bk row was already populated by a racer.
+                // Read it and return that effect instead of creating ours.
+                if let Some(m) = self.read_row(&bk_row).await? {
+                    let pointer = m.gs("effect_key");
+                    if !pointer.is_empty() {
+                        if let Some(em) = self.read_row(&rk_effect(&pointer)).await? {
+                            return Ok(effect_from(&pointer, &em));
+                        }
+                    }
+                }
+            }
+        }
         let ts = now_ms();
         let seq = self.next_seq(run_id).await?;
+        let next_dispatch = if dmode == EffectDispatchMode::Outbox as i32 { ts } else { 0 };
         // intent first — Bigtable single-row writes are atomic & durable; the tool body runs only after this returns.
         self.write_row(&rk_effect(&key), vec![
             set("run", sv(run_id)), set("seq", iv(seq)), set("decision_index", iv(decision_index)), set("tool", sv(tool_name)),
             set("status", iv(EffectStatus::Pending as i64)), set("request", sv(request_json)), set("ts", iv(ts)),
+            set("semantics", iv(sem as i64)), set("dispatch_mode", iv(dmode as i64)),
+            set("business_key", sv(business_key)), set("connector", sv(connector)),
+            set("next_dispatch_at_ms", iv(next_dispatch)),
         ]).await?;
-        self.journal(run_id, seq, "effect", &serde_json::json!({"tool": tool_name, "decision_index": decision_index, "idempotency_key": key, "status": "pending"}).to_string(), ts).await?;
-        Ok(EffectRecord { run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(), idempotency_key: key, status: EffectStatus::Pending as i32, request_json: request_json.into(), response_json: String::new(), error_json: String::new(), ts_ms: ts })
+        self.journal(run_id, seq, "effect",
+            &serde_json::json!({"tool": tool_name, "decision_index": decision_index,
+                                "idempotency_key": key, "status": "pending",
+                                "semantics": sem, "dispatch_mode": dmode,
+                                "business_key": business_key, "connector": connector}).to_string(), ts).await?;
+        Ok(EffectRecord {
+            run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(),
+            idempotency_key: key, status: EffectStatus::Pending as i32,
+            request_json: request_json.into(), response_json: String::new(),
+            error_json: String::new(), ts_ms: ts,
+            semantics: sem, dispatch_mode: dmode,
+            business_key: business_key.into(), connector: connector.into(),
+            dispatch_attempts: 0, next_dispatch_at_ms: next_dispatch,
+            external_ref: String::new(), dispatch_claimed_by: String::new(),
+            dispatch_claim_expires_at_ms: 0, last_dispatch_error: String::new(),
+        })
+    }
+
+    // ── outbox dispatch on Bigtable ─────────────────────────────────────────
+    //
+    // No SQL → no indexed scans, no UPDATE…WHERE for CAS. We do:
+    //
+    //   list_effects_to_dispatch  → full scan of `e#` rows, filter in memory.
+    //                               Linear in total effects; fine up to a few
+    //                               thousand outstanding outbox rows. For
+    //                               very large scales, add a `obx#` secondary
+    //                               index row at begin_effect time and scan
+    //                               `obx#` by row-key range instead (the
+    //                               existing journal pattern uses this trick).
+    //
+    //   claim_effect_dispatch     → CheckAndMutate on the effect row, twice:
+    //                                 (a) when unclaimed: predicate "claimer
+    //                                     non-empty" → take false_mutations
+    //                                     (claim); racer who arrives first
+    //                                     causes predicate to match, we lose.
+    //                                 (b) when claimed but expired: predicate
+    //                                     "expires == the old value we read"
+    //                                     → true_mutations (renew with our
+    //                                     claimer); concurrent reclaim makes
+    //                                     the predicate fail, we lose.
+    //                               Both branches are atomic single-row CAS.
+    //
+    //   record_dispatch_attempt    → plain write of the new status + counters,
+    //                                because the *lease* serialises writers;
+    //                                no CAS needed inside it.
+    //
+    //   record_external_observation→ same write pattern, with the
+    //                                EffectResolution → EffectStatus mapping
+    //                                done in code, and a compensation
+    //                                obligation registered via the existing
+    //                                register_compensation when DUPLICATE.
+
+    async fn list_effects_to_dispatch(&self, now_ms: i64, connector: &str, limit: i64) -> StoreResult<Vec<EffectRecord>> {
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let cap = if limit > 0 { limit } else { 200 };
+        // Scan is bounded by cap * 32 to give the in-memory filter some
+        // headroom — most non-matching rows are still cheap. At very large
+        // scales prefer the secondary-index approach.
+        let rows = self.read_prefix("e#", cap.saturating_mul(32)).await?;
+        let pending = EffectStatus::Pending as i32;
+        let outbox = EffectDispatchMode::Outbox as i32;
+        let mut out: Vec<EffectRecord> = Vec::new();
+        for (k, m) in rows {
+            let key = k.trim_start_matches("e#");
+            let er = effect_from(key, &m);
+            if er.status != pending || er.dispatch_mode != outbox {
+                continue;
+            }
+            if er.next_dispatch_at_ms > now {
+                continue;
+            }
+            let lease_open = er.dispatch_claimed_by.is_empty()
+                || (er.dispatch_claim_expires_at_ms > 0 && er.dispatch_claim_expires_at_ms <= now);
+            if !lease_open {
+                continue;
+            }
+            if !connector.is_empty() && er.connector != connector {
+                continue;
+            }
+            out.push(er);
+            if out.len() as i64 >= cap {
+                break;
+            }
+        }
+        // Oldest-due first — fairness across runs.
+        out.sort_by(|a, b| a.next_dispatch_at_ms.cmp(&b.next_dispatch_at_ms)
+            .then(a.ts_ms.cmp(&b.ts_ms)));
+        if out.len() as i64 > cap { out.truncate(cap as usize); }
+        Ok(out)
+    }
+
+    async fn claim_effect_dispatch(&self, run_id: &str, key: &str, claimer: &str,
+                                   lease_ttl_ms: i64, now_ms: i64)
+        -> StoreResult<(bool, Option<EffectRecord>)> {
+        let _ = run_id;
+        let Some(existing) = self.get_effect("", key).await? else {
+            return Ok((false, None));
+        };
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let ttl = if lease_ttl_ms > 0 { lease_ttl_ms } else { 60_000 };
+        let new_exp = now + ttl;
+        // Pre-checks; the server also enforces these via the CAS predicate,
+        // but we filter up-front to keep the round-trip count down.
+        if existing.status != EffectStatus::Pending as i32
+            || existing.dispatch_mode != EffectDispatchMode::Outbox as i32
+            || existing.next_dispatch_at_ms > now
+        {
+            return Ok((false, Some(existing)));
+        }
+        let unclaimed = existing.dispatch_claimed_by.is_empty();
+        let expired = !unclaimed
+            && existing.dispatch_claim_expires_at_ms > 0
+            && existing.dispatch_claim_expires_at_ms <= now;
+        if !unclaimed && !expired {
+            return Ok((false, Some(existing)));
+        }
+        let muts = vec![
+            set("dispatch_claimed_by", sv(claimer)),
+            set("dispatch_claim_expires_at_ms", iv(new_exp)),
+            set("ts", iv(now)),
+        ];
+        let predicate_matched = if unclaimed {
+            // predicate matches iff someone else has already taken the claim
+            // → we lose. No-match (predicate_matched=false) → we win.
+            self.check_and_mutate(&rk_effect(key),
+                                  col_has_nonempty("dispatch_claimed_by"),
+                                  vec![],
+                                  muts.clone()).await?
+        } else {
+            // predicate matches iff the existing expiry equals the value we
+            // read (i.e., no one else has renewed since). On match → renew.
+            let expected = existing.dispatch_claim_expires_at_ms.to_string();
+            !self.check_and_mutate(&rk_effect(key),
+                                   col_value_eq("dispatch_claim_expires_at_ms", &expected),
+                                   muts.clone(),
+                                   vec![]).await?
+            // Logic note: check_and_mutate returns `true` on predicate match;
+            // for the renew case "match" means our true_mutations ran (= we
+            // won), so we want the *opposite* of `predicate_matched` here for
+            // the "racer won" branch below.
+        };
+        let acquired = if unclaimed { !predicate_matched } else { !predicate_matched };
+        let updated = self.get_effect("", key).await?;
+        if acquired {
+            // Journal the lease event for parity with the SQL backend.
+            let seq = self.next_seq(run_id).await?;
+            self.journal(run_id, seq, "effect",
+                &serde_json::json!({"tool": existing.tool_name, "idempotency_key": key,
+                                     "status": "pending", "transition": "dispatch-claimed",
+                                     "claimer": claimer}).to_string(), now).await?;
+        }
+        Ok((acquired, updated))
+    }
+
+    async fn record_dispatch_attempt(&self, run_id: &str, key: &str,
+                                     error: &str, next_dispatch_at_ms: i64)
+        -> StoreResult<Option<EffectRecord>> {
+        let Some(existing) = self.get_effect("", key).await? else { return Ok(None); };
+        let now = now_ms();
+        let new_attempts = existing.dispatch_attempts + 1;
+        let to_unknown = next_dispatch_at_ms <= 0;
+        let new_status = if to_unknown {
+            EffectStatus::Unknown as i32
+        } else {
+            EffectStatus::Pending as i32
+        };
+        let next_at = if to_unknown { 0_i64 } else { next_dispatch_at_ms };
+        // Clear the lease columns by writing empties (Bigtable doesn't have
+        // "drop cell"-by-default in our set helper; an empty string value
+        // matches the "lease open" predicate, so this is safe.)
+        self.write_row(&rk_effect(key), vec![
+            set("status", iv(new_status as i64)),
+            set("dispatch_attempts", iv(new_attempts as i64)),
+            set("last_dispatch_error", sv(error)),
+            set("next_dispatch_at_ms", iv(next_at)),
+            set("dispatch_claimed_by", sv("")),
+            set("dispatch_claim_expires_at_ms", iv(0)),
+            set("ts", iv(now)),
+        ]).await?;
+        let seq = self.next_seq(run_id).await?;
+        let transition = if to_unknown { "dispatch-unknown" } else { "dispatch-retry-scheduled" };
+        let status_label = if to_unknown { "unknown" } else { "pending" };
+        self.journal(run_id, seq, "effect",
+            &serde_json::json!({
+                "tool": existing.tool_name, "idempotency_key": key,
+                "status": status_label, "transition": transition,
+                "dispatch_attempts": new_attempts, "error": error,
+                "next_dispatch_at_ms": next_at,
+            }).to_string(), now).await?;
+        Ok(self.get_effect("", key).await?)
+    }
+
+    async fn record_external_observation(&self, run_id: &str, key: &str,
+                                         resolution: i32, external_ref: &str,
+                                         response_json: &str, error_json: &str,
+                                         compensate_on_duplicate_kind: &str)
+        -> StoreResult<Option<EffectRecord>> {
+        let Some(existing) = self.get_effect("", key).await? else { return Ok(None); };
+        // Same mapping as the SQL backend.
+        let target_status = match resolution {
+            r if r == EffectResolution::Confirmed as i32 => EffectStatus::Confirmed as i32,
+            r if r == EffectResolution::Failed as i32 => EffectStatus::Failed as i32,
+            r if r == EffectResolution::Duplicate as i32 => EffectStatus::Confirmed as i32,
+            r if r == EffectResolution::Absent as i32 => {
+                if existing.semantics == EffectSemantics::Idempotent as i32 {
+                    EffectStatus::Pending as i32
+                } else {
+                    EffectStatus::Failed as i32
+                }
+            }
+            r if r == EffectResolution::Stuck as i32 => EffectStatus::Unknown as i32,
+            _ => existing.status,
+        };
+        let now = now_ms();
+        let next_dispatch = if resolution == EffectResolution::Absent as i32
+            && existing.semantics == EffectSemantics::Idempotent as i32
+        { now } else { existing.next_dispatch_at_ms };
+        self.write_row(&rk_effect(key), vec![
+            set("status", iv(target_status as i64)),
+            set("response", sv(response_json)),
+            set("error", sv(error_json)),
+            set("external_ref", sv(external_ref)),
+            set("next_dispatch_at_ms", iv(next_dispatch)),
+            set("dispatch_claimed_by", sv("")),
+            set("dispatch_claim_expires_at_ms", iv(0)),
+            set("ts", iv(now)),
+        ]).await?;
+        let seq = self.next_seq(run_id).await?;
+        let label = match resolution {
+            r if r == EffectResolution::Confirmed as i32 => "observed-confirmed",
+            r if r == EffectResolution::Failed as i32 => "observed-failed",
+            r if r == EffectResolution::Absent as i32 => "observed-absent",
+            r if r == EffectResolution::Duplicate as i32 => "observed-duplicate",
+            r if r == EffectResolution::Stuck as i32 => "observed-stuck",
+            _ => "observed-unspecified",
+        };
+        self.journal(run_id, seq, "effect",
+            &serde_json::json!({
+                "tool": existing.tool_name, "idempotency_key": key,
+                "status": "observed", "transition": label,
+                "external_ref": external_ref,
+            }).to_string(), now).await?;
+        if resolution == EffectResolution::Duplicate as i32 && !compensate_on_duplicate_kind.is_empty() {
+            let payload = serde_json::json!({
+                "reason": "duplicate-observed",
+                "external_ref": external_ref,
+                "idempotency_key": key,
+            }).to_string();
+            let _ = self.register_compensation(run_id, key, compensate_on_duplicate_kind,
+                                               &payload, "", 0).await?;
+        }
+        Ok(self.get_effect("", key).await?)
     }
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>> {
         let Some(m) = self.read_row(&rk_effect(key)).await? else { return Ok(None); };

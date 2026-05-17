@@ -49,6 +49,23 @@ const (
 	EffectStatusFailed    = int32(pb.EffectStatus_EFFECT_STATUS_FAILED)
 	EffectStatusUnknown   = int32(pb.EffectStatus_EFFECT_STATUS_UNKNOWN)
 
+	// Outbox / non-idempotent contract (see proto: EffectSemantics,
+	// EffectDispatchMode, EffectResolution). The defaults preserve v1 behaviour
+	// (idempotent + inline); opt into the outbox path by passing the
+	// non-default values to BeginEffect.
+	EffectSemanticsIdempotent    = int32(pb.EffectSemantics_EFFECT_SEMANTICS_IDEMPOTENT)
+	EffectSemanticsNonIdempotent = int32(pb.EffectSemantics_EFFECT_SEMANTICS_NON_IDEMPOTENT)
+	EffectSemanticsObserveOnly   = int32(pb.EffectSemantics_EFFECT_SEMANTICS_OBSERVE_ONLY)
+
+	EffectDispatchInline = int32(pb.EffectDispatchMode_EFFECT_DISPATCH_MODE_INLINE)
+	EffectDispatchOutbox = int32(pb.EffectDispatchMode_EFFECT_DISPATCH_MODE_OUTBOX)
+
+	EffectResolutionConfirmed = int32(pb.EffectResolution_EFFECT_RESOLUTION_CONFIRMED)
+	EffectResolutionFailed    = int32(pb.EffectResolution_EFFECT_RESOLUTION_FAILED)
+	EffectResolutionAbsent    = int32(pb.EffectResolution_EFFECT_RESOLUTION_ABSENT)
+	EffectResolutionDuplicate = int32(pb.EffectResolution_EFFECT_RESOLUTION_DUPLICATE)
+	EffectResolutionStuck     = int32(pb.EffectResolution_EFFECT_RESOLUTION_STUCK)
+
 	ObligationPending     = int32(pb.ObligationStatus_OBLIGATION_STATUS_PENDING)
 	ObligationCommitted   = int32(pb.ObligationStatus_OBLIGATION_STATUS_COMMITTED)
 	ObligationCompensated = int32(pb.ObligationStatus_OBLIGATION_STATUS_COMPENSATED)
@@ -208,12 +225,23 @@ type BeginEffectOpts struct {
 	CallIndex     int32
 	RequestJSON   string
 	CustomKey     string
+	// Outbox / non-idempotent contract. Zero values keep the v1 behaviour
+	// (idempotent + inline); set Semantics + DispatchMode + BusinessKey +
+	// Connector to opt into the outbox path. Server refuses
+	// NON_IDEMPOTENT + INLINE — surface that error to the caller.
+	Semantics    int32
+	DispatchMode int32
+	BusinessKey  string
+	Connector    string
 }
 
 func (c *Client) BeginEffect(ctx context.Context, o BeginEffectOpts) (*pb.BeginEffectResponse, error) {
 	return c.pb.BeginEffect(ctx, &pb.BeginEffectRequest{
 		RunId: o.RunID, DecisionIndex: o.DecisionIndex, ToolName: o.ToolName,
 		CallIndex: o.CallIndex, RequestJson: o.RequestJSON, CustomKey: o.CustomKey,
+		Semantics:    pb.EffectSemantics(o.Semantics),
+		DispatchMode: pb.EffectDispatchMode(o.DispatchMode),
+		BusinessKey:  o.BusinessKey, Connector: o.Connector,
 	})
 }
 
@@ -232,6 +260,58 @@ func (c *Client) ReconcileEffect(ctx context.Context, runID, key string, resolve
 	return c.pb.ReconcileEffect(ctx, &pb.ReconcileEffectRequest{
 		RunId: runID, IdempotencyKey: key, ResolvedStatus: pb.EffectStatus(resolved),
 		ResponseJson: responseJSON, ErrorJson: errorJSON,
+	})
+}
+
+// ──── outbox dispatch (for non-idempotent upstreams) ────────────────────────
+
+// ListEffectsToDispatch returns PENDING+OUTBOX effects whose
+// next_dispatch_at_ms <= now and whose dispatch lease is empty or expired.
+// `connector` scopes the result to one connector name; empty means any.
+func (c *Client) ListEffectsToDispatch(ctx context.Context, connector string, limit int64) (*pb.ListEffectsToDispatchResponse, error) {
+	return c.pb.ListEffectsToDispatch(ctx, &pb.ListEffectsToDispatchRequest{
+		Connector: connector, Limit: limit,
+	})
+}
+
+// ClaimEffectDispatch is the atomic CAS lease on the dispatch slot. Returns
+// acquired=false (with the current row) when another dispatcher already
+// holds the lease — the loser must not call the upstream.
+func (c *Client) ClaimEffectDispatch(ctx context.Context, runID, key, claimer string, leaseTTLMs int64) (*pb.ClaimEffectDispatchResponse, error) {
+	return c.pb.ClaimEffectDispatch(ctx, &pb.ClaimEffectDispatchRequest{
+		RunId: runID, IdempotencyKey: key, Claimer: claimer, LeaseTtlMs: leaseTTLMs,
+	})
+}
+
+// RecordDispatchAttempt reports a *failed* dispatch. `nextDispatchAtMs <= 0`
+// asks the server to transition the effect to UNKNOWN (the safety exit for a
+// lost ack — the reconciler resolves via observe(), no blind retry); a
+// positive value schedules a retry.
+func (c *Client) RecordDispatchAttempt(ctx context.Context, runID, key, errMsg string, nextDispatchAtMs int64) (*pb.EffectRecord, error) {
+	return c.pb.RecordDispatchAttempt(ctx, &pb.RecordDispatchAttemptRequest{
+		RunId: runID, IdempotencyKey: key, Error: errMsg, NextDispatchAtMs: nextDispatchAtMs,
+	})
+}
+
+// RecordExternalObservationOpts records what the counterparty said about an
+// effect — the reconciler's write path. `Resolution` is one of
+// EffectResolution*. When DUPLICATE + `CompensateOnDuplicateKind` is set, the
+// server registers a compensation obligation atomically with the observation.
+type RecordExternalObservationOpts struct {
+	RunID                     string
+	Key                       string
+	Resolution                int32
+	ExternalRef               string
+	ResponseJSON              string
+	ErrorJSON                 string
+	CompensateOnDuplicateKind string
+}
+
+func (c *Client) RecordExternalObservation(ctx context.Context, o RecordExternalObservationOpts) (*pb.EffectRecord, error) {
+	return c.pb.RecordExternalObservation(ctx, &pb.RecordExternalObservationRequest{
+		RunId: o.RunID, IdempotencyKey: o.Key, Resolution: pb.EffectResolution(o.Resolution),
+		ExternalRef: o.ExternalRef, ResponseJson: o.ResponseJSON, ErrorJson: o.ErrorJSON,
+		CompensateOnDuplicateKind: o.CompensateOnDuplicateKind,
 	})
 }
 

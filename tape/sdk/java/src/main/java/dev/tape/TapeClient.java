@@ -112,12 +112,36 @@ public final class TapeClient implements AutoCloseable {
 
     // ── effects ─────────────────────────────────────────────────────────────
 
+    /** v1-compatible: idempotent + inline. Use the extended form to opt into
+     *  the outbox path for non-idempotent upstreams. */
     public BeginEffectResponse beginEffect(String runId, long decisionIndex, String toolName, int callIndex,
                                            String requestJson, String customKey) {
+        return beginEffect(runId, decisionIndex, toolName, callIndex, requestJson, customKey,
+                EffectSemantics.EFFECT_SEMANTICS_UNSPECIFIED,
+                EffectDispatchMode.EFFECT_DISPATCH_MODE_UNSPECIFIED, "", "");
+    }
+
+    /** Extended: declare the outbox contract.
+     *
+     *  <p>{@code semantics=NON_IDEMPOTENT} requires {@code dispatchMode=OUTBOX};
+     *  the server refuses {@code NON_IDEMPOTENT + INLINE} (an inline call to a
+     *  counterparty that can't dedupe is unsafe by construction).
+     *  {@code businessKey} (when set) is enforced unique on
+     *  {@code (connector, businessKey)} across all runs — a second
+     *  {@code beginEffect} for the same business identity returns the existing
+     *  effect row. */
+    public BeginEffectResponse beginEffect(String runId, long decisionIndex, String toolName, int callIndex,
+                                           String requestJson, String customKey,
+                                           EffectSemantics semantics, EffectDispatchMode dispatchMode,
+                                           String businessKey, String connector) {
         return stub.beginEffect(BeginEffectRequest.newBuilder()
                 .setRunId(runId).setDecisionIndex(decisionIndex).setToolName(toolName)
                 .setCallIndex(callIndex).setRequestJson(requestJson == null ? "" : requestJson)
-                .setCustomKey(customKey == null ? "" : customKey).build());
+                .setCustomKey(customKey == null ? "" : customKey)
+                .setSemantics(semantics == null ? EffectSemantics.EFFECT_SEMANTICS_UNSPECIFIED : semantics)
+                .setDispatchMode(dispatchMode == null ? EffectDispatchMode.EFFECT_DISPATCH_MODE_UNSPECIFIED : dispatchMode)
+                .setBusinessKey(businessKey == null ? "" : businessKey)
+                .setConnector(connector == null ? "" : connector).build());
     }
 
     public EffectRecord completeEffect(String runId, String key, EffectStatus status,
@@ -138,6 +162,52 @@ public final class TapeClient implements AutoCloseable {
                 .setRunId(runId).setIdempotencyKey(key).setResolvedStatus(resolved)
                 .setResponseJson(responseJson == null ? "" : responseJson)
                 .setErrorJson(errorJson == null ? "" : errorJson).build());
+    }
+
+    // ── outbox dispatch (for non-idempotent upstreams) ──────────────────────
+
+    /** PENDING+OUTBOX effects whose {@code next_dispatch_at_ms <= now} and
+     *  whose lease is empty or expired. {@code connector} scopes the result. */
+    public ListEffectsToDispatchResponse listEffectsToDispatch(String connector, long limit, long nowMs) {
+        return stub.listEffectsToDispatch(ListEffectsToDispatchRequest.newBuilder()
+                .setConnector(connector == null ? "" : connector)
+                .setLimit(limit).setNowMs(nowMs).build());
+    }
+
+    /** Atomic CAS lease on the dispatch slot. Returns {@code acquired=false}
+     *  (with the current row) when another dispatcher holds it — the loser
+     *  must not call the upstream. */
+    public ClaimEffectDispatchResponse claimEffectDispatch(String runId, String key, String claimer, long leaseTtlMs) {
+        return stub.claimEffectDispatch(ClaimEffectDispatchRequest.newBuilder()
+                .setRunId(runId).setIdempotencyKey(key)
+                .setClaimer(claimer == null ? "" : claimer)
+                .setLeaseTtlMs(leaseTtlMs).build());
+    }
+
+    /** Report a failed dispatch. {@code nextDispatchAtMs <= 0} drives the
+     *  effect to UNKNOWN (the safety exit — no blind retry; the reconciler
+     *  resolves via observe()); a positive value schedules a retry. */
+    public EffectRecord recordDispatchAttempt(String runId, String key, String error, long nextDispatchAtMs) {
+        return stub.recordDispatchAttempt(RecordDispatchAttemptRequest.newBuilder()
+                .setRunId(runId).setIdempotencyKey(key)
+                .setError(error == null ? "" : error)
+                .setNextDispatchAtMs(nextDispatchAtMs).build());
+    }
+
+    /** Record what the counterparty said about an effect — the reconciler's
+     *  write path. {@code DUPLICATE + compensateOnDuplicateKind} registers a
+     *  compensation obligation atomically with the observation. */
+    public EffectRecord recordExternalObservation(String runId, String key, EffectResolution resolution,
+                                                   String externalRef, String responseJson, String errorJson,
+                                                   String compensateOnDuplicateKind) {
+        return stub.recordExternalObservation(RecordExternalObservationRequest.newBuilder()
+                .setRunId(runId).setIdempotencyKey(key)
+                .setResolution(resolution == null ? EffectResolution.EFFECT_RESOLUTION_UNSPECIFIED : resolution)
+                .setExternalRef(externalRef == null ? "" : externalRef)
+                .setResponseJson(responseJson == null ? "" : responseJson)
+                .setErrorJson(errorJson == null ? "" : errorJson)
+                .setCompensateOnDuplicateKind(compensateOnDuplicateKind == null ? "" : compensateOnDuplicateKind)
+                .build());
     }
 
     // ── obligations ─────────────────────────────────────────────────────────

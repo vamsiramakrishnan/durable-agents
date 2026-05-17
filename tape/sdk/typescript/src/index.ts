@@ -1,5 +1,8 @@
 export {
   TapeClient, DEFAULT_URL, RunStatus, EffectStatus, ObligationStatus,
+  // Outbox / non-idempotent contract — opt in via beginEffect's new fields.
+  EffectSemantics, EffectDispatchMode, EffectResolution,
+  // Event-bus surface.
   HandlerKind, TaskStatus,
   type ClientOptions,
 } from './client.ts';

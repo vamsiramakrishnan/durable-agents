@@ -34,14 +34,27 @@ from .client import (
     EFFECT_STATUS_CONFIRMED,
     EFFECT_STATUS_FAILED,
     EFFECT_STATUS_UNKNOWN,
+    EFFECT_SEMANTICS_IDEMPOTENT,
+    EFFECT_SEMANTICS_NON_IDEMPOTENT,
+    EFFECT_SEMANTICS_OBSERVE_ONLY,
+    EFFECT_DISPATCH_MODE_INLINE,
+    EFFECT_DISPATCH_MODE_OUTBOX,
+    EFFECT_RESOLUTION_CONFIRMED,
+    EFFECT_RESOLUTION_FAILED,
+    EFFECT_RESOLUTION_ABSENT,
+    EFFECT_RESOLUTION_DUPLICATE,
+    EFFECT_RESOLUTION_STUCK,
 )
-from .effect import effect, idempotency_key, run_id_of, get_compensator, get_status_check
+from .effect import (effect, outbox_tool, idempotency_key, run_id_of,
+                     business_key, external_ref, effect_semantics,
+                     get_compensator, get_status_check, get_tool_compensator)
 from .retry import RetryPolicy
 from .gates import AckLost, gate, gate_tool
 from .budget import Budget, with_budget
 from .det import sample, now, uuid, random
 from ._recover import resume, recover_once, compensate_run, compensate_one
 from ._gen import tape_pb2 as pb
+from . import connectors  # noqa: F401  — `tape.connectors.register(...)` is the public surface
 from .reactions import (
     on,
     on_value_change,
@@ -59,7 +72,8 @@ from .reactions import (
 
 __all__ = [
     "TapeClient", "DEFAULT_URL", "pb",
-    "effect", "idempotency_key", "run_id_of",
+    "effect", "outbox_tool", "idempotency_key", "run_id_of",
+    "business_key", "external_ref", "effect_semantics",
     "RetryPolicy",
     "AckLost", "gate", "gate_tool",
     "Budget", "with_budget",
@@ -67,10 +81,16 @@ __all__ = [
     "resume", "recover_once", "compensate_run", "compensate_one", "send_signal", "set_timer", "cancel_timer",
     "cancel_run", "is_cancelled", "heartbeat", "policy_is",
     "set_value", "get_value", "watch_value", "delete_value",
-    "get_compensator", "get_status_check",
+    "get_compensator", "get_status_check", "get_tool_compensator",
+    "connectors",
     "RUN_STATUS_RUNNABLE", "RUN_STATUS_RUNNING", "RUN_STATUS_WAITING", "RUN_STATUS_TERMINAL",
     "RUN_STATUS_FAILED", "RUN_STATUS_STUCK",
     "EFFECT_STATUS_PENDING", "EFFECT_STATUS_CONFIRMED", "EFFECT_STATUS_FAILED", "EFFECT_STATUS_UNKNOWN",
+    # outbox / non-idempotent contract (see design-principles/tape.md)
+    "EFFECT_SEMANTICS_IDEMPOTENT", "EFFECT_SEMANTICS_NON_IDEMPOTENT", "EFFECT_SEMANTICS_OBSERVE_ONLY",
+    "EFFECT_DISPATCH_MODE_INLINE", "EFFECT_DISPATCH_MODE_OUTBOX",
+    "EFFECT_RESOLUTION_CONFIRMED", "EFFECT_RESOLUTION_FAILED", "EFFECT_RESOLUTION_ABSENT",
+    "EFFECT_RESOLUTION_DUPLICATE", "EFFECT_RESOLUTION_STUCK",
     # event-bus decorators + runners (see design-principles/tape-event-bus.md)
     "on", "on_value_change", "on_value_deleted",
     "on_effect_confirmed", "on_effect_failed", "on_effect_unknown",

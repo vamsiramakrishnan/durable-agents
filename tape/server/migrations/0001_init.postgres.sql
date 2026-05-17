@@ -54,9 +54,36 @@ CREATE TABLE IF NOT EXISTS tape_effects (
   response_json   TEXT NOT NULL DEFAULT '',
   error_json      TEXT NOT NULL DEFAULT '',
   ts_ms           BIGINT NOT NULL,
+  -- Outbox / non-idempotent contract (see proto: EffectSemantics, EffectDispatchMode).
+  semantics                       INTEGER NOT NULL DEFAULT 1,    -- IDEMPOTENT
+  dispatch_mode                   INTEGER NOT NULL DEFAULT 1,    -- INLINE
+  business_key                    TEXT    NOT NULL DEFAULT '',
+  connector                       TEXT    NOT NULL DEFAULT '',
+  dispatch_attempts               INTEGER NOT NULL DEFAULT 0,
+  next_dispatch_at_ms             BIGINT  NOT NULL DEFAULT 0,
+  external_ref                    TEXT    NOT NULL DEFAULT '',
+  dispatch_claimed_by             TEXT    NOT NULL DEFAULT '',
+  dispatch_claim_expires_at_ms    BIGINT  NOT NULL DEFAULT 0,
+  last_dispatch_error             TEXT    NOT NULL DEFAULT '',
   PRIMARY KEY (run_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_effects_status ON tape_effects(status);
+-- The outbox dispatcher's hot query: PENDING + OUTBOX + due.
+CREATE INDEX IF NOT EXISTS idx_effects_outbox
+  ON tape_effects(status, dispatch_mode, next_dispatch_at_ms);
+-- Business-level dedupe (where the agent/connector supplied a key): no two
+-- effects may share the same (connector, business_key). Partial index, so
+-- the default empty-string is allowed many times.
+--
+-- Gated on connector <> '' as well as business_key <> '' — the server-side
+-- begin_effect already refuses business_key without connector, but the
+-- index guard makes the DB defensive even if a future store impl bypasses
+-- that check (a non-empty business_key with an empty connector would
+-- otherwise collapse all such rows under the same (connector='', key)
+-- index entry and raise a unique-constraint error on the second insert).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_effects_business_key
+  ON tape_effects(connector, business_key)
+  WHERE business_key <> '' AND connector <> '';
 
 CREATE TABLE IF NOT EXISTS tape_obligations (
   run_id              TEXT NOT NULL,

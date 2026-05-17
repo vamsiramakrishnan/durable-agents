@@ -1101,7 +1101,7 @@ app = graph.compile()                                   # ← in memory. crash h
 app = graph.compile(checkpointer=PostgresSaver(...))    # ← now it persists — at node boundaries
 ```
 
-5/ So the floor of the reactive model is a durable state store. That is the easy ten per cent. Note where the checkpointer cuts: at *node* boundaries, not *effect* boundaries — the bolt-on granularity this treatise has flagged before — and the next six questions are why it matters.
+5/ So the floor of the reactive model is a durable state store. That is the easy ten per cent. Note where the checkpointer cuts: at *node* boundaries, not *effect* boundaries — the bolt-on granularity this treatise has flagged before — and the next six questions are why it matters. (LangGraph's Functional API moves the cut closer with `@task` — a completed task's result is cached on the checkpointer and returned-from-history when the surrounding entrypoint re-runs — and the `durability="sync"|"async"|"exit"` knob lets you choose how often the cut commits. The granularity gain is real; the contract is the same one Section XI names: the *user* wraps each non-deterministic or side-effecting region in `@task`, and on resume the *entrypoint* re-executes around the cached tasks. Effect-level guarantees still ride on the counterparty's idempotency, not on the checkpointer.)
 
 #### ② Does the trigger fire exactly once?
 
@@ -1983,6 +1983,7 @@ async def run(self, run_date: str, policy: Policy) -> Summary:
 
  ── Agent frameworks with bolted-on durability: LangGraph · CrewAI · ADK ──
     checkpoints at node boundaries · patterns as user discipline  →  put a durable engine *underneath*
+ ── Agent framework as application of the runtime layer: Pydantic AI + DBOS (DBOSAgent) ──
 ```
 
 *Same architectural pattern, different deployment models. The runtime layer is being built; the agent-framework layer is increasingly an application of it — the realistic move is a durable engine beneath the framework, not the framework's own durability features.*
@@ -1991,13 +1992,13 @@ async def run(self, run_date: str, policy: Policy) -> Summary:
 
 3/ Restate. Newer, from former Apache Flink and Meta engineers. Single-binary Rust runtime. Optimised for low-latency durable execution and serverless or edge deployment. Strong agent positioning with integrations across the Vercel AI SDK, the OpenAI Agent SDK, and Google ADK. Production users include 21Bitcoin for trade orchestration, Coralogix for agentic observability fleets, Deliveru for recruiting research agents. Lighter than Temporal. More opinionated about deployment.
 
-4/ DBOS. The simplest operational model. Durable execution as an in-process library backed by Postgres. No new infrastructure beyond your existing database. Fits teams that already have Postgres at the centre and do not want a new clustered service.
+4/ DBOS. The simplest operational model. Durable execution as an in-process library backed by Postgres. No new infrastructure beyond your existing database. Fits teams that already have Postgres at the centre and do not want a new clustered service. As of 2025, Pydantic AI ships a first-class `DBOSAgent` wrapper that wraps `Agent.run()` as a `@DBOS.workflow`, model calls and MCP communication as DBOS steps, and sub-agent runs as child workflows — the canonical example of an agent framework adopting a durable engine wholesale rather than bolting one on. Step identity is by call order (the same recovery model Tape's `seq` alignment uses).
 
 5/ Cloud-provider-native. AWS Step Functions. Azure Durable Functions. Cloudflare Workflows. Step Functions is the oldest and predates the modern category, using a JSON-based state language. Azure Durable Functions runs in-process to the Functions runtime. Cloudflare brought step-based durable execution to the edge in 2025, with multi-day execution and Python support.
 
 6/ Hosted lightweight. Inngest. Hatchet. TypeScript- and Python-first. Targeting application teams that want durable execution without standing up Temporal. Lighter integration. Narrower scope. Simpler deployment.
 
-7/ The agent framework category. LangGraph, CrewAI, ADK. A different layer. Graph runtimes or orchestration libraries with bolted-on durability. LangGraph's checkpointers are the most mature of the bolt-ons. The granularity is at node boundaries rather than effect boundaries. The patterns are documented as user discipline rather than runtime guarantees.
+7/ The agent framework category. LangGraph, CrewAI, ADK, Pydantic AI. A different layer. LangGraph, CrewAI, and ADK are graph runtimes or orchestration libraries with bolted-on durability. LangGraph's checkpointers are the most mature of the bolt-ons; the Functional API's `@task` and `interrupt()` / `Command(resume=…)` (HITL) and the `durability="sync"|"async"|"exit"` knob narrow the gap, but the granularity remains at node / entrypoint boundaries, replay re-executes the surrounding code with completed tasks returned from the checkpointer, and the wrapping is still user discipline. Pydantic AI is the counterexample: rather than bolting durability into its own runtime it ships `DBOSAgent`, which wraps the agent under DBOS's workflow engine — agent framework above, durable engine below, exactly what this section names as the realistic move.
 
 ```text
 checkpointed state is not journaled consequence
