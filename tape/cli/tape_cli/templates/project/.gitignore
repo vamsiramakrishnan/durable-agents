@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.tape/
+.env
+deploy/gcp/release/
+deploy/gcp/terraform/.terraform/
+deploy/gcp/terraform/*.tfstate*

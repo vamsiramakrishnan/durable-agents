@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tape.fullname" . }}-server
+  labels: {{- include "tape.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.server.service.type }}
+  selector: {{- include "tape.serverSelector" . | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.server.service.port }}
+      targetPort: 7878
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tape.fullname" . }}-server
+  labels: {{- include "tape.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.server.replicaCount }}
+  selector:
+    matchLabels: {{- include "tape.serverSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "tape.serverSelector" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "tape.fullname" . }}-server
+      containers:
+        - name: tape-server
+          image: {{ .Values.image.server }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["tape-server"]
+          ports:
+            - name: grpc
+              containerPort: 7878
+          env:
+            - name: TAPE_LISTEN
+              value: "0.0.0.0:7878"
+            {{- if .Values.store.urlSecret }}
+            - name: TAPE_STORE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.store.urlSecret }}
+                  key: TAPE_STORE_URL
+            {{- else if .Values.store.url }}
+            - name: TAPE_STORE
+              value: {{ .Values.store.url | quote }}
+            {{- end }}
+            - name: TAPE_TENANCY
+              value: {{ .Values.tenancy.mode | quote }}
+            - name: TAPE_TENANT_ID
+              value: {{ .Values.tenancy.tenantId | quote }}
+            - name: RUST_LOG
+              value: "tape_server=info"
+          readinessProbe:
+            tcpSocket: { port: 7878 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 7878 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources: {{- toYaml .Values.server.resources | nindent 12 }}
+---
+{{- if .Values.server.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "tape.fullname" . }}-server
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "tape.fullname" . }}-server
+  minReplicas: {{ .Values.server.hpa.minReplicas }}
+  maxReplicas: {{ .Values.server.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.server.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
+---
+{{- if .Values.server.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "tape.fullname" . }}-server
+spec:
+  minAvailable: {{ .Values.server.pdb.minAvailable }}
+  selector:
+    matchLabels: {{- include "tape.serverSelector" . | nindent 6 }}
+{{- end }}

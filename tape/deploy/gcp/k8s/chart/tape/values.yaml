@@ -1,0 +1,61 @@
+# Default values for the tape chart.
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  server: ghcr.io/vamsiramakrishnan/tape-server:latest
+  reactor: ghcr.io/vamsiramakrishnan/tape-reactor:latest
+  pullPolicy: IfNotPresent
+
+server:
+  replicaCount: 3
+  service:
+    type: ClusterIP
+    port: 7878
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits:   { cpu: "1",    memory: "512Mi" }
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 2
+  serviceMonitor:
+    enabled: false
+
+# TAPE_STORE either as a literal url or via a referenced Secret.
+store:
+  kind: bigtable       # sqlite | postgres | alloydb | spanner | bigtable
+  url: ""              # e.g. bigtable://project/instance/table
+  urlSecret: ""        # name of an existing Secret with key `TAPE_STORE_URL`
+
+# Workload Identity bindings — the GSA in your GCP project that gets bound
+# to the KSAs of the server and reactor pods.
+workloadIdentity:
+  enabled: true
+  serverGsa: tape-server@PROJECT.iam.gserviceaccount.com
+  reactorGsa: tape-reactor@PROJECT.iam.gserviceaccount.com
+
+reactors:
+  recovery: true
+  reconciler: true
+  outbox: true
+  timers: true
+  compensation: true
+  runnerFactory: app.agent:build_runner
+  image: ""            # if empty, image.reactor is used
+
+agent:
+  enabled: false       # toggle if you also want to deploy the agent in-cluster
+  image: ""
+  command: ["python", "-m", "app.main"]
+
+tenancy:
+  mode: single
+  tenantId: default
+
+networkPolicy:
+  enabled: false

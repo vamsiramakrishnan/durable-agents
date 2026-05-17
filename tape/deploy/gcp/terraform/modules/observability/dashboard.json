@@ -1,0 +1,88 @@
+{
+  "displayName": "Tape — runs, effects, reactors",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "width": 6, "height": 4,
+        "widget": {
+          "title": "Runs running",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"logging.googleapis.com/user/tape/runs/running\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_SUM" }
+                }
+              }
+            }]
+          }
+        }
+      },
+      {
+        "width": 6, "height": 4, "xPos": 6,
+        "widget": {
+          "title": "Runs stuck",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"logging.googleapis.com/user/tape/runs/stuck\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_SUM" }
+                }
+              }
+            }]
+          }
+        }
+      },
+      {
+        "width": 6, "height": 4, "yPos": 4,
+        "widget": {
+          "title": "Effects UNKNOWN",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"logging.googleapis.com/user/tape/effects/unknown\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_SUM" }
+                }
+              }
+            }]
+          }
+        }
+      },
+      {
+        "width": 6, "height": 4, "xPos": 6, "yPos": 4,
+        "widget": {
+          "title": "Obligations unresolved",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"logging.googleapis.com/user/tape/obligations/unresolved\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_SUM" }
+                }
+              }
+            }]
+          }
+        }
+      },
+      {
+        "width": 12, "height": 4, "yPos": 8,
+        "widget": {
+          "title": "Reactor lag (ms)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"logging.googleapis.com/user/tape/reactor/lag_ms\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                }
+              }
+            }]
+          }
+        }
+      }
+    ]
+  }
+}

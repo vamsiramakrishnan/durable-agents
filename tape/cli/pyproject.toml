@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tape-cli"
+version = "0.1.0"
+description = "tape — the standalone CLI for durable ADK agents on GCP"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "tape-py>=0.1.0",
+  "typer>=0.12",
+  "rich>=13.7",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "pyyaml>=6.0",
+  "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+gcp = [
+  "google-auth>=2.28",
+  "google-cloud-run>=0.10",
+  "google-cloud-pubsub>=2.20",
+  "google-cloud-bigtable>=2.22",
+  "google-cloud-spanner>=3.45",
+  "google-cloud-secret-manager>=2.18",
+  "google-cloud-artifact-registry>=1.11",
+]
+dev = ["pytest>=7"]
+
+[project.scripts]
+tape = "tape_cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tape_cli*"]
+
+[tool.setuptools.package-data]
+"tape_cli.templates" = [
+  "**/*",
+]

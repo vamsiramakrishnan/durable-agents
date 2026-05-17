@@ -36,7 +36,9 @@ from .client import (
     EFFECT_STATUS_UNKNOWN,
 )
 from .effect import effect, idempotency_key, run_id_of, get_compensator, get_status_check
+from .outbox import outbox_tool, outbox_meta_of, OutboxConfigError
 from .retry import RetryPolicy
+from .tenancy import TenancyConfig, TenancyMode
 from .gates import AckLost, gate, gate_tool
 from .budget import Budget, with_budget
 from .det import sample, now, uuid, random
@@ -60,6 +62,8 @@ from .reactions import (
 __all__ = [
     "TapeClient", "DEFAULT_URL", "pb",
     "effect", "idempotency_key", "run_id_of",
+    "outbox_tool", "outbox_meta_of", "OutboxConfigError",
+    "TenancyConfig", "TenancyMode",
     "RetryPolicy",
     "AckLost", "gate", "gate_tool",
     "Budget", "with_budget",

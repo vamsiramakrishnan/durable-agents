@@ -1,0 +1,44 @@
+apiVersion: tape.dev/v1
+kind: TapeProject
+project:
+  name: cloud-run-alloydb
+  environment: prod
+agent:
+  framework: adk
+  app_name: cloud-run-alloydb
+  entrypoint: app.agent:root_agent
+  runner_factory: app.agent:build_runner
+  deployment_target: cloud_run
+tape:
+  url: ${TAPE_URL:-tape://localhost:7878}
+  server:
+    image: ${TAPE_SERVER_IMAGE:-ghcr.io/vamsiramakrishnan/tape-server:latest}
+    target: cloud_run
+    min_instances: 1
+    max_instances: 20
+    cpu: "1"
+    memory: "1Gi"
+    ingress: internal
+  store:
+    kind: alloydb
+    url_secret: TAPE_STORE_URL
+  events:
+    kind: pubsub
+    topic: tape-events
+  reactors:
+    recovery: {enabled: true}
+    reconciler: {enabled: true}
+    outbox: {enabled: true}
+    timers: {enabled: true}
+    compensation: {enabled: true}
+gcp:
+  project_id: ${GOOGLE_CLOUD_PROJECT}
+  region: us-central1
+  artifact_registry_repository: tape
+  service_account_prefix: tape
+  network:
+    vpc_connector: ${TAPE_VPC_CONNECTOR}
+    private_ip: true
+tenancy:
+  mode: single
+  tenant_id: default

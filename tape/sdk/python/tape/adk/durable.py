@@ -1,0 +1,89 @@
+"""`durable_app` — the 15-line ADK developer experience.
+
+Wires an ADK `Agent` into Tape with one call::
+
+    from tape.adk import durable_app
+    import tape
+
+    app, runner = durable_app(
+        name="treasury",
+        agent=root_agent,
+        budget=tape.Budget(usd_cap=50),
+    )
+
+What it does:
+  * defaults `tape_url` from `TAPE_URL` (falling back to `tape://localhost:7878`);
+  * installs `TapePlugin` (with the supplied `budget` / cancel-check);
+  * installs `TapeSessionService` against the same URL;
+  * enables ADK `ResumabilityConfig(is_resumable=True)`;
+  * returns the `(App, Runner)` pair.
+
+`app_kwargs` and `runner_kwargs` are forwarded verbatim so power users can pass
+extra plugins, sub-agents, or a different session-service constructor without
+losing the ergonomics.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Optional, Tuple
+
+from .plugin import TapePlugin
+from .session import TapeSessionService
+
+DEFAULT_TAPE_URL = "tape://localhost:7878"
+
+
+def _resolve_url(explicit: Optional[str]) -> str:
+    if explicit:
+        return explicit
+    return os.environ.get("TAPE_URL") or DEFAULT_TAPE_URL
+
+
+def durable_app(
+    *,
+    name: str,
+    agent: Any,
+    tape_url: Optional[str] = None,
+    budget: Optional[Any] = None,
+    resumable: bool = True,
+    check_cancellation: bool = True,
+    app_kwargs: Optional[dict] = None,
+    runner_kwargs: Optional[dict] = None,
+) -> Tuple[Any, Any]:
+    """Return `(App, Runner)` for an ADK agent backed by Tape.
+
+    The agent's tool bodies stay plain. Pass `@tape.effect(...)` decorators on
+    tools whose UNKNOWN you want resolved or whose forward action needs an
+    inverse; pass `@tape.outbox_tool(...)` for non-idempotent upstreams that must
+    be journaled-first, dispatched-by-reactor.
+    """
+    from google.adk.apps import App
+    from google.adk.apps.app import ResumabilityConfig
+    from google.adk.runners import Runner
+
+    url = _resolve_url(tape_url)
+
+    plugins = []
+    if app_kwargs and app_kwargs.get("plugins"):
+        plugins.extend(app_kwargs["plugins"])
+    plugins.append(TapePlugin(url, budget=budget, check_cancellation=check_cancellation))
+
+    app_init: dict = dict(app_kwargs or {})
+    app_init.pop("plugins", None)
+    app_init.setdefault("name", name)
+    app_init.setdefault("root_agent", agent)
+    if resumable:
+        app_init.setdefault("resumability_config", ResumabilityConfig(is_resumable=True))
+
+    app = App(plugins=plugins, **app_init)
+
+    runner_init: dict = dict(runner_kwargs or {})
+    runner_init.setdefault("session_service", TapeSessionService(url))
+    runner_init.setdefault("app", app)
+
+    runner = Runner(**runner_init)
+    return app, runner
+
+
+__all__ = ["durable_app", "DEFAULT_TAPE_URL"]

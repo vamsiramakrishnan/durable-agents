@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{{ name }}"
+version = "0.0.1"
+requires-python = ">=3.10"
+description = "{{ name }} — a durable ADK agent on Tape."
+dependencies = [
+  "tape-py>=0.1.0",
+  "tape-cli>=0.1.0",
+  "google-adk>=1.30",
+]
+
+[project.optional-dependencies]
+gcp = [
+  "google-cloud-pubsub>=2.20",
+  "httpx>=0.27",
+]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

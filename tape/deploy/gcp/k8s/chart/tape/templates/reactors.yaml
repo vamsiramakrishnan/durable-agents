@@ -1,0 +1,51 @@
+{{- range $name, $enabled := .Values.reactors }}
+{{- if and $enabled (not (eq $name "runnerFactory")) (not (eq $name "image")) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tape.fullname" $ }}-reactor-{{ $name }}
+  labels:
+    {{- include "tape.labels" $ | nindent 4 }}
+    tape.dev/reactor: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tape.reactorSelector" $ | nindent 6 }}
+      tape.dev/reactor: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "tape.reactorSelector" $ | nindent 8 }}
+        tape.dev/reactor: {{ $name }}
+    spec:
+      serviceAccountName: {{ include "tape.fullname" $ }}-reactor
+      containers:
+        - name: reactor-{{ $name }}
+          image: {{ default $.Values.image.reactor $.Values.reactors.image }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            - python
+            - -m
+            - tape.reactors
+            - --runner-from
+            - {{ $.Values.reactors.runnerFactory }}
+            - --url
+            - tape://{{ include "tape.fullname" $ }}-server:7878
+            - --only
+            - {{ $name }}
+          env:
+            - name: TAPE_URL
+              value: "tape://{{ include "tape.fullname" $ }}-server:7878"
+            - name: TAPE_REACTOR
+              value: {{ $name | quote }}
+            - name: TAPE_TENANCY
+              value: {{ $.Values.tenancy.mode | quote }}
+            - name: TAPE_TENANT_ID
+              value: {{ $.Values.tenancy.tenantId | quote }}
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+---
+{{- end }}
+{{- end }}
