@@ -205,6 +205,8 @@ def _render_main_tf(p: TapeProject) -> str:
         sections.append('  region                 = var.region')
         sections.append('  tape_server_url        = module.tape_server.url')
         sections.append('  service_account_email  = module.iam.tape_reactor_sa_email')
+        sections.append('  image                  = var.tape_reactor_image')
+        sections.append('  runner_factory         = var.tape_reactor_runner_factory')
         sections.append(f'  reactors               = {json.dumps(p.tape.reactors.enabled_names())}')
         sections.append("}")
         sections.append("")
@@ -246,6 +248,8 @@ def _render_variables_tf() -> str:
         ("events_outbox_topic", "string", '"tape-outbox"'),
         ("events_dlq_topic", "string", '"tape-dlq"'),
         ("tape_server_image", "string", None),
+        ("tape_reactor_image", "string", None),
+        ("tape_reactor_runner_factory", "string", '"app.agent:build_runner"'),
         ("tape_server_min_instances", "number", "0"),
         ("tape_server_max_instances", "number", "10"),
         ("tape_server_cpu", "string", '"1"'),
@@ -265,6 +269,13 @@ def _render_variables_tf() -> str:
 
 
 def _render_tfvars(p: TapeProject) -> dict:
+    # The reactor image is the *project's* image (the agent package + tape-py),
+    # not the Tape server image. By default we name it after the project so
+    # `tape deploy gcp` builds and pushes it under that name automatically.
+    default_reactor_image = (
+        f"{p.gcp.region}-docker.pkg.dev/{p.gcp.project_id or 'PROJECT'}/"
+        f"{p.gcp.artifact_registry_repository}/{p.project.name}-reactor:latest"
+    )
     return {
         "project_id": p.gcp.project_id or "<set GOOGLE_CLOUD_PROJECT>",
         "region": p.gcp.region,
@@ -277,6 +288,8 @@ def _render_tfvars(p: TapeProject) -> dict:
         "events_outbox_topic": p.tape.events.outbox_topic or f"{p.tape.events.topic}-outbox",
         "events_dlq_topic": p.tape.events.dlq_topic or f"{p.tape.events.topic}-dlq",
         "tape_server_image": p.tape.server.image,
+        "tape_reactor_image": default_reactor_image,
+        "tape_reactor_runner_factory": p.agent.runner_factory or "app.agent:build_runner",
         "tape_server_min_instances": p.tape.server.min_instances,
         "tape_server_max_instances": p.tape.server.max_instances,
         "tape_server_cpu": p.tape.server.cpu,

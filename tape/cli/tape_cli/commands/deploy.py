@@ -49,6 +49,21 @@ def gcp(
         die(f"unknown target {target!r}.")
 
 
+def _find_server_source_root(project_root: Path) -> Optional[Path]:
+    """Find a sibling Rust server source if we're in the monorepo layout.
+
+    Looks for `tape/server/Cargo.toml` walking up from the project root. A
+    scaffolded standalone project will return None, in which case we consume
+    a published `tape-server` image instead of building it.
+    """
+    cur = project_root.resolve()
+    for p in [cur] + list(cur.parents):
+        cargo = p / "tape" / "server" / "Cargo.toml"
+        if cargo.exists():
+            return p
+    return None
+
+
 def _deploy_cloud_run(root: Path, project: TapeProject, out_dir: Path,
                       image_tag: str, skip_build: bool) -> None:
     if not which("gcloud"):
@@ -57,44 +72,79 @@ def _deploy_cloud_run(root: Path, project: TapeProject, out_dir: Path,
     if not gcp.project_id:
         die("gcp.project_id is unset.")
 
-    server_image = f"{gcp.region}-docker.pkg.dev/{gcp.project_id}/{gcp.artifact_registry_repository}/tape-server:{image_tag}"
-    reactor_image = f"{gcp.region}-docker.pkg.dev/{gcp.project_id}/{gcp.artifact_registry_repository}/tape-reactor:{image_tag}"
+    server_source_root = _find_server_source_root(root)
+    # Project-local image (the agent + tape-py) is what reactors run.
+    reactor_image = (
+        f"{gcp.region}-docker.pkg.dev/{gcp.project_id}/"
+        f"{gcp.artifact_registry_repository}/{project.project.name}-reactor:{image_tag}"
+    )
+    # The server image is either the project's pinned image (typical for
+    # standalone projects — they consume a published tape-server) OR a
+    # project-built one when we can see the Rust source.
+    if server_source_root:
+        server_image = (
+            f"{gcp.region}-docker.pkg.dev/{gcp.project_id}/"
+            f"{gcp.artifact_registry_repository}/tape-server:{image_tag}"
+        )
+    else:
+        server_image = project.tape.server.image
+        info(f"using published tape-server image {server_image} "
+             f"(no Rust source under <root>/../tape/server/Cargo.toml)")
 
     # 1. Build images.
     if not skip_build:
-        ok("building tape-server image")
-        rc = run_cmd(["gcloud", "builds", "submit",
-                      str((root / "../").resolve()),  # context: repo root if running from project dir
-                      "--tag", server_image,
-                      "--region", gcp.region], cwd=root, check=False).returncode
-        if rc != 0:
-            warn("gcloud builds submit failed — falling back to local docker build.")
-            run_cmd(["docker", "build", "-f", "server/Dockerfile", "-t", server_image, "."], cwd=root)
-            run_cmd(["docker", "push", server_image], cwd=root)
-        ok("building tape-reactor image")
-        # Reactor image is the project itself: agent + tape-py.
+        if server_source_root:
+            ok(f"building tape-server image from {server_source_root}")
+            server_ctx = str(server_source_root / "tape")
+            rc = run_cmd(["gcloud", "builds", "submit", server_ctx,
+                          "--config=/dev/null",  # use Dockerfile autodiscovery
+                          "--tag", server_image,
+                          "--region", gcp.region],
+                         cwd=root, check=False).returncode
+            if rc != 0:
+                warn("gcloud builds submit failed — falling back to local docker build.")
+                run_cmd(["docker", "build", "-f", "server/Dockerfile",
+                         "-t", server_image, "."], cwd=server_source_root / "tape")
+                run_cmd(["docker", "push", server_image], cwd=server_source_root / "tape")
+        ok(f"building reactor image {reactor_image}")
         run_cmd(["gcloud", "builds", "submit", str(root),
-                 "--tag", reactor_image, "--region", gcp.region], cwd=root, check=False)
+                 "--tag", reactor_image, "--region", gcp.region],
+                cwd=root, check=False)
 
-    # 2. Write a Cloud Run service spec for the server.
-    server_yaml = _render_cloud_run_server(project, server_image)
-    (out_dir / "tape-server.service.yaml").write_text(server_yaml)
-    ok(f"wrote {out_dir / 'tape-server.service.yaml'}")
+    # 2. Write a Cloud Run service spec for the server (only when we own its
+    # build; otherwise the user is consuming a published image and shouldn't
+    # be redeploying the server from this command).
+    if server_source_root:
+        server_yaml = _render_cloud_run_server(project, server_image)
+        (out_dir / "tape-server.service.yaml").write_text(server_yaml)
+        ok(f"wrote {out_dir / 'tape-server.service.yaml'}")
 
-    # 3. Write a Cloud Run service spec for each enabled reactor.
+    # 3. Resolve the live server URL for the reactor specs.
+    tape_server_url, url_resolved = _resolve_tape_server_url(project)
+    if not url_resolved:
+        warn(f"could not resolve tape-server URL from gcloud; emitting "
+             f"`{tape_server_url}` placeholder in reactor specs.")
+
     for name in project.tape.reactors.enabled_names():
-        spec = _render_cloud_run_reactor(project, reactor_image, name)
+        spec = _render_cloud_run_reactor(project, reactor_image, name, tape_server_url)
         path = out_dir / f"tape-reactor-{name}.service.yaml"
         path.write_text(spec)
         ok(f"wrote {path}")
 
     info("")
     info("To apply:")
-    info(f"  gcloud run services replace {out_dir / 'tape-server.service.yaml'} "
-         f"--region={gcp.region} --project={gcp.project_id}")
-    for name in project.tape.reactors.enabled_names():
-        info(f"  gcloud run services replace {out_dir / f'tape-reactor-{name}.service.yaml'} "
+    if server_source_root:
+        info(f"  gcloud run services replace {out_dir / 'tape-server.service.yaml'} "
              f"--region={gcp.region} --project={gcp.project_id}")
+    for name in project.tape.reactors.enabled_names():
+        path = out_dir / f"tape-reactor-{name}.service.yaml"
+        if url_resolved:
+            info(f"  gcloud run services replace {path} "
+                 f"--region={gcp.region} --project={gcp.project_id}")
+        else:
+            info(f"  TAPE_SERVER_URL=tapes://<your-tape-server-host> envsubst < {path} | \\")
+            info(f"    gcloud run services replace - --region={gcp.region} "
+                 f"--project={gcp.project_id}")
     info("")
     info("Or run `tape deploy gcp` with --apply (not implemented; deliberately so you")
     info("see exactly which gcloud invocations will run).")
@@ -154,13 +204,39 @@ def _server_env(project: TapeProject) -> list[dict]:
     return env
 
 
-def _render_cloud_run_reactor(project: TapeProject, image: str, reactor_name: str) -> str:
+def _resolve_tape_server_url(project: TapeProject) -> tuple[str, bool]:
+    """Return `(url, resolved)` for the Tape server.
+
+    Tries `gcloud run services describe tape-server` first; falls back to a
+    `${TAPE_SERVER_URL}` placeholder the caller substitutes via envsubst when
+    the server isn't deployed yet. `resolved` says whether the URL is real.
+    """
+    if which("gcloud") and project.gcp.project_id:
+        try:
+            res = run_cmd(
+                ["gcloud", "run", "services", "describe", "tape-server",
+                 f"--region={project.gcp.region}",
+                 f"--project={project.gcp.project_id}",
+                 "--format=value(status.url)"],
+                check=False, capture=True,
+            )
+            url = (res.stdout or "").strip()
+            if url.startswith("https://"):
+                # tapes:// is the IAM-aware TLS scheme the SDK uses to attach
+                # ID tokens for Cloud Run.
+                return "tapes://" + url[len("https://"):], True
+        except Exception:
+            pass
+    return "${TAPE_SERVER_URL}", False
+
+
+def _render_cloud_run_reactor(project: TapeProject, image: str, reactor_name: str,
+                              tape_server_url: str) -> str:
     gcp = project.gcp
     sa = f"{gcp.service_account_prefix}-reactor@{gcp.project_id}.iam.gserviceaccount.com"
-    server_url = f"tapes://tape-server-XXXX-uc.a.run.app"  # placeholder; user fills in / Terraform output
     cmd = ["python", "-m", "tape.reactors",
            "--runner-from", project.agent.runner_factory or "app.agent:build_runner",
-           "--url", server_url,
+           "--url", tape_server_url,
            "--only", reactor_name]
     spec = {
         "apiVersion": "serving.knative.dev/v1",
@@ -181,7 +257,7 @@ def _render_cloud_run_reactor(project: TapeProject, image: str, reactor_name: st
                         "image": image,
                         "command": cmd,
                         "env": [
-                            {"name": "TAPE_URL", "value": server_url},
+                            {"name": "TAPE_URL", "value": tape_server_url},
                             {"name": "TAPE_REACTOR", "value": reactor_name},
                             {"name": "GOOGLE_CLOUD_PROJECT", "value": project.gcp.project_id},
                             {"name": "GOOGLE_CLOUD_LOCATION", "value": project.gcp.region},
