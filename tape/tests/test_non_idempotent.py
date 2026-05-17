@@ -355,3 +355,158 @@ def test_outbox_skips_when_connector_missing(tape_server):
         assert "no connector" in ours[0]["reason"]
         got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
         assert got.status == tape.EFFECT_STATUS_PENDING
+
+
+# ── Pub/Sub subscriber: the loop closes on the wire, not on Pub/Sub ─────────
+
+class _FakePubsubMessage:
+    """Minimal stand-in for `pubsub_v1.subscriber.message.Message` — just
+    enough surface for `PubSubSubscriber._on_message`."""
+
+    def __init__(self, data: bytes, attributes: dict):
+        self.data = data
+        self.attributes = attributes
+        self.acked = False
+        self.nacked = False
+
+    def ack(self) -> None:
+        self.acked = True
+
+    def nack(self) -> None:
+        self.nacked = True
+
+
+def test_pubsub_subscriber_reports_confirmed_back_to_tape(tape_server):
+    """A subscriber that processes a delivered message must claim the
+    dispatch slot, run the handler, and call `complete_effect(CONFIRMED)` —
+    closing the loop *on Tape*, not on Pub/Sub. The subscriber acks the
+    message regardless because Tape is the source of truth."""
+    from tape.connectors.base import DispatchResult
+    from tape.connectors.pubsub import PubSubSubscriber
+
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        # Effect ready for the outbox.
+        e = _begin_outbox_effect(c, run.run_id, business_key="ps-confirmed")
+
+        handled = []
+
+        def handle(payload, attrs):
+            handled.append((payload, attrs))
+            return DispatchResult(status="confirmed", external_ref="psr-001",
+                                  response={"ok": True})
+
+        sub = PubSubSubscriber(
+            project="ignored", subscription="ignored",
+            tape_url=tape_server["url"], handle=handle,
+            tape_client_factory=lambda: TapeClient(tape_server["url"]))
+        msg = _FakePubsubMessage(
+            data=b'{"amount": 100}',
+            attributes={
+                "tape_run_id": run.run_id,
+                "tape_effect_key": e.idempotency_key,
+                "tape_business_key": "ps-confirmed",
+                "tape_connector": "bank.wire",
+                "tape_tool": "wire_money",
+                "tape_semantics": str(tape.EFFECT_SEMANTICS_NON_IDEMPOTENT),
+            })
+        sub._on_message(msg)
+        sub.stop()
+
+        assert msg.acked is True and msg.nacked is False
+        assert len(handled) == 1
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_CONFIRMED
+
+
+def test_pubsub_subscriber_unknown_drives_effect_unknown(tape_server):
+    """When the handler returns `unknown` (lost ack), the subscriber drives
+    the effect to UNKNOWN — same safety contract as the local outbox loop."""
+    from tape.connectors.base import DispatchResult
+    from tape.connectors.pubsub import PubSubSubscriber
+
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="ps-unknown")
+
+        def handle(payload, attrs):
+            return DispatchResult(status="unknown",
+                                  error={"reason": "simulated lost ack"})
+
+        sub = PubSubSubscriber(
+            project="ignored", subscription="ignored",
+            tape_url=tape_server["url"], handle=handle,
+            tape_client_factory=lambda: TapeClient(tape_server["url"]))
+        msg = _FakePubsubMessage(
+            data=b'{}',
+            attributes={
+                "tape_run_id": run.run_id,
+                "tape_effect_key": e.idempotency_key,
+                "tape_business_key": "ps-unknown",
+                "tape_connector": "bank.wire",
+            })
+        sub._on_message(msg)
+        sub.stop()
+
+        assert msg.acked is True
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_UNKNOWN
+
+
+def test_pubsub_subscriber_dedupes_redelivery(tape_server):
+    """If Pub/Sub redelivers a message we already handled, the in-memory LRU
+    short-circuits and we ack without re-calling the handler — and the
+    dispatch lease CAS on Tape provides a second line of defence (if the LRU
+    has rotated the entry out)."""
+    from tape.connectors.base import DispatchResult
+    from tape.connectors.pubsub import PubSubSubscriber
+
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="ps-dedupe")
+        handler_calls = []
+
+        def handle(payload, attrs):
+            handler_calls.append(attrs.get("tape_effect_key"))
+            return DispatchResult(status="confirmed", external_ref="psr-dedupe-1")
+
+        sub = PubSubSubscriber(
+            project="ignored", subscription="ignored",
+            tape_url=tape_server["url"], handle=handle,
+            tape_client_factory=lambda: TapeClient(tape_server["url"]))
+        attrs = {
+            "tape_run_id": run.run_id,
+            "tape_effect_key": e.idempotency_key,
+            "tape_business_key": "ps-dedupe",
+            "tape_connector": "bank.wire",
+        }
+        m1 = _FakePubsubMessage(b'{}', attrs)
+        m2 = _FakePubsubMessage(b'{}', attrs)  # redelivery
+        sub._on_message(m1)
+        sub._on_message(m2)
+        sub.stop()
+
+        assert m1.acked and m2.acked
+        assert len(handler_calls) == 1, f"handler should run once; got {handler_calls}"
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_CONFIRMED
+
+
+def test_pubsub_subscriber_drops_malformed_messages(tape_server):
+    """A message missing the tape_effect_key / tape_run_id attributes is
+    ack-and-dropped (we own it; Pub/Sub redelivery wouldn't help)."""
+    from tape.connectors.base import DispatchResult
+    from tape.connectors.pubsub import PubSubSubscriber
+
+    handle_called = []
+    sub = PubSubSubscriber(
+        project="ignored", subscription="ignored",
+        tape_url=tape_server["url"],
+        handle=lambda p, a: (handle_called.append(True),
+                             DispatchResult(status="confirmed"))[1],
+        tape_client_factory=lambda: TapeClient(tape_server["url"]))
+    msg = _FakePubsubMessage(b'{}', {})   # no attributes
+    sub._on_message(msg)
+    sub.stop()
+    assert msg.acked is True
+    assert not handle_called

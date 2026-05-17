@@ -137,6 +137,98 @@ def _bank_wires(ledger_dir: Path) -> int:
     return sum(1 for k in json.loads(p.read_text()) if not k.startswith("reverse:"))
 
 
+def test_bigtable_outbox_contract_end_to_end(bigtable_server):
+    """The full non-idempotent contract, against Bigtable: refuse
+    NON_IDEMPOTENT+INLINE; cross-run business-key dedupe; outbox listing;
+    single-winner CAS lease; UNKNOWN after a lost-ack; reconciler observation
+    drives ABSENT → FAILED for non-idempotent; DUPLICATE registers
+    compensation atomically. This is the same shape as test_non_idempotent.py
+    but routed through the Bigtable backend, so any divergence between the
+    two implementations of the trait shows up here.
+    """
+    import grpc as _grpc
+    import tape
+    from tape.client import TapeClient
+
+    url = bigtable_server["url"]
+    with TapeClient(url) as c:
+        # Refuse NON_IDEMPOTENT + INLINE.
+        run = c.begin_run(app_name="bt-test", user_id="u",
+                          session_id=f"bt-outbox-{os.urandom(4).hex()}",
+                          invocation_id="inv-1", lease_owner="t", lease_ttl_ms=60_000)
+        with pytest.raises(_grpc.RpcError) as ex:
+            c.begin_effect(run_id=run.run_id, decision_index=0, tool_name="wire",
+                           call_index=0, request_json="{}",
+                           semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                           dispatch_mode=tape.EFFECT_DISPATCH_MODE_INLINE)
+        assert "NON_IDEMPOTENT" in ex.value.details()
+
+        # Business-key dedupe across two runs.
+        run2 = c.begin_run(app_name="bt-test", user_id="u",
+                           session_id=run.run_id + "-x", invocation_id="inv-2",
+                           lease_owner="t", lease_ttl_ms=60_000)
+        e1 = c.begin_effect(run_id=run.run_id, decision_index=0, tool_name="wire",
+                            call_index=0, request_json='{"amount":1}',
+                            semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                            dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
+                            business_key="bt:wire-A", connector="bank.wire")
+        e2 = c.begin_effect(run_id=run2.run_id, decision_index=0, tool_name="wire",
+                            call_index=0, request_json='{"amount":1}',
+                            semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                            dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
+                            business_key="bt:wire-A", connector="bank.wire")
+        assert e1.idempotency_key == e2.idempotency_key, "business_key must dedupe across runs"
+
+        # Visible to the dispatcher.
+        listed = [e.idempotency_key for e in c.list_effects_to_dispatch(
+            connector="bank.wire", limit=50).effects]
+        assert e1.idempotency_key in listed
+
+        # CAS lease.
+        cl1 = c.claim_effect_dispatch(run_id=run.run_id, idempotency_key=e1.idempotency_key,
+                                      claimer="bt-A")
+        cl2 = c.claim_effect_dispatch(run_id=run.run_id, idempotency_key=e1.idempotency_key,
+                                      claimer="bt-B")
+        assert cl1.acquired is True and cl2.acquired is False
+
+        # Lost ack → UNKNOWN; no auto-retry.
+        c.record_dispatch_attempt(run_id=run.run_id, idempotency_key=e1.idempotency_key,
+                                  error="lost ack (bt)", next_dispatch_at_ms=0)
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e1.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_UNKNOWN
+        listed_again = [e.idempotency_key for e in c.list_effects_to_dispatch(
+            connector="bank.wire", limit=50).effects]
+        assert e1.idempotency_key not in listed_again
+
+        # Reconciler observes ABSENT on a NON_IDEMPOTENT effect → FAILED.
+        c.record_external_observation(run_id=run.run_id, idempotency_key=e1.idempotency_key,
+                                      resolution=tape.EFFECT_RESOLUTION_ABSENT)
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e1.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_FAILED
+
+        # A different effect, this time the reconciler observes DUPLICATE — a
+        # compensation obligation is registered atomically.
+        e3 = c.begin_effect(run_id=run2.run_id, decision_index=0, tool_name="wire",
+                            call_index=1, request_json='{"amount":2}',
+                            semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                            dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
+                            business_key="bt:wire-B", connector="bank.wire")
+        c.claim_effect_dispatch(run_id=run2.run_id, idempotency_key=e3.idempotency_key,
+                                claimer="bt-d")
+        c.record_dispatch_attempt(run_id=run2.run_id, idempotency_key=e3.idempotency_key,
+                                  error="lost ack (bt)", next_dispatch_at_ms=0)
+        c.record_external_observation(run_id=run2.run_id, idempotency_key=e3.idempotency_key,
+                                      resolution=tape.EFFECT_RESOLUTION_DUPLICATE,
+                                      external_ref="wire-dup-001",
+                                      compensate_on_duplicate_kind="reverse_wire")
+        got3 = c.get_effect(run_id=run2.run_id, idempotency_key=e3.idempotency_key).effect
+        assert got3.status == tape.EFFECT_STATUS_CONFIRMED
+        assert got3.external_ref == "wire-dup-001"
+        obs = c.list_obligations(run_id=run2.run_id, only_unresolved=True).obligations
+        assert any(o.kind == "reverse_wire" and o.effect_key == e3.idempotency_key
+                   for o in obs), obs
+
+
 def test_bigtable_crash_then_resume_closes_the_book_once(bigtable_server, tmp_path):
     from tape.client import TapeClient
     import tape.client as tc
