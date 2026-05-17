@@ -29,6 +29,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 uuid = { version = "1", features = ["v4"] }
+# CEL evaluator for reaction predicates (sandboxed, serializable, fast).
+cel-interpreter = { version = "0.10", features = ["json"] }
+# Direct tokio-postgres for LISTEN/NOTIFY on the event-bus wake-up path.
+tokio-postgres = "0.7"
+futures-util = "0.3"
 # Cloud Bigtable backend (ring TLS — lighter to build; the emulator path is plaintext).
 bigtable_rs = { version = "0.3", default-features = false, features = ["tonic-tls-ring"] }
 googleapis-tonic-google-bigtable-v2 = "0.36"

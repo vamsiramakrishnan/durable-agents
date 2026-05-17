@@ -203,8 +203,75 @@ func RunReactors(ctx context.Context, c *Client, opt RunReactorsOptions) error {
 
 // ──── WAL fan-out ───────────────────────────────────────────────────────────
 
+// RunEventFanout is the legacy timestamp-cursored WAL fan-out. Preserved for
+// back-compat — new code should use RunEventFanoutBySubject (global_seq
+// cursored) or RunEventFanoutWith (the option-struct form supporting both
+// cursors plus a subject pattern).
+//
+// Deprecated: prefer RunEventFanoutBySubject for global_seq cursoring.
 func RunEventFanout(ctx context.Context, c *Client, fromTsMs int64, runID, kind string, sink func(entry *pb.EventEntry) error) error {
 	stream, err := c.SubscribeEvents(ctx, fromTsMs, runID, kind)
+	if err != nil {
+		return err
+	}
+	for {
+		entry, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := sink(entry); err != nil {
+			return err
+		}
+	}
+}
+
+// RunEventFanoutBySubject tails the journal via SubscribeBySubject, cursored
+// on `global_seq`. The matching subject pattern follows the path-style grammar
+// (`*` = one segment, `**` = trailing segments). `predicateCEL` is an optional
+// server-side CEL filter on the envelope.
+func RunEventFanoutBySubject(ctx context.Context, c *Client, subjectPattern, predicateCEL string, fromGlobalSeq int64, sink func(entry *pb.EventEntry) error) error {
+	stream, err := c.SubscribeBySubject(ctx, subjectPattern, predicateCEL, fromGlobalSeq)
+	if err != nil {
+		return err
+	}
+	for {
+		entry, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := sink(entry); err != nil {
+			return err
+		}
+	}
+}
+
+// RunEventFanoutOpts mirrors SubscribeEventsOpts: pass `FromGlobalSeq` /
+// `SubjectPattern` for the event-bus path or `FromTsMs` / `RunID` / `Kind`
+// for the legacy filters.
+type RunEventFanoutOpts struct {
+	FromTsMs       int64
+	RunID          string
+	Kind           string
+	FromGlobalSeq  int64
+	SubjectPattern string
+}
+
+// RunEventFanoutWith is the option-struct form of RunEventFanout. Honours
+// both the legacy and the event-bus filter fields.
+func RunEventFanoutWith(ctx context.Context, c *Client, o RunEventFanoutOpts, sink func(entry *pb.EventEntry) error) error {
+	stream, err := c.SubscribeEventsWith(ctx, SubscribeEventsOpts{
+		FromTsMs:       o.FromTsMs,
+		RunID:          o.RunID,
+		Kind:           o.Kind,
+		FromGlobalSeq:  o.FromGlobalSeq,
+		SubjectPattern: o.SubjectPattern,
+	})
 	if err != nil {
 		return err
 	}

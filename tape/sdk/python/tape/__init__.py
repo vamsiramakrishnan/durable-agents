@@ -55,6 +55,20 @@ from .det import sample, now, uuid, random
 from ._recover import resume, recover_once, compensate_run, compensate_one
 from ._gen import tape_pb2 as pb
 from . import connectors  # noqa: F401  — `tape.connectors.register(...)` is the public surface
+from .reactions import (
+    on,
+    on_value_change,
+    on_value_deleted,
+    on_effect_confirmed,
+    on_effect_failed,
+    on_effect_unknown,
+    on_decision_recorded,
+    on_gate,
+    on_run,
+    register_all,
+    run_dispatcher,
+    run_pubsub_bridge,
+)
 
 __all__ = [
     "TapeClient", "DEFAULT_URL", "pb",
@@ -72,10 +86,16 @@ __all__ = [
     "RUN_STATUS_RUNNABLE", "RUN_STATUS_RUNNING", "RUN_STATUS_WAITING", "RUN_STATUS_TERMINAL",
     "RUN_STATUS_FAILED", "RUN_STATUS_STUCK",
     "EFFECT_STATUS_PENDING", "EFFECT_STATUS_CONFIRMED", "EFFECT_STATUS_FAILED", "EFFECT_STATUS_UNKNOWN",
+    # outbox / non-idempotent contract (see design-principles/tape.md)
     "EFFECT_SEMANTICS_IDEMPOTENT", "EFFECT_SEMANTICS_NON_IDEMPOTENT", "EFFECT_SEMANTICS_OBSERVE_ONLY",
     "EFFECT_DISPATCH_MODE_INLINE", "EFFECT_DISPATCH_MODE_OUTBOX",
     "EFFECT_RESOLUTION_CONFIRMED", "EFFECT_RESOLUTION_FAILED", "EFFECT_RESOLUTION_ABSENT",
     "EFFECT_RESOLUTION_DUPLICATE", "EFFECT_RESOLUTION_STUCK",
+    # event-bus decorators + runners (see design-principles/tape-event-bus.md)
+    "on", "on_value_change", "on_value_deleted",
+    "on_effect_confirmed", "on_effect_failed", "on_effect_unknown",
+    "on_decision_recorded", "on_gate", "on_run",
+    "register_all", "run_dispatcher", "run_pubsub_bridge",
 ]
 
 __version__ = "0.1.0"

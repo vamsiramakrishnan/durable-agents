@@ -133,8 +133,12 @@ def test_outbox_relay_publishes_journal_entries_with_a_durable_cursor(tape_serve
     n1 = outbox_relay_tick(url, sink, cursor_path=str(cursor), idle_window_s=1.0)
     sink.close()
     assert n1 >= 3, f"expected at least 3 entries (decision + pending + confirmed), got {n1}"
-    cursor_after_1 = cursor.read_text()
-    assert "last_seq" in cursor_after_1 and rid in cursor_after_1
+    # Cursor is now the new event-bus shape: `{last_global_seq: N}`. The
+    # `(run_id, seq)` keys are gone — the new cursor is a single monotonic
+    # integer over `tape_journal.global_seq`.
+    cursor_after_1 = json.loads(cursor.read_text())
+    assert set(cursor_after_1.keys()) == {"last_global_seq"}, cursor_after_1
+    assert cursor_after_1["last_global_seq"] > 0
 
     # tick 2: cursor is past everything; nothing new
     sink = LogSink(str(out))

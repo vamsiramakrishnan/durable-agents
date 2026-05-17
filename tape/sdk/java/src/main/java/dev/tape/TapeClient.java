@@ -6,6 +6,7 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import dev.tape.proto.*;
@@ -339,6 +340,97 @@ public final class TapeClient implements AutoCloseable {
         return stub.subscribeEvents(SubscribeEventsRequest.newBuilder()
                 .setFromTsMs(fromTsMs).setRunId(runId == null ? "" : runId)
                 .setKind(kind == null ? "" : kind).build());
+    }
+
+    /**
+     * Subject-routed, global-seq-cursored bus stream. Use {@code "/tape/<kind>/<verb>/.../**"}
+     * with {@code *}/{@code **} wildcards. {@code predicateCel} may be empty (always-true).
+     * {@code fromGlobalSeq} of 0 starts from the earliest available entry.
+     */
+    public Iterator<EventEntry> subscribeBySubject(String subjectPattern, String predicateCel, long fromGlobalSeq) {
+        return stub.subscribeBySubject(SubscribeBySubjectRequest.newBuilder()
+                .setSubjectPattern(subjectPattern == null ? "" : subjectPattern)
+                .setPredicateCel(predicateCel == null ? "" : predicateCel)
+                .setFromGlobalSeq(fromGlobalSeq).build());
+    }
+
+    // ── reactions & tasks (see design-principles/tape-event-bus.md) ─────────
+
+    /** Register a server-side reaction. Returns the persisted {@link Reaction}. */
+    public Reaction registerReaction(RegisterReactionOpts opts) {
+        if (opts == null) throw new IllegalArgumentException("opts is required");
+        if (opts.subjectPattern == null || opts.subjectPattern.isEmpty())
+            throw new IllegalArgumentException("subjectPattern is required");
+        HandlerKind kind = opts.handlerKind == null ? HandlerKind.HANDLER_KIND_TASK : opts.handlerKind;
+        Reaction r = Reaction.newBuilder()
+                .setReactionId(opts.reactionId == null ? "" : opts.reactionId)
+                .setName(opts.name == null ? "" : opts.name)
+                .setSubjectPattern(opts.subjectPattern)
+                .setPredicateCel(opts.predicateCel == null ? "" : opts.predicateCel)
+                .setHandlerKind(kind)
+                .setAgentApp(opts.agentApp == null ? "" : opts.agentApp)
+                .setPublishTarget(opts.publishTarget == null ? "" : opts.publishTarget)
+                .setMaxConcurrency(opts.maxConcurrency)
+                .setRateLimitPerS(opts.rateLimitPerS)
+                .setDebounceMs(opts.debounceMs)
+                .setRetryMax(opts.retryMax)
+                .setRetryBackoffMs(opts.retryBackoffMs)
+                .setDlqAfterN(opts.dlqAfterN)
+                .setNumShards(opts.numShards)
+                .setBootstrapFromHead(opts.bootstrapFromHead)
+                .build();
+        return stub.registerReaction(r);
+    }
+
+    public boolean deregisterReaction(String reactionId) {
+        return stub.deregisterReaction(DeregisterReactionRequest.newBuilder()
+                .setReactionId(reactionId == null ? "" : reactionId).build()).getDeregistered();
+    }
+
+    /** List reactions. Pass {@code null} or {@code ""} for all. */
+    public List<Reaction> listReactions(String subjectPattern) {
+        ListReactionsResponse resp = stub.listReactions(ListReactionsRequest.newBuilder()
+                .setSubjectPattern(subjectPattern == null ? "" : subjectPattern).build());
+        return resp.getReactionsList();
+    }
+
+    public List<Task> claimTasks(ClaimTasksOpts opts) {
+        if (opts == null) throw new IllegalArgumentException("opts is required");
+        if (opts.reactionId == null || opts.reactionId.isEmpty())
+            throw new IllegalArgumentException("reactionId is required");
+        if (opts.owner == null || opts.owner.isEmpty())
+            throw new IllegalArgumentException("owner is required");
+        ClaimTasksResponse resp = stub.claimTasks(ClaimTasksRequest.newBuilder()
+                .setReactionId(opts.reactionId)
+                .setShard(opts.shard)
+                .setOwner(opts.owner)
+                .setLeaseMs(opts.leaseMs)
+                .setMax(opts.max)
+                .setNowMs(opts.nowMs)
+                .build());
+        return resp.getTasksList();
+    }
+
+    public Task completeTask(String taskId, String owner) {
+        return stub.completeTask(CompleteTaskRequest.newBuilder()
+                .setTaskId(taskId == null ? "" : taskId)
+                .setOwner(owner == null ? "" : owner).build()).getTask();
+    }
+
+    public Task nackTask(String taskId, String owner, String error, boolean permanent) {
+        return stub.nackTask(NackTaskRequest.newBuilder()
+                .setTaskId(taskId == null ? "" : taskId)
+                .setOwner(owner == null ? "" : owner)
+                .setError(error == null ? "" : error)
+                .setPermanent(permanent).build()).getTask();
+    }
+
+    public List<Task> listTasks(String reactionId, TaskStatus status, int limit) {
+        ListTasksResponse resp = stub.listTasks(ListTasksRequest.newBuilder()
+                .setReactionId(reactionId == null ? "" : reactionId)
+                .setStatus(status == null ? TaskStatus.TASK_STATUS_UNSPECIFIED : status)
+                .setLimit(limit <= 0 ? 200 : limit).build());
+        return resp.getTasksList();
     }
 
     // ── ADK SessionService shim ─────────────────────────────────────────────

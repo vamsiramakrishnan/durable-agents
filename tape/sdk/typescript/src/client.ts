@@ -43,6 +43,13 @@ export const EffectResolution = Object.freeze({
 export const ObligationStatus = Object.freeze({
   UNSPECIFIED: 0, PENDING: 1, COMMITTED: 2, COMPENSATED: 3, STUCK: 4,
 });
+// New event-bus enums — mirror tape.v1.HandlerKind / tape.v1.TaskStatus.
+export const HandlerKind = Object.freeze({
+  UNSPECIFIED: 0, AGENT: 1, TASK: 2, PUBLISH: 3,
+});
+export const TaskStatus = Object.freeze({
+  UNSPECIFIED: 0, PENDING: 1, CLAIMED: 2, DONE: 3, FAILED: 4, DLQ: 5,
+});
 
 function targetOf(url: string): { target: string; secure: boolean } {
   if (url.startsWith('tapes://')) {
@@ -136,7 +143,7 @@ export class TapeClient {
       creds = grpc.credentials.createInsecure();
     }
     this.stub = new TapeSvc(target, creds) as Stub;
-    this.channel = this.stub.getChannel();
+    this.channel = this.stub.getChannel() as unknown as grpc.Channel;
   }
 
   close(): void { this.stub.close(); }
@@ -148,21 +155,42 @@ export class TapeClient {
     });
   }
 
-  // streaming RPC -> AsyncIterable<Res>
-  private async *stream<Req, Res>(method: string, req: Req): AsyncGenerator<Res> {
-    const s = this.stub[method](req) as unknown as grpc.ClientReadableStream<Res>;
+  // streaming RPC -> AsyncIterable<Res>. Pass `timeoutMs` to bound the call
+  // with a gRPC deadline — the iterator will surface DEADLINE_EXCEEDED (which
+  // we swallow as "end of stream") once the deadline passes. Useful for
+  // tick-style consumers (outbox relay) and tests.
+  private async *stream<Req, Res>(
+    method: string, req: Req, timeoutMs?: number,
+  ): AsyncGenerator<Res> {
+    const callOpts: grpc.CallOptions = {};
+    if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+      callOpts.deadline = Date.now() + timeoutMs;
+    }
+    const s = (this.stub[method] as any)(req, callOpts) as grpc.ClientReadableStream<Res>;
     const queue: Res[] = [];
     let done = false;
     let err: Error | null = null;
     const wakers: Array<() => void> = [];
     s.on('data', (m: Res) => { queue.push(m); const w = wakers.shift(); if (w) w(); });
     s.on('end', () => { done = true; wakers.forEach(w => w()); });
-    s.on('error', (e: Error) => { err = e; done = true; wakers.forEach(w => w()); });
-    while (true) {
-      if (err) throw err;
-      if (queue.length) { yield queue.shift()!; continue; }
-      if (done) return;
-      await new Promise<void>((r) => wakers.push(r));
+    s.on('error', (e: any) => {
+      // Treat DEADLINE_EXCEEDED / CANCELLED as a clean stream end — the
+      // call was bounded by the caller's `timeoutMs`, not a real failure.
+      const code = e?.code;
+      if (code === grpc.status.DEADLINE_EXCEEDED || code === grpc.status.CANCELLED) {
+        done = true; wakers.forEach((w) => w()); return;
+      }
+      err = e; done = true; wakers.forEach((w) => w());
+    });
+    try {
+      while (true) {
+        if (err) throw err;
+        if (queue.length) { yield queue.shift()!; continue; }
+        if (done) return;
+        await new Promise<void>((r) => wakers.push(r));
+      }
+    } finally {
+      try { s.cancel(); } catch { /* already done */ }
     }
   }
 
@@ -180,8 +208,9 @@ export class TapeClient {
   listRunsToRecover(r: { limit?: number; nowMs?: number } = {}) {
     return this.call('ListRunsToRecover', { limit: r.limit ?? 100, nowMs: r.nowMs ?? 0 });
   }
-  subscribeRun(r: { runId: string; fromSeq?: number }) {
-    return this.stream('SubscribeRun', { runId: r.runId, fromSeq: r.fromSeq ?? 0 });
+  subscribeRun(r: { runId: string; fromSeq?: number; timeoutMs?: number }) {
+    return this.stream('SubscribeRun',
+      { runId: r.runId, fromSeq: r.fromSeq ?? 0 }, r.timeoutMs);
   }
 
   // ── decisions ─────────────────────────────────────────────────────────────
@@ -320,8 +349,85 @@ export class TapeClient {
   }
 
   // ── WAL tail ──────────────────────────────────────────────────────────────
-  subscribeEvents(r: { fromTsMs?: number; runId?: string; kind?: string } = {}) {
-    return this.stream('SubscribeEvents', { fromTsMs: 0, runId: '', kind: '', ...r });
+  subscribeEvents(r: { fromTsMs?: number; runId?: string; kind?: string; fromGlobalSeq?: number; subjectPattern?: string; timeoutMs?: number } = {}) {
+    const { timeoutMs, ...req } = r;
+    return this.stream('SubscribeEvents', {
+      fromTsMs: 0, runId: '', kind: '', fromGlobalSeq: 0, subjectPattern: '', ...req,
+    }, timeoutMs);
+  }
+
+  // Subject-routed, global-seq-cursored WAL stream. The preferred path for
+  // new code; honours `*` (one segment) and `**` (rest) wildcards and an
+  // optional CEL predicate evaluated server-side. Pass `timeoutMs` to bound
+  // the call (server emits DEADLINE_EXCEEDED, which we surface as a clean
+  // end-of-stream — handy for tick-style consumers).
+  subscribeBySubject(r: { subjectPattern: string; predicateCel?: string; fromGlobalSeq?: number; timeoutMs?: number }) {
+    const { timeoutMs, ...req } = r;
+    return this.stream('SubscribeBySubject', {
+      predicateCel: '', fromGlobalSeq: 0, ...req,
+    }, timeoutMs);
+  }
+
+  // ── reactions ─────────────────────────────────────────────────────────────
+  registerReaction(r: {
+    reactionId?: string; name?: string; subjectPattern: string;
+    predicateCel?: string; handlerKind: number; agentApp?: string;
+    publishTarget?: string; maxConcurrency?: number; rateLimitPerS?: number;
+    debounceMs?: number; retryMax?: number; retryBackoffMs?: number;
+    dlqAfterN?: number; numShards?: number; bootstrapFromHead?: boolean;
+  }): Promise<any> {
+    return this.call('RegisterReaction', {
+      reactionId: '', name: '', predicateCel: '', agentApp: '',
+      publishTarget: '', maxConcurrency: 1, rateLimitPerS: 0, debounceMs: 0,
+      retryMax: 5, retryBackoffMs: 1000, dlqAfterN: 5, numShards: 1,
+      bootstrapFromHead: false, ...r,
+    });
+  }
+  async deregisterReaction(reactionId: string): Promise<boolean> {
+    const resp: any = await this.call('DeregisterReaction', { reactionId });
+    return Boolean(resp?.deregistered);
+  }
+  async listReactions(subjectPattern: string = ''): Promise<any[]> {
+    const resp: any = await this.call('ListReactions', { subjectPattern });
+    return (resp?.reactions ?? []) as any[];
+  }
+
+  // ── tasks ─────────────────────────────────────────────────────────────────
+  async claimTasks(r: {
+    reactionId: string; shard?: number; owner: string;
+    leaseMs?: number; max?: number; nowMs?: number;
+  }): Promise<any[]> {
+    const resp: any = await this.call('ClaimTasks', {
+      shard: -1, leaseMs: 60_000, max: 16, nowMs: 0, ...r,
+    });
+    return (resp?.tasks ?? []) as any[];
+  }
+  async completeTask(r: { taskId: string; owner: string }): Promise<any> {
+    const resp: any = await this.call('CompleteTask', r);
+    return resp?.task;
+  }
+  async nackTask(r: { taskId: string; owner: string; error?: string; permanent?: boolean }): Promise<any> {
+    const resp: any = await this.call('NackTask', { error: '', permanent: false, ...r });
+    return resp?.task;
+  }
+  async listTasks(r: { reactionId: string; status?: number; limit?: number }): Promise<any[]> {
+    const resp: any = await this.call('ListTasks', { status: 0, limit: 200, ...r });
+    return (resp?.tasks ?? []) as any[];
+  }
+
+  // ── reactive key-value store ──────────────────────────────────────────────
+  writeValue(r: { namespace: string; key: string; valueJson: string; ifVersion?: number; writer?: string }) {
+    return this.call('WriteValue', { ifVersion: -1, writer: '', ...r });
+  }
+  getValue(r: { namespace: string; key: string }) {
+    return this.call('GetValue', r);
+  }
+  watchValue(r: { namespace: string; key: string; fromVersion?: number; timeoutMs?: number }) {
+    const { timeoutMs, ...req } = r;
+    return this.stream('WatchValue', { fromVersion: 0, ...req }, timeoutMs);
+  }
+  deleteValue(r: { namespace: string; key: string }) {
+    return this.call('DeleteValue', r);
   }
 
   // ── ADK SessionService shim ───────────────────────────────────────────────
