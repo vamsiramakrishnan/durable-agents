@@ -275,7 +275,7 @@ public final class TapeClient implements AutoCloseable {
     }
 
     /** Report a failed attempt. The server reschedules (PENDING + backoff) or
-     *  marks STUCK (when retries are exhausted, or `nextAttemptAtMs <= 0`). */
+     *  marks STUCK (when retries are exhausted, or {@code nextAttemptAtMs <= 0}). */
     public ObligationRecord recordObligationAttempt(String runId, long obligationSeq, String error, long nextAttemptAtMs) {
         return stub.recordObligationAttempt(RecordObligationAttemptRequest.newBuilder()
                 .setRunId(runId).setObligationSeq(obligationSeq)
