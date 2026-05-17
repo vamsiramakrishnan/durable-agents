@@ -948,6 +948,16 @@ impl RunStore for SqlRunStore {
         let dlq = if r.dlq_after_n > 0 { r.dlq_after_n } else { 5 };
         let retry_max = if r.retry_max > 0 { r.retry_max } else { 5 };
         let backoff = if r.retry_backoff_ms > 0 { r.retry_backoff_ms } else { 1000 };
+        // Was this reaction_id already present? We read before the upsert so we
+        // can detect first-creation deterministically across both SQLite and
+        // Postgres (RETURNING (xmax = 0) AS inserted is PG-only). The
+        // bootstrap_from_head flag is only honoured on first creation — a
+        // re-registration must never reset cursors (treats a redeploy as a
+        // no-op for the head-bootstrap semantics).
+        let pre_exists = self.d().query_opt(
+            "SELECT 1 FROM tape_reactions WHERE reaction_id=?1",
+            vec![rid.clone().into()],
+        ).await?.is_some();
         // Upsert. Use ON CONFLICT (reaction_id) DO UPDATE … on both backends.
         self.d().exec(
             "INSERT INTO tape_reactions (reaction_id, name, subject_pattern, predicate_cel, handler_kind, \
@@ -968,6 +978,23 @@ impl RunStore for SqlRunStore {
                  retry_max.into(), backoff.into(), dlq.into(), num_shards.into(),
                  created.into()],
         ).await?;
+        // First-time creation + bootstrap_from_head: seed each shard's cursor
+        // at the current journal head so the reaction skips the entire backlog
+        // and only sees entries written after registration.
+        if !pre_exists && r.bootstrap_from_head {
+            let head_row = self.d().query_opt(
+                "SELECT COALESCE(MAX(global_seq), 0) FROM tape_journal",
+                vec![],
+            ).await?;
+            let head = head_row.map(|r| r.i64(0)).unwrap_or(0);
+            for s in 0..num_shards {
+                self.d().exec(
+                    "INSERT INTO tape_reaction_cursors (reaction_id, shard, last_global_seq, last_processed_at_ms) \
+                     VALUES (?1,?2,?3,?4) ON CONFLICT(reaction_id, shard) DO NOTHING",
+                    vec![rid.clone().into(), s.into(), head.into(), now.into()],
+                ).await?;
+            }
+        }
         Ok(self
             .list_reactions("")
             .await?
@@ -1002,6 +1029,9 @@ impl RunStore for SqlRunStore {
             max_concurrency: r.i32(7), rate_limit_per_s: r.i32(8), debounce_ms: r.i32(9),
             retry_max: r.i32(10), retry_backoff_ms: r.i32(11), dlq_after_n: r.i32(12),
             num_shards: r.i32(13), created_at_ms: r.i64(14), deleted: r.i64(15) != 0,
+            // Storage-only column; the proto flag is a registration-time intent,
+            // not a queryable property of the stored row.
+            bootstrap_from_head: false,
         }).collect())
     }
     async fn get_reaction_cursor(&self, reaction_id: &str, shard: i32) -> StoreResult<i64> {
@@ -1200,6 +1230,53 @@ impl RunStore for SqlRunStore {
             ).await?
         };
         Ok(rows.iter().map(task_of).collect())
+    }
+    async fn find_pending_task_for_subject(&self, reaction_id: &str, subject: &str)
+        -> StoreResult<Option<Task>> {
+        let pending = TaskStatus::Pending as i32;
+        let row = self.d().query_opt(
+            "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                    status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                    created_at_ms, trace_id, parent_span_id \
+             FROM tape_tasks WHERE reaction_id=?1 AND subject=?2 AND status=?3 \
+             ORDER BY created_at_ms DESC LIMIT 1",
+            vec![reaction_id.into(), subject.into(), pending.into()],
+        ).await?;
+        Ok(row.as_ref().map(task_of))
+    }
+    async fn coalesce_task(&self, task_id: &str, source_global_seq: i64, payload_json: &str,
+                           trace_id: &str, parent_span_id: &str) -> StoreResult<Option<Task>> {
+        let pending = TaskStatus::Pending as i32;
+        if self.d().is_postgres() {
+            // Postgres: do the conditional UPDATE and the read in one round-trip.
+            let rows = self.d().query(
+                "UPDATE tape_tasks SET source_global_seq=?2, payload_json=?3, trace_id=?4, parent_span_id=?5 \
+                 WHERE task_id=?1 AND status=?6 \
+                 RETURNING task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                           status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                           created_at_ms, trace_id, parent_span_id",
+                vec![task_id.into(), source_global_seq.into(), payload_json.into(),
+                     trace_id.into(), parent_span_id.into(), pending.into()],
+            ).await?;
+            return Ok(rows.first().map(task_of));
+        }
+        // SQLite: conditional UPDATE then SELECT; the WHERE clause guarantees
+        // we only mutate a still-PENDING row.
+        let n = self.d().exec(
+            "UPDATE tape_tasks SET source_global_seq=?2, payload_json=?3, trace_id=?4, parent_span_id=?5 \
+             WHERE task_id=?1 AND status=?6",
+            vec![task_id.into(), source_global_seq.into(), payload_json.into(),
+                 trace_id.into(), parent_span_id.into(), pending.into()],
+        ).await?;
+        if n == 0 { return Ok(None); }
+        let row = self.d().query_opt(
+            "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
+                    status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \
+                    created_at_ms, trace_id, parent_span_id \
+             FROM tape_tasks WHERE task_id=?1",
+            vec![task_id.into()],
+        ).await?;
+        Ok(row.as_ref().map(task_of))
     }
 }
 

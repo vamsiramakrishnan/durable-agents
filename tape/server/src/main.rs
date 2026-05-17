@@ -10,6 +10,7 @@
 //! run at a time" is the per-run lease in `tape_runs`; every mutating RPC is
 //! idempotent, so a double-drive (two recovery workers racing) is harmless.
 
+mod bigtable_change_stream;
 mod cel;
 mod matcher;
 mod pb;
