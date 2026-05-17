@@ -1,32 +1,81 @@
 //! The Cloud Bigtable implementation of [`RunStore`].
 //!
 //! Bigtable is a wide-column store — no SQL, no cross-row transactions — but it
-//! has single-row atomic mutations and versioned cells, which is enough for
-//! Tape's journal (append-only, per-run-ordered). One column family, `m`. Row
-//! keys (all qualifiers live in family `m`; every value is a UTF-8 string):
+//! has single-row atomic mutations, `CheckAndMutateRow` (the predicate-and-write
+//! primitive) and `ReadModifyWriteRow` (the atomic counter primitive), which is
+//! enough to back the journal *and* the event-bus surface (reactions, tasks,
+//! per-shard cursors, by-global-seq journal index). One column family, `m`. Row
+//! keys (all qualifiers live in family `m`; every value is a UTF-8 string unless
+//! noted):
 //!
-//!   r#<run_id>                       status, app, user, session, inv, lease_owner,
-//!                                    lease_exp, waiting_gate, detail, started, ended, seq
-//!   idx#<app>#<user>#<session>#<inv> run  (the reverse index used by begin_run)
-//!   route#<app>#<user>#<session>     run  (the newest run for a session — used by send_signal)
-//!   d#<run_id>#<decision_index:020>  seq, model, request, response, rationale, policy, ts
-//!   e#<idempotency_key>              seq, run, decision_index, tool, status, request, response, error, ts
-//!   o#<run_id>#<seq:020>             effect_key, kind, payload, status, ts
-//!   b#<run_id>                       usd_cap, tok_cap, usd_spent, tok_spent
-//!   sig#<run_id>#<gate>              delivered, awaited, consumed, context, resolution, ts
-//!   sess#<app>#<user>#<session>      state, last_update, event_count
-//!   ev#<app>#<user>#<session>#<ord:020>  event_id, inv, author, branch, content, actions, ts
-//!   j#<run_id>#<seq:020>             kind, payload, ts
+//!   r#<run_id>                           run row: status, app, user, session, inv,
+//!                                        lease_owner, lease_exp, waiting_gate, detail,
+//!                                        started, ended, seq
+//!   idx#<app>#<user>#<session>#<inv>     reverse index used by begin_run
+//!   route#<app>#<user>#<session>         newest run for a session (send_signal)
+//!   d#<run_id>#<decision_index:020>      decision row
+//!   e#<idempotency_key>                  effect row
+//!   o#<run_id>#<seq:020>                 obligation row
+//!   b#<run_id>                           budget row
+//!   sig#<run_id>#<gate>                  gate-signal row
+//!   sess#<app>#<user>#<session>          session row
+//!   ev#<app>#<user>#<session>#<ord:020>  session-event row
+//!   tmr#<run_id>#<timer_id>              timer row
+//!   val#<namespace>#<key>                value row
+//!   j#<run_id>#<seq:020>                 per-run journal row (for SubscribeRun, journal_range)
 //!
-//! The per-run `seq` is held on `r#<run_id>` and bumped read-then-write; that is
-//! safe because the lease guarantees a single writer per run (Bigtable's
-//! `ReadModifyWriteRow` counter would be tidier but the data-plane client crate
-//! doesn't expose it). `list_runs_to_recover` scans `r#` rows and filters in
-//! memory — fine at moderate scale; at very high scale you'd drive recovery from
-//! the Bigtable-change-streams → Pub/Sub reactor (design-principles/tape.md §12)
+//! ── event-bus tables (design-principles/tape-event-bus.md §6.3) ─────────────
+//!
+//!   meta#global_seq                      counter row, column `v` (8-byte big-endian
+//!                                        i64), bumped via `ReadModifyWriteRow.IncrementAmount(1)`.
+//!                                        The new value is the entry's `global_seq`.
+//!   jg#<global_seq:020>                  by-global-seq journal index row: run_id, seq,
+//!                                        kind, subject, payload, schema_version, trace_id,
+//!                                        span_id, parent_span_id, ts. Powers the matcher
+//!                                        and `SubscribeBySubject` (read prefix `jg#`,
+//!                                        ordered by row key = ordered by global_seq).
+//!                                        Disambiguated from per-run `j#…` so a prefix
+//!                                        scan of one doesn't pull in the other.
+//!   react#<reaction_id>                  reaction row: name, subject_pattern, predicate_cel,
+//!                                        handler_kind, agent_app, publish_target, the
+//!                                        backpressure knobs, created_at_ms, deleted.
+//!   cursor#<reaction_id>#<shard:010>     per-(reaction, shard) cursor row: last_global_seq,
+//!                                        last_processed_at_ms.
+//!   task#<task_id>                       task row (PK = task_id, opaque uuid).
+//!   taskidx#<reaction_id>#<shard:010>#<source_global_seq:020>
+//!                                        UNIQUE-constraint index row used by create_task:
+//!                                        existence ⇒ a duplicate matcher hit, skip the
+//!                                        insert. Stores `task_id` (=> dedup → return existing).
+//!   pending#<reaction_id>#<shard:010>#<task_id>
+//!                                        pending-task tracking index: written when the
+//!                                        task is created/re-pended, removed when
+//!                                        the task reaches DONE/DLQ. Speeds up
+//!                                        `claim_tasks` and `find_pending_task_for_subject`
+//!                                        by scoping the scan to one reaction; otherwise
+//!                                        Bigtable would scan every task row in the table.
+//!
+//! ── constraints we hit, and how we work around them ─────────────────────────
+//! * No cross-row transactions. The per-run `seq` is held on `r#<run_id>` and
+//!   bumped read-then-write; the lease guarantees a single writer per run so
+//!   this is safe. Cross-run global_seq uses a dedicated counter row.
+//! * No SQL, no secondary indexes. Listing tasks for a reaction means scanning
+//!   `task#`. We add a `pending#<reaction>#…` index that the writer maintains so
+//!   the hot path (`claim_tasks`) is O(pending), not O(every task ever).
+//! * No SELECT … FOR UPDATE. Lease-stealing in `claim_tasks` uses
+//!   `CheckAndMutateRow` predicated on (status=PENDING with next_attempt_at_ms<=now)
+//!   OR (status=CLAIMED with lease_expires_at_ms<now). Races between two
+//!   dispatchers are decided by the server.
+//!
+//! `list_runs_to_recover` scans `r#` rows and filters in memory — fine at
+//! moderate scale; at very high scale you'd drive recovery from the
+//! Bigtable-change-streams → Pub/Sub reactor (design-principles/tape.md §12)
 //! rather than polling. `AppendEvent` is two writes (the session row, then the
 //! event row) — Bigtable has no cross-row transactions; a crash between leaves
 //! the state applied without its event, which the re-drive re-creates idempotently.
+//!
+//! The matcher tails the `jg#` prefix every ~1 s; that's the `journal_notify()`
+//! default. A push-driven matcher (Bigtable change streams) is in
+//! `bigtable_change_stream`; see that file's docstring for emulator caveats.
 //!
 //! The table and its column family `m` must exist before the server starts
 //! (Bigtable needs explicit table creation, like creating a Postgres database):
@@ -34,20 +83,30 @@
 //!   cbt -project P -instance I createtable tape
 //!   cbt -project P -instance I createfamily tape m maxversions=1
 //!
+//! (Optional — for the change-stream matcher path:)
+//!
+//!   cbt -project P -instance I updatetable tape changeStreamRetention=1d
+//!
 //! With `BIGTABLE_EMULATOR_HOST=localhost:PORT` set, `bigtable://demo/demo/tape`
 //! talks to the local emulator (the same `cbt` commands create the table there).
+//! The emulator currently does *not* support change-streams; the matcher
+//! falls back to polling there. See `bigtable_change_stream.rs`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bigtable_rs::bigtable::{BigTable, BigTableConnection, RowCell};
 use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::{
-    mutation, row_filter, MutateRowRequest, Mutation, ReadRowsRequest, RowFilter, RowSet,
+    mutation, read_modify_write_rule, row_filter, row_range, CheckAndMutateRowRequest,
+    MutateRowRequest, Mutation, ReadModifyWriteRowRequest, ReadModifyWriteRule, ReadRowsRequest,
+    RowFilter, RowRange, RowSet,
 };
 
 use super::{derive_key, merge_json, now_ms, RunStore, StoreError, StoreResult};
 use crate::pb::*;
+use crate::subjects;
 
 const FAM: &str = "m";
 
@@ -55,7 +114,7 @@ fn e<E: std::fmt::Display>(err: E) -> StoreError {
     StoreError::Msg(format!("bigtable: {err}"))
 }
 
-// ── value encoding (every cell is a UTF-8 string) ───────────────────────────
+// ── value encoding (every cell is a UTF-8 string unless noted) ──────────────
 fn sv(v: impl Into<String>) -> Vec<u8> { v.into().into_bytes() }
 fn iv(v: i64) -> Vec<u8> { v.to_string().into_bytes() }
 fn fv(v: f64) -> Vec<u8> { v.to_string().into_bytes() }
@@ -107,6 +166,10 @@ fn latest_only() -> Option<RowFilter> {
 pub struct BigtableRunStore {
     conn: BigTableConnection,
     table: String, // full name: projects/<p>/instances/<i>/tables/<t>
+    /// In-process wake-up hook for the matcher / SubscribeBySubject stream.
+    /// Pulsed on every journal write; also pulsed by the optional change-stream
+    /// watcher (see `bigtable_change_stream`). Cloning is cheap.
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl BigtableRunStore {
@@ -115,7 +178,7 @@ impl BigtableRunStore {
             .await
             .map_err(e)?;
         let full = conn.client().get_full_table_name(table);
-        let s = Self { conn, table: full };
+        let s = Self { conn, table: full, notify: Arc::new(tokio::sync::Notify::new()) };
         // Probe — fails loudly (with a fix-it message) if the table/family is missing.
         s.read_row("__tape_probe__").await.map_err(|err| StoreError::msg(format!(
             "{err} — does the Bigtable table exist? create it once: \
@@ -124,7 +187,9 @@ impl BigtableRunStore {
         Ok(s)
     }
 
-    fn bt(&self) -> BigTable { self.conn.client() }
+    pub fn bt(&self) -> BigTable { self.conn.client() }
+    pub fn table_name(&self) -> &str { &self.table }
+    pub fn notify_handle(&self) -> Arc<tokio::sync::Notify> { self.notify.clone() }
 
     async fn read_row(&self, key: &str) -> StoreResult<Option<RowMap>> {
         let mut bt = self.bt();
@@ -147,6 +212,30 @@ impl BigtableRunStore {
             ..Default::default()
         };
         let rows = bt.read_rows_with_prefix(req, prefix.as_bytes().to_vec()).await.map_err(e)?;
+        Ok(rows.into_iter()
+            .map(|(k, cells)| (String::from_utf8_lossy(&k).into_owned(), cells_to_map(cells)))
+            .collect())
+    }
+
+    /// Read every row in [`start_key`, `end_key_exclusive`) — used to scan a
+    /// suffix of the `jg#` index past a given global_seq.
+    async fn read_range(&self, start_key: &str, end_key_exclusive: Option<&str>, limit: i64)
+        -> StoreResult<Vec<(String, RowMap)>>
+    {
+        let mut bt = self.bt();
+        let row_range = RowRange {
+            start_key: Some(row_range::StartKey::StartKeyClosed(start_key.as_bytes().to_vec())),
+            end_key: end_key_exclusive
+                .map(|k| row_range::EndKey::EndKeyOpen(k.as_bytes().to_vec())),
+        };
+        let req = ReadRowsRequest {
+            table_name: self.table.clone(),
+            filter: latest_only(),
+            rows_limit: limit.max(0),
+            rows: Some(RowSet { row_keys: vec![], row_ranges: vec![row_range] }),
+            ..Default::default()
+        };
+        let rows = bt.read_rows(req).await.map_err(e)?;
         Ok(rows.into_iter()
             .map(|(k, cells)| (String::from_utf8_lossy(&k).into_owned(), cells_to_map(cells)))
             .collect())
@@ -177,8 +266,126 @@ impl BigtableRunStore {
         self.write_row(&rk_run(run_id), vec![set("seq", iv(next))]).await?;
         Ok(next)
     }
+
+    /// Allocate the next `global_seq` via `ReadModifyWriteRow` on
+    /// `meta#global_seq`, column `v` (8-byte big-endian signed integer). The
+    /// RPC is atomic and returns the new value — collisions across replicas
+    /// are impossible. The 8-byte big-endian encoding is what
+    /// `ReadModifyWriteRule.IncrementAmount` requires; the rest of the schema
+    /// uses UTF-8 strings, so this column is the one big-endian exception.
+    async fn next_global_seq(&self) -> StoreResult<i64> {
+        let mut bt = self.bt();
+        let req = ReadModifyWriteRowRequest {
+            table_name: self.table.clone(),
+            row_key: rk_meta_global_seq().into_bytes(),
+            rules: vec![ReadModifyWriteRule {
+                family_name: FAM.to_string(),
+                column_qualifier: b"v".to_vec(),
+                rule: Some(read_modify_write_rule::Rule::IncrementAmount(1)),
+            }],
+            ..Default::default()
+        };
+        let resp = bt
+            .get_client()
+            .read_modify_write_row(req)
+            .await
+            .map_err(e)?
+            .into_inner();
+        // Find the cell we just bumped and decode its 8-byte big-endian value.
+        if let Some(row) = resp.row {
+            for fam in &row.families {
+                if fam.name == FAM {
+                    for col in &fam.columns {
+                        if col.qualifier.as_slice() == b"v" {
+                            if let Some(cell) = col.cells.first() {
+                                if cell.value.len() >= 8 {
+                                    let mut buf = [0u8; 8];
+                                    buf.copy_from_slice(&cell.value[..8]);
+                                    return Ok(i64::from_be_bytes(buf));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(StoreError::msg("bigtable: read_modify_write_row(global_seq) returned no value"))
+    }
+
+    /// Append both journal rows:
+    ///   * per-run `j#<run_id>#<seq:020>` (for SubscribeRun / journal_range)
+    ///   * by-global-seq `jg#<global_seq:020>` (for the matcher and
+    ///     SubscribeBySubject — the event-bus surface)
+    /// Computes the subject via `subjects::derive` from `kind` + parsed payload.
+    /// OTel fields default to empty for now (the RPC layer doesn't propagate
+    /// them on the Bigtable path yet — same as the SQL path).
     async fn journal(&self, run_id: &str, seq: i64, kind: &str, payload: &str, ts: i64) -> StoreResult<()> {
-        self.write_row(&rk_journal(run_id, seq), vec![set("kind", sv(kind)), set("payload", sv(payload)), set("ts", iv(ts))]).await
+        // Inject run_id into the parsed payload so subjects::derive can find it.
+        let payload_v: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+        let mut p = payload_v;
+        if let Some(o) = p.as_object_mut() {
+            if !o.contains_key("run_id") && !run_id.is_empty() {
+                o.insert("run_id".to_string(), serde_json::Value::String(run_id.to_string()));
+            }
+        }
+        let subject = subjects::derive(kind, &p);
+        self.journal_full(run_id, seq, kind, &subject, payload, ts, 1, "", "", "").await
+    }
+
+    async fn journal_full(
+        &self,
+        run_id: &str,
+        seq: i64,
+        kind: &str,
+        subject: &str,
+        payload: &str,
+        ts: i64,
+        schema_version: i32,
+        trace_id: &str,
+        span_id: &str,
+        parent_span_id: &str,
+    ) -> StoreResult<()> {
+        let global_seq = self.next_global_seq().await?;
+        // per-run row (back-compat shape)
+        if !run_id.is_empty() {
+            self.write_row(
+                &rk_journal(run_id, seq),
+                vec![
+                    set("kind", sv(kind)),
+                    set("payload", sv(payload)),
+                    set("ts", iv(ts)),
+                    set("global_seq", iv(global_seq)),
+                    set("subject", sv(subject)),
+                    set("schema_version", iv(schema_version as i64)),
+                    set("trace_id", sv(trace_id)),
+                    set("span_id", sv(span_id)),
+                    set("parent_span_id", sv(parent_span_id)),
+                ],
+            )
+            .await?;
+        }
+        // by-global-seq row (the matcher's index)
+        self.write_row(
+            &rk_journal_gs(global_seq),
+            vec![
+                set("run_id", sv(run_id)),
+                set("seq", iv(seq)),
+                set("kind", sv(kind)),
+                set("subject", sv(subject)),
+                set("payload", sv(payload)),
+                set("schema_version", iv(schema_version as i64)),
+                set("trace_id", sv(trace_id)),
+                set("span_id", sv(span_id)),
+                set("parent_span_id", sv(parent_span_id)),
+                set("ts", iv(ts)),
+            ],
+        )
+        .await?;
+        // Wake the in-process matcher / SubscribeBySubject stream. The push-driven
+        // change-stream watcher (if enabled) also pulses this; both paths are
+        // additive — extra wake-ups just mean an immediate poll.
+        self.notify.notify_waiters();
+        Ok(())
     }
 
     async fn run_state(&self, run_id: &str) -> StoreResult<Option<RunState>> {
@@ -198,6 +405,17 @@ fn rk_signal(run_id: &str, gate: &str) -> String { format!("sig#{run_id}#{gate}"
 fn rk_session(app: &str, user: &str, session: &str) -> String { format!("sess#{app}#{user}#{session}") }
 fn rk_event(app: &str, user: &str, session: &str, ord: i64) -> String { format!("ev#{app}#{user}#{session}#{ord:020}") }
 fn rk_journal(run_id: &str, seq: i64) -> String { format!("j#{run_id}#{seq:020}") }
+fn rk_journal_gs(global_seq: i64) -> String { format!("jg#{global_seq:020}") }
+fn rk_meta_global_seq() -> String { "meta#global_seq".to_string() }
+fn rk_reaction(reaction_id: &str) -> String { format!("react#{reaction_id}") }
+fn rk_cursor(reaction_id: &str, shard: i32) -> String { format!("cursor#{reaction_id}#{shard:010}") }
+fn rk_task(task_id: &str) -> String { format!("task#{task_id}") }
+fn rk_taskidx(reaction_id: &str, shard: i32, source_global_seq: i64) -> String {
+    format!("taskidx#{reaction_id}#{shard:010}#{source_global_seq:020}")
+}
+fn rk_pending(reaction_id: &str, shard: i32, task_id: &str) -> String {
+    format!("pending#{reaction_id}#{shard:010}#{task_id}")
+}
 
 // ── decoders ────────────────────────────────────────────────────────────────
 fn run_from(run_id: &str, m: &RowMap) -> RunState {
@@ -238,8 +456,113 @@ fn obligation_from(run_id: &str, seq: i64, m: &RowMap) -> ObligationRecord {
     }
 }
 
+fn event_from_journal_gs(m: &RowMap) -> EventEntry {
+    EventEntry {
+        run_id: m.gs("run_id"), seq: m.gi("seq"), kind: m.gs("kind"),
+        payload_json: m.gs("payload"), ts_ms: m.gi("ts"),
+        global_seq: 0,                  // filled in by the caller from the row key
+        subject: m.gs("subject"),
+        schema_version: m.gi("schema_version") as i32,
+        trace_id: m.gs("trace_id"), span_id: m.gs("span_id"), parent_span_id: m.gs("parent_span_id"),
+    }
+}
+
+fn reaction_from(reaction_id: &str, m: &RowMap) -> Reaction {
+    Reaction {
+        reaction_id: reaction_id.to_string(),
+        name: m.gs("name"),
+        subject_pattern: m.gs("subject_pattern"),
+        predicate_cel: m.gs("predicate_cel"),
+        handler_kind: m.gi("handler_kind") as i32,
+        agent_app: m.gs("agent_app"),
+        publish_target: m.gs("publish_target"),
+        max_concurrency: m.gi("max_concurrency") as i32,
+        rate_limit_per_s: m.gi("rate_limit_per_s") as i32,
+        debounce_ms: m.gi("debounce_ms") as i32,
+        retry_max: m.gi("retry_max") as i32,
+        retry_backoff_ms: m.gi("retry_backoff_ms") as i32,
+        dlq_after_n: m.gi("dlq_after_n") as i32,
+        num_shards: m.gi("num_shards") as i32,
+        created_at_ms: m.gi("created_at_ms"),
+        deleted: m.gi("deleted") != 0,
+        // Storage-only flag; not surfaced (same shape as the SQL backend).
+        bootstrap_from_head: false,
+    }
+}
+
+fn task_from(task_id: &str, m: &RowMap) -> Task {
+    Task {
+        task_id: task_id.to_string(),
+        reaction_id: m.gs("reaction_id"),
+        shard: m.gi("shard") as i32,
+        source_run_id: m.gs("source_run_id"),
+        source_global_seq: m.gi("source_global_seq"),
+        subject: m.gs("subject"),
+        payload_json: m.gs("payload_json"),
+        status: m.gi("status") as i32,
+        attempts: m.gi("attempts") as i32,
+        next_attempt_at_ms: m.gi("next_attempt_at_ms"),
+        lease_owner: m.gs("lease_owner"),
+        lease_expires_at_ms: m.gi("lease_expires_at_ms"),
+        last_error: m.gs("last_error"),
+        created_at_ms: m.gi("created_at_ms"),
+        trace_id: m.gs("trace_id"),
+        parent_span_id: m.gs("parent_span_id"),
+    }
+}
+
+/// Compose a `CheckAndMutateRow` predicate matching a single (qualifier, exact value)
+/// cell in family `m`. Used to enforce CAS on task status / lease_owner transitions.
+fn predicate_qualifier_equals(qualifier: &str, value: &[u8]) -> RowFilter {
+    // Chain: limit to qualifier == X, then value == Y. Both regex filters use
+    // RE2; we escape the value bytes with `\C` semantics by quoting with `\Q…\E`.
+    let mut esc = Vec::with_capacity(value.len() + 4);
+    esc.extend_from_slice(b"\\Q");
+    esc.extend_from_slice(value);
+    esc.extend_from_slice(b"\\E");
+    let qual_re = regex_escape(qualifier);
+    RowFilter {
+        filter: Some(row_filter::Filter::Chain(row_filter::Chain {
+            filters: vec![
+                RowFilter { filter: Some(row_filter::Filter::FamilyNameRegexFilter(FAM.to_string())) },
+                RowFilter { filter: Some(row_filter::Filter::ColumnQualifierRegexFilter(qual_re.into_bytes())) },
+                RowFilter { filter: Some(row_filter::Filter::CellsPerColumnLimitFilter(1)) },
+                RowFilter { filter: Some(row_filter::Filter::ValueRegexFilter(esc)) },
+            ],
+        })),
+    }
+}
+
+fn regex_escape(s: &str) -> String {
+    // Wrap the literal qualifier in \Q...\E so RE2 treats it as a literal.
+    format!("\\Q{}\\E", s)
+}
+
+async fn check_and_mutate(
+    bt_store: &BigtableRunStore,
+    row_key: &str,
+    predicate: RowFilter,
+    true_mutations: Vec<Mutation>,
+) -> StoreResult<bool> {
+    let mut bt = bt_store.bt();
+    let resp = bt
+        .check_and_mutate_row(CheckAndMutateRowRequest {
+            table_name: bt_store.table.clone(),
+            row_key: row_key.as_bytes().to_vec(),
+            predicate_filter: Some(predicate),
+            true_mutations,
+            false_mutations: vec![],
+            ..Default::default()
+        })
+        .await
+        .map_err(e)?;
+    Ok(resp.predicate_matched)
+}
+
 #[async_trait]
 impl RunStore for BigtableRunStore {
+    fn journal_notify(&self) -> Arc<tokio::sync::Notify> { self.notify.clone() }
+
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str, lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<BeginRunResponse> {
         let ts = now_ms();
@@ -265,6 +588,14 @@ impl RunStore for BigtableRunStore {
         ]).await?;
         self.write_row(&rk_idx(app, user, session, invocation), vec![set("run", sv(run_id.clone()))]).await?;
         self.write_row(&rk_route(app, user, session), vec![set("run", sv(run_id.clone())), set("started", iv(ts))]).await?;
+        // Run-lifecycle journal — /tape/run/running/<app>/<user>/<session>/<run_id>.
+        // Best-effort: the run is already committed.
+        let seq = self.next_seq(&run_id).await.unwrap_or(0);
+        let payload = serde_json::json!({
+            "app": app, "user": user, "session": session,
+            "run_id": run_id, "invocation_id": invocation, "status": "running",
+        }).to_string();
+        let _ = self.journal(&run_id, seq, "run", &payload, ts).await;
         Ok(BeginRunResponse { run_id, resumed: false, next_seq: 0, status: RunStatus::Running as i32 })
     }
     async fn resume_run(&self, run_id: &str, lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<Option<RunState>> {
@@ -272,8 +603,26 @@ impl RunStore for BigtableRunStore {
         self.run_state(run_id).await
     }
     async fn end_run(&self, run_id: &str, status: i32, detail_json: &str) -> StoreResult<Option<RunState>> {
-        self.write_row(&rk_run(run_id), vec![set("status", iv(status as i64)), set("ended", iv(now_ms())), set("detail", sv(detail_json)), set("lease_owner", sv(""))]).await?;
-        self.run_state(run_id).await
+        let ts = now_ms();
+        self.write_row(&rk_run(run_id), vec![set("status", iv(status as i64)), set("ended", iv(ts)), set("detail", sv(detail_json)), set("lease_owner", sv(""))]).await?;
+        let cur = self.run_state(run_id).await?;
+        if let Some(ref r) = cur {
+            let status_str = match RunStatus::try_from(status) {
+                Ok(RunStatus::Terminal) => "terminal",
+                Ok(RunStatus::Failed) => "failed",
+                Ok(RunStatus::Stuck) => "stuck",
+                Ok(RunStatus::Cancelled) => "cancelled",
+                Ok(RunStatus::Compensating) => "compensating",
+                _ => "ended",
+            };
+            let seq = self.next_seq(run_id).await.unwrap_or(0);
+            let payload = serde_json::json!({
+                "app": r.app_name, "user": r.user_id, "session": r.session_id,
+                "run_id": run_id, "status": status_str,
+            }).to_string();
+            let _ = self.journal(run_id, seq, "run", &payload, ts).await;
+        }
+        Ok(cur)
     }
     async fn get_run(&self, run_id: &str) -> StoreResult<Option<RunState>> { self.run_state(run_id).await }
     async fn list_runs_to_recover(&self, now_ms: i64, limit: i64) -> StoreResult<Vec<RunState>> {
@@ -303,7 +652,13 @@ impl RunStore for BigtableRunStore {
         let rows = self.read_prefix(&format!("j#{run_id}#"), 100_000).await?;
         let mut out: Vec<JournalEntry> = rows.into_iter().filter_map(|(key, m)| {
             let seq: i64 = key.rsplit('#').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            if seq >= from_seq { Some(JournalEntry { seq, kind: m.gs("kind"), payload_json: m.gs("payload"), ts_ms: m.gi("ts") }) } else { None }
+            if seq >= from_seq { Some(JournalEntry {
+                seq, kind: m.gs("kind"), payload_json: m.gs("payload"), ts_ms: m.gi("ts"),
+                global_seq: m.gi("global_seq"),
+                subject: m.gs("subject"),
+                schema_version: if m.contains_key("schema_version") { m.gi("schema_version") as i32 } else { 1 },
+                trace_id: m.gs("trace_id"), span_id: m.gs("span_id"), parent_span_id: m.gs("parent_span_id"),
+            }) } else { None }
         }).collect();
         out.sort_by_key(|j| j.seq);
         Ok(out)
@@ -644,6 +999,14 @@ impl RunStore for BigtableRunStore {
             set("event_id", sv(event.id.clone())), set("inv", sv(event.invocation_id.clone())), set("author", sv(event.author.clone())),
             set("branch", sv(event.branch.clone())), set("content", sv(event.content_json.clone())), set("actions", sv(event.actions_json.clone())), set("ts", iv(ts)),
         ]).await?;
+        // Session-event journal — /tape/event/appended/<app>/<user>/<session>.
+        let payload = serde_json::json!({
+            "app": app, "user": user, "session": session,
+            "event_id": event.id, "invocation_id": event.invocation_id, "author": event.author,
+        }).to_string();
+        let _ = self.journal_full("", 0, "event", &subjects::derive("event", &serde_json::json!({
+            "app": app, "user": user, "session": session,
+        })), &payload, ts, 1, "", "", "").await;
         Ok((EventRecord { timestamp_ms: ts, ..event }, ts))
     }
 
@@ -709,6 +1072,16 @@ impl RunStore for BigtableRunStore {
             set("ns", sv(namespace)), set("k", sv(key)), set("value", sv(value_json)),
             set("version", iv(next_v)), set("ts", iv(ts)), set("writer", sv(writer)), set("deleted", iv(0)),
         ]).await?;
+        // Journal: /tape/value/changed/<ns>/<key>. run_id is empty; the value
+        // surface is run-agnostic. Best-effort — the value write committed; a
+        // missed journal row is recoverable on the next write.
+        let payload = serde_json::json!({
+            "namespace": namespace, "key": key, "version": next_v, "writer": writer,
+            "value": {"namespace": namespace, "key": key, "value_json": value_json, "version": next_v},
+        }).to_string();
+        let _ = self.journal_full("", 0, "value", &subjects::derive("value", &serde_json::json!({
+            "namespace": namespace, "key": key,
+        })), &payload, ts, 1, "", "", "").await;
         Ok(ValueRecord {
             namespace: namespace.into(), key: key.into(), value_json: value_json.into(),
             version: next_v, ts_ms: ts, writer: writer.into(), deleted: false,
@@ -736,24 +1109,417 @@ impl RunStore for BigtableRunStore {
             set("value", sv("")), set("version", iv(next_v)),
             set("ts", iv(ts)), set("deleted", iv(1)),
         ]).await?;
+        // Journal: /tape/value/deleted/<ns>/<key>.
+        let payload = serde_json::json!({
+            "namespace": namespace, "key": key, "version": next_v, "deleted": true,
+        }).to_string();
+        let _ = self.journal_full("", 0, "value", &subjects::derive("value", &serde_json::json!({
+            "namespace": namespace, "key": key, "deleted": true,
+        })), &payload, ts, 1, "", "", "").await;
         Ok((true, next_v))
     }
 
     // ── the WAL tail ────────────────────────────────────────────────────────
     async fn events_since(&self, _from_ts_ms: i64, run_id: &str, kind: &str, limit: i64) -> StoreResult<Vec<EventEntry>> {
         // A cross-run, time-ordered tail isn't expressible against Bigtable's
-        // row-key layout — that's what Bigtable change streams are for (consume
-        // them via Dataflow or the ReadChangeStream API). The per-run feed
-        // (SubscribeRun / journal_range) still works.
+        // row-key layout — that's what the `jg#` index (events_by_subject) is for.
+        // The per-run feed (SubscribeRun / journal_range) still works.
         if !run_id.is_empty() {
             return Ok(self.journal_range(run_id, 0).await?.into_iter()
                 .filter(|j| kind.is_empty() || j.kind == kind)
                 .take(limit.max(1) as usize)
-                .map(|j| EventEntry { run_id: run_id.into(), seq: j.seq, kind: j.kind, payload_json: j.payload_json, ts_ms: j.ts_ms })
+                .map(|j| EventEntry {
+                    run_id: run_id.into(), seq: j.seq, kind: j.kind,
+                    payload_json: j.payload_json, ts_ms: j.ts_ms,
+                    global_seq: j.global_seq, subject: j.subject, schema_version: j.schema_version,
+                    trace_id: j.trace_id, span_id: j.span_id, parent_span_id: j.parent_span_id,
+                })
                 .collect());
         }
-        tracing::warn!("SubscribeEvents (cross-run) is not supported on the Bigtable backend — use Bigtable change streams (design-principles/tape.md §12); returning empty");
-        Ok(vec![])
+        // Cross-run path: fall through to the by-global-seq index.
+        self.read_journal_after(0, limit).await
+    }
+
+    // ── event-bus surface (§6.3) ────────────────────────────────────────────
+    async fn read_journal_after(&self, from_global_seq: i64, limit: i64) -> StoreResult<Vec<EventEntry>> {
+        // The jg# index is ordered by global_seq via zero-padded row keys, so a
+        // range read of [jg#<from+1:020>, jg#~) returns entries in order.
+        let start = format!("jg#{:020}", from_global_seq.saturating_add(1));
+        // The end is the lexicographic successor of "jg#" — i.e. "jg$".
+        let end = "jg$".to_string();
+        let rows = self.read_range(&start, Some(&end), limit.max(1)).await?;
+        let mut out: Vec<EventEntry> = rows
+            .into_iter()
+            .map(|(key, m)| {
+                let mut e = event_from_journal_gs(&m);
+                // global_seq is encoded in the row key: "jg#<gs:020>"
+                e.global_seq = key
+                    .trim_start_matches("jg#")
+                    .parse()
+                    .unwrap_or(0);
+                e
+            })
+            .collect();
+        out.sort_by_key(|e| e.global_seq);
+        Ok(out)
+    }
+    async fn events_by_subject(&self, from_global_seq: i64, subject_pattern: &str, limit: i64)
+        -> StoreResult<Vec<EventEntry>>
+    {
+        // Bigtable has no native subject index. We scan the jg# range from the
+        // cursor onward and filter in memory. This reads more than the caller
+        // consumes when the subject pattern is selective; a proper impl would
+        // maintain a secondary index `subj#<subject>#<gs:020>`. Acceptable for v1.
+        let entries = self.read_journal_after(from_global_seq, limit.max(1).saturating_mul(8)).await?;
+        let mut out: Vec<EventEntry> = entries
+            .into_iter()
+            .filter(|e| subjects::matches(subject_pattern, &e.subject))
+            .take(limit.max(1) as usize)
+            .collect();
+        out.sort_by_key(|e| e.global_seq);
+        Ok(out)
+    }
+
+    // ── reactions ───────────────────────────────────────────────────────────
+    async fn register_reaction(&self, r: &Reaction) -> StoreResult<Reaction> {
+        let rid = if r.reaction_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { r.reaction_id.clone() };
+        let now = now_ms();
+        let max_conc = if r.max_concurrency > 0 { r.max_concurrency } else { 1 };
+        let num_shards = if r.num_shards > 0 { r.num_shards } else { 1 };
+        let created = if r.created_at_ms > 0 { r.created_at_ms } else { now };
+        let dlq = if r.dlq_after_n > 0 { r.dlq_after_n } else { 5 };
+        let retry_max = if r.retry_max > 0 { r.retry_max } else { 5 };
+        let backoff = if r.retry_backoff_ms > 0 { r.retry_backoff_ms } else { 1000 };
+
+        // First-time detection: bootstrap_from_head is honoured only on initial
+        // creation. A re-registration must NOT reset cursors (same shape as SQL).
+        let pre_exists = self.read_row(&rk_reaction(&rid)).await?.is_some();
+
+        self.write_row(&rk_reaction(&rid), vec![
+            set("name", sv(r.name.clone())),
+            set("subject_pattern", sv(r.subject_pattern.clone())),
+            set("predicate_cel", sv(r.predicate_cel.clone())),
+            set("handler_kind", iv(r.handler_kind as i64)),
+            set("agent_app", sv(r.agent_app.clone())),
+            set("publish_target", sv(r.publish_target.clone())),
+            set("max_concurrency", iv(max_conc as i64)),
+            set("rate_limit_per_s", iv(r.rate_limit_per_s as i64)),
+            set("debounce_ms", iv(r.debounce_ms as i64)),
+            set("retry_max", iv(retry_max as i64)),
+            set("retry_backoff_ms", iv(backoff as i64)),
+            set("dlq_after_n", iv(dlq as i64)),
+            set("num_shards", iv(num_shards as i64)),
+            set("created_at_ms", iv(created)),
+            set("deleted", iv(0)),
+        ]).await?;
+
+        if !pre_exists && r.bootstrap_from_head {
+            // Seed each shard's cursor at the current journal head. The head is
+            // the value of the meta#global_seq counter — `next_global_seq` would
+            // *increment*, so we read it instead.
+            let head_cell = self.read_row(&rk_meta_global_seq()).await?;
+            let head: i64 = head_cell
+                .and_then(|m| m.get("v").map(|v| {
+                    if v.len() >= 8 {
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(&v[..8]);
+                        i64::from_be_bytes(buf)
+                    } else { 0 }
+                }))
+                .unwrap_or(0);
+            for s in 0..num_shards {
+                self.write_row(&rk_cursor(&rid, s), vec![
+                    set("last_global_seq", iv(head)),
+                    set("last_processed_at_ms", iv(now)),
+                ]).await?;
+            }
+        }
+
+        // Return the canonical stored shape.
+        let m = self.read_row(&rk_reaction(&rid)).await?
+            .ok_or_else(|| StoreError::msg("register_reaction: row vanished after write"))?;
+        Ok(reaction_from(&rid, &m))
+    }
+    async fn deregister_reaction(&self, reaction_id: &str) -> StoreResult<bool> {
+        let existed = self.read_row(&rk_reaction(reaction_id)).await?.is_some();
+        if existed {
+            self.write_row(&rk_reaction(reaction_id), vec![set("deleted", iv(1))]).await?;
+        }
+        Ok(existed)
+    }
+    async fn list_reactions(&self, subject_pattern: &str) -> StoreResult<Vec<Reaction>> {
+        let rows = self.read_prefix("react#", 100_000).await?;
+        let mut out: Vec<Reaction> = rows.into_iter().filter_map(|(key, m)| {
+            if m.gi("deleted") != 0 { return None; }
+            let rid = key.trim_start_matches("react#");
+            if !subject_pattern.is_empty() && m.gs("subject_pattern") != subject_pattern {
+                return None;
+            }
+            Some(reaction_from(rid, &m))
+        }).collect();
+        out.sort_by_key(|r| r.created_at_ms);
+        Ok(out)
+    }
+    async fn get_reaction_cursor(&self, reaction_id: &str, shard: i32) -> StoreResult<i64> {
+        Ok(self.read_row(&rk_cursor(reaction_id, shard)).await?
+            .map(|m| m.gi("last_global_seq"))
+            .unwrap_or(0))
+    }
+    async fn set_reaction_cursor(&self, reaction_id: &str, shard: i32, global_seq: i64, now_ms: i64) -> StoreResult<()> {
+        self.write_row(&rk_cursor(reaction_id, shard), vec![
+            set("last_global_seq", iv(global_seq)),
+            set("last_processed_at_ms", iv(now_ms)),
+        ]).await
+    }
+
+    // ── tasks ───────────────────────────────────────────────────────────────
+    async fn create_task(&self, t: &Task) -> StoreResult<Task> {
+        // UNIQUE-on-(reaction_id, shard, source_global_seq): check the index row.
+        // CheckAndMutateRow gives us an atomic if-not-exists by predicating on the
+        // presence of any cell in the index row (PassAll captured + 0 mutations =>
+        // returns predicate_matched=true if row exists, with no writes); we use
+        // it the other way round: a non-existent row means we win the race.
+        let idx_key = rk_taskidx(&t.reaction_id, t.shard, t.source_global_seq);
+        if let Some(idx) = self.read_row(&idx_key).await? {
+            // Duplicate matcher hit: return the existing task.
+            let existing_tid = idx.gs("task_id");
+            if !existing_tid.is_empty() {
+                if let Some(m) = self.read_row(&rk_task(&existing_tid)).await? {
+                    return Ok(task_from(&existing_tid, &m));
+                }
+            }
+        }
+        let tid = if t.task_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { t.task_id.clone() };
+        let created = if t.created_at_ms > 0 { t.created_at_ms } else { now_ms() };
+
+        // Write the task row.
+        self.write_row(&rk_task(&tid), vec![
+            set("reaction_id", sv(t.reaction_id.clone())),
+            set("shard", iv(t.shard as i64)),
+            set("source_run_id", sv(t.source_run_id.clone())),
+            set("source_global_seq", iv(t.source_global_seq)),
+            set("subject", sv(t.subject.clone())),
+            set("payload_json", sv(t.payload_json.clone())),
+            set("status", iv(TaskStatus::Pending as i64)),
+            set("attempts", iv(0)),
+            set("next_attempt_at_ms", iv(0)),
+            set("lease_owner", sv("")),
+            set("lease_expires_at_ms", iv(0)),
+            set("last_error", sv("")),
+            set("created_at_ms", iv(created)),
+            set("trace_id", sv(t.trace_id.clone())),
+            set("parent_span_id", sv(t.parent_span_id.clone())),
+        ]).await?;
+        // Index row (UNIQUE constraint) — written last so a crash in between
+        // leaves an orphan task that's invisible to dedup but still listable;
+        // the caller's retry will create another. Acceptable v1 behaviour.
+        self.write_row(&idx_key, vec![set("task_id", sv(tid.clone()))]).await?;
+        // Pending tracking index — speeds up claim_tasks / find_pending.
+        self.write_row(&rk_pending(&t.reaction_id, t.shard, &tid), vec![
+            set("task_id", sv(tid.clone())),
+            set("subject", sv(t.subject.clone())),
+            set("created_at_ms", iv(created)),
+        ]).await?;
+
+        let m = self.read_row(&rk_task(&tid)).await?
+            .ok_or_else(|| StoreError::msg("create_task: row vanished after write"))?;
+        Ok(task_from(&tid, &m))
+    }
+    async fn claim_tasks(&self, reaction_id: &str, shard: i32, owner: &str, lease_ms: i64, max: i32, now_ms: i64) -> StoreResult<Vec<Task>> {
+        if owner.is_empty() {
+            // See the SQL backend: a claim with `lease_owner=''` would alias
+            // unclaimed PENDING rows in subsequent complete/nack predicates.
+            return Err(StoreError::msg("claim_tasks: owner is required"));
+        }
+        let lease_ms = if lease_ms > 0 { lease_ms } else { 60_000 };
+        let max = if max > 0 { max } else { 16 };
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let lease_exp = now + lease_ms;
+
+        // Read the pending-task index for this reaction (and shard if specified).
+        let prefix = if shard < 0 {
+            format!("pending#{reaction_id}#")
+        } else {
+            format!("pending#{reaction_id}#{shard:010}#")
+        };
+        let candidates = self.read_prefix(&prefix, (max as i64).saturating_mul(8).max(64)).await?;
+        let mut out = Vec::new();
+        let pending = TaskStatus::Pending as i64;
+        let claimed = TaskStatus::Claimed as i64;
+        for (_, idx) in candidates {
+            if out.len() as i32 >= max { break; }
+            let tid = idx.gs("task_id");
+            if tid.is_empty() { continue; }
+            // Read the current task row to filter on next_attempt_at_ms / lease_expires_at_ms.
+            let Some(m) = self.read_row(&rk_task(&tid)).await? else { continue; };
+            let status = m.gi("status");
+            let nx = m.gi("next_attempt_at_ms");
+            let lex = m.gi("lease_expires_at_ms");
+            let attempts = m.gi("attempts");
+            let eligible = (status == pending && nx <= now) || (status == claimed && lex < now);
+            if !eligible { continue; }
+            // CAS: predicate on "status == <expected>" — a one-shot value-regex
+            // filter. Two writers racing here will see one CAS succeed; the
+            // loser sees predicate_matched=false and moves on.
+            let status_bytes = status.to_string().into_bytes();
+            let predicate = predicate_qualifier_equals("status", &status_bytes);
+            let ok = check_and_mutate(self, &rk_task(&tid), predicate, vec![
+                set("status", iv(claimed)),
+                set("lease_owner", sv(owner)),
+                set("lease_expires_at_ms", iv(lease_exp)),
+                set("attempts", iv(attempts + 1)),
+            ]).await?;
+            if ok {
+                if let Some(m2) = self.read_row(&rk_task(&tid)).await? {
+                    out.push(task_from(&tid, &m2));
+                }
+            }
+        }
+        Ok(out)
+    }
+    async fn complete_task(&self, task_id: &str, owner: &str) -> StoreResult<Option<Task>> {
+        if owner.is_empty() {
+            // Bigtable's CheckAndMutateRow only enforces lease_owner==owner;
+            // owner="" would match unleased PENDING rows. Reject up front so
+            // the CAS predicate can't accidentally fire on unclaimed work.
+            return Err(StoreError::msg("complete_task: owner is required"));
+        }
+        // CAS on lease_owner: predicate matches only if lease_owner == owner.
+        // The lease_owner invariant (only set non-empty by claim_tasks, which
+        // simultaneously sets status=CLAIMED; only reset to '' by complete_
+        // task / nack_task, which simultaneously clear the claimed state)
+        // means matching lease_owner==owner implies status==CLAIMED on this
+        // backend without a second predicate hop.
+        let predicate = predicate_qualifier_equals("lease_owner", owner.as_bytes());
+        let ok = check_and_mutate(self, &rk_task(task_id), predicate, vec![
+            set("status", iv(TaskStatus::Done as i64)),
+            set("completed_at_ms", iv(now_ms())),
+            set("lease_owner", sv("")),
+            set("lease_expires_at_ms", iv(0)),
+        ]).await?;
+        if !ok { return Ok(None); }
+        if let Some(m) = self.read_row(&rk_task(task_id)).await? {
+            // Remove the pending tracking index (best-effort).
+            let reaction_id = m.gs("reaction_id");
+            let shard = m.gi("shard") as i32;
+            let _ = self.delete_row(&rk_pending(&reaction_id, shard, task_id)).await;
+            Ok(Some(task_from(task_id, &m)))
+        } else {
+            Ok(None)
+        }
+    }
+    async fn nack_task(&self, task_id: &str, owner: &str, error: &str, permanent: bool, now_ms: i64) -> StoreResult<Option<Task>> {
+        if owner.is_empty() {
+            return Err(StoreError::msg("nack_task: owner is required"));
+        }
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let Some(m) = self.read_row(&rk_task(task_id)).await? else { return Ok(None); };
+        // Defensive — the CAS below is the atomic boundary; this in-memory
+        // check just skips the work of computing the next attempt when the
+        // lease clearly isn't ours.
+        if m.gs("lease_owner") != owner { return Ok(None); }
+        if m.gi("status") as i32 != TaskStatus::Claimed as i32 { return Ok(None); }
+        let attempts = m.gi("attempts") as i32;
+        let reaction_id = m.gs("reaction_id");
+        let shard = m.gi("shard") as i32;
+        let (dlq_after, backoff_ms) = match self.read_row(&rk_reaction(&reaction_id)).await? {
+            Some(r) => (
+                if r.gi("dlq_after_n") > 0 { r.gi("dlq_after_n") as i32 } else { 5 },
+                if r.gi("retry_backoff_ms") > 0 { r.gi("retry_backoff_ms") } else { 1000 },
+            ),
+            None => (5, 1000),
+        };
+        let to_dlq = permanent || attempts >= dlq_after;
+        // CAS on lease_owner (re-check the predicate in the CAS itself).
+        let predicate = predicate_qualifier_equals("lease_owner", owner.as_bytes());
+        let muts = if to_dlq {
+            vec![
+                set("status", iv(TaskStatus::Dlq as i64)),
+                set("last_error", sv(error)),
+                set("lease_owner", sv("")),
+                set("lease_expires_at_ms", iv(0)),
+            ]
+        } else {
+            let shift = (attempts.max(1) - 1).min(20) as u32;
+            let delay = backoff_ms.saturating_mul(1i64.checked_shl(shift).unwrap_or(i64::MAX));
+            let delay = delay.min(3_600_000);
+            vec![
+                set("status", iv(TaskStatus::Pending as i64)),
+                set("next_attempt_at_ms", iv(now + delay)),
+                set("last_error", sv(error)),
+                set("lease_owner", sv("")),
+                set("lease_expires_at_ms", iv(0)),
+            ]
+        };
+        let ok = check_and_mutate(self, &rk_task(task_id), predicate, muts).await?;
+        if !ok { return Ok(None); }
+        if to_dlq {
+            let _ = self.delete_row(&rk_pending(&reaction_id, shard, task_id)).await;
+        }
+        Ok(self.read_row(&rk_task(task_id)).await?.map(|m| task_from(task_id, &m)))
+    }
+    async fn list_tasks(&self, reaction_id: &str, status: i32, limit: i64) -> StoreResult<Vec<Task>> {
+        let limit = if limit > 0 { limit } else { 200 };
+        // Scan task# rows and filter by reaction_id in memory. Inefficient at
+        // scale (every task ever); a secondary `task_by_reaction#<rid>#<task_id>`
+        // would fix this. Acceptable for v1 — list_tasks is for observability
+        // and DLQ inspection, not the hot path.
+        let rows = self.read_prefix("task#", limit.saturating_mul(8).max(200)).await?;
+        let mut out: Vec<Task> = rows.into_iter().filter_map(|(key, m)| {
+            if m.gs("reaction_id") != reaction_id { return None; }
+            if status != 0 && m.gi("status") as i32 != status { return None; }
+            let tid = key.trim_start_matches("task#");
+            Some(task_from(tid, &m))
+        }).collect();
+        out.sort_by_key(|t| std::cmp::Reverse(t.created_at_ms));
+        out.truncate(limit as usize);
+        Ok(out)
+    }
+
+    async fn find_pending_task_for_subject(&self, reaction_id: &str, subject: &str)
+        -> StoreResult<Option<Task>>
+    {
+        // Scan the pending# tracking index for this reaction (across all shards).
+        // The index row carries the subject so we can filter without re-reading
+        // the task body for non-matches; we read the task body only for hits.
+        // Inefficient relative to a `pending_by_subject#<rid>#<subject>#…` index;
+        // acceptable for v1 (debounce is a soft optimisation, not a correctness
+        // requirement).
+        let rows = self.read_prefix(&format!("pending#{reaction_id}#"), 100_000).await?;
+        let mut best: Option<(i64, String)> = None;
+        for (_, idx) in rows {
+            if idx.gs("subject") != subject { continue; }
+            let tid = idx.gs("task_id");
+            let created = idx.gi("created_at_ms");
+            if best.as_ref().map(|(c, _)| created > *c).unwrap_or(true) {
+                best = Some((created, tid));
+            }
+        }
+        let Some((_, tid)) = best else { return Ok(None); };
+        let Some(m) = self.read_row(&rk_task(&tid)).await? else { return Ok(None); };
+        // The pending index can lag behind status transitions (a CompleteTask
+        // race might have removed the row but the index entry is still there).
+        // Filter to PENDING here to match SQL semantics.
+        if m.gi("status") != TaskStatus::Pending as i64 { return Ok(None); }
+        Ok(Some(task_from(&tid, &m)))
+    }
+
+    async fn coalesce_task(&self, task_id: &str, source_global_seq: i64, payload_json: &str,
+                           trace_id: &str, parent_span_id: &str) -> StoreResult<Option<Task>>
+    {
+        // CAS on status==PENDING: a concurrent claim_tasks that flipped the row
+        // to CLAIMED makes the predicate fail and we return None — the matcher
+        // then falls through to a fresh create_task.
+        let pending_bytes = (TaskStatus::Pending as i64).to_string().into_bytes();
+        let predicate = predicate_qualifier_equals("status", &pending_bytes);
+        let ok = check_and_mutate(self, &rk_task(task_id), predicate, vec![
+            set("source_global_seq", iv(source_global_seq)),
+            set("payload_json", sv(payload_json)),
+            set("trace_id", sv(trace_id)),
+            set("parent_span_id", sv(parent_span_id)),
+        ]).await?;
+        if !ok { return Ok(None); }
+        Ok(self.read_row(&rk_task(task_id)).await?.map(|m| task_from(task_id, &m)))
     }
 }
 

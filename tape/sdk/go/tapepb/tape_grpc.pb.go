@@ -61,6 +61,14 @@ const (
 	Tape_CancelTimer_FullMethodName               = "/tape.v1.Tape/CancelTimer"
 	Tape_ListDueTimers_FullMethodName             = "/tape.v1.Tape/ListDueTimers"
 	Tape_SubscribeEvents_FullMethodName           = "/tape.v1.Tape/SubscribeEvents"
+	Tape_SubscribeBySubject_FullMethodName        = "/tape.v1.Tape/SubscribeBySubject"
+	Tape_RegisterReaction_FullMethodName          = "/tape.v1.Tape/RegisterReaction"
+	Tape_DeregisterReaction_FullMethodName        = "/tape.v1.Tape/DeregisterReaction"
+	Tape_ListReactions_FullMethodName             = "/tape.v1.Tape/ListReactions"
+	Tape_ClaimTasks_FullMethodName                = "/tape.v1.Tape/ClaimTasks"
+	Tape_CompleteTask_FullMethodName              = "/tape.v1.Tape/CompleteTask"
+	Tape_NackTask_FullMethodName                  = "/tape.v1.Tape/NackTask"
+	Tape_ListTasks_FullMethodName                 = "/tape.v1.Tape/ListTasks"
 	Tape_WriteValue_FullMethodName                = "/tape.v1.Tape/WriteValue"
 	Tape_GetValue_FullMethodName                  = "/tape.v1.Tape/GetValue"
 	Tape_WatchValue_FullMethodName                = "/tape.v1.Tape/WatchValue"
@@ -113,7 +121,25 @@ type TapeClient interface {
 	CancelTimer(ctx context.Context, in *CancelTimerRequest, opts ...grpc.CallOption) (*CancelTimerResponse, error)
 	ListDueTimers(ctx context.Context, in *ListDueTimersRequest, opts ...grpc.CallOption) (*ListDueTimersResponse, error)
 	// ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
+	// The legacy cross-run journal stream; preserved for back-compat.
+	// `SubscribeEventsRequest` now also accepts `from_global_seq` and
+	// `subject_pattern`; pass them instead of `from_ts_ms` for new code.
 	SubscribeEvents(ctx context.Context, in *SubscribeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[EventEntry], error)
+	// The subject-routed, global-seq-cursored bus. Path-style subjects with
+	// `*` (one segment) / `**` (rest) wildcards; optional CEL predicate.
+	SubscribeBySubject(ctx context.Context, in *SubscribeBySubjectRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[EventEntry], error)
+	// ── reactions & tasks (the event-bus surface; see design-principles/tape-event-bus.md) ─
+	// Reactions are server-side subscriptions: a subject pattern + optional CEL
+	// predicate + a handler kind (agent | task | publish) + back-pressure config.
+	// Matching journal entries become `tape_tasks` rows that dispatchers claim,
+	// run, and complete/nack.
+	RegisterReaction(ctx context.Context, in *Reaction, opts ...grpc.CallOption) (*Reaction, error)
+	DeregisterReaction(ctx context.Context, in *DeregisterReactionRequest, opts ...grpc.CallOption) (*DeregisterReactionResponse, error)
+	ListReactions(ctx context.Context, in *ListReactionsRequest, opts ...grpc.CallOption) (*ListReactionsResponse, error)
+	ClaimTasks(ctx context.Context, in *ClaimTasksRequest, opts ...grpc.CallOption) (*ClaimTasksResponse, error)
+	CompleteTask(ctx context.Context, in *CompleteTaskRequest, opts ...grpc.CallOption) (*CompleteTaskResponse, error)
+	NackTask(ctx context.Context, in *NackTaskRequest, opts ...grpc.CallOption) (*NackTaskResponse, error)
+	ListTasks(ctx context.Context, in *ListTasksRequest, opts ...grpc.CallOption) (*ListTasksResponse, error)
 	// ── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
 	// Coordination through journaled state, not messages (treatise §IX ⑥).
 	// Writes are atomic and versioned; WatchValue streams the current value plus
@@ -436,6 +462,95 @@ func (c *tapeClient) SubscribeEvents(ctx context.Context, in *SubscribeEventsReq
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Tape_SubscribeEventsClient = grpc.ServerStreamingClient[EventEntry]
 
+func (c *tapeClient) SubscribeBySubject(ctx context.Context, in *SubscribeBySubjectRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[EventEntry], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Tape_ServiceDesc.Streams[2], Tape_SubscribeBySubject_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SubscribeBySubjectRequest, EventEntry]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Tape_SubscribeBySubjectClient = grpc.ServerStreamingClient[EventEntry]
+
+func (c *tapeClient) RegisterReaction(ctx context.Context, in *Reaction, opts ...grpc.CallOption) (*Reaction, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Reaction)
+	err := c.cc.Invoke(ctx, Tape_RegisterReaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) DeregisterReaction(ctx context.Context, in *DeregisterReactionRequest, opts ...grpc.CallOption) (*DeregisterReactionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeregisterReactionResponse)
+	err := c.cc.Invoke(ctx, Tape_DeregisterReaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ListReactions(ctx context.Context, in *ListReactionsRequest, opts ...grpc.CallOption) (*ListReactionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListReactionsResponse)
+	err := c.cc.Invoke(ctx, Tape_ListReactions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ClaimTasks(ctx context.Context, in *ClaimTasksRequest, opts ...grpc.CallOption) (*ClaimTasksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimTasksResponse)
+	err := c.cc.Invoke(ctx, Tape_ClaimTasks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) CompleteTask(ctx context.Context, in *CompleteTaskRequest, opts ...grpc.CallOption) (*CompleteTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompleteTaskResponse)
+	err := c.cc.Invoke(ctx, Tape_CompleteTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) NackTask(ctx context.Context, in *NackTaskRequest, opts ...grpc.CallOption) (*NackTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NackTaskResponse)
+	err := c.cc.Invoke(ctx, Tape_NackTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ListTasks(ctx context.Context, in *ListTasksRequest, opts ...grpc.CallOption) (*ListTasksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTasksResponse)
+	err := c.cc.Invoke(ctx, Tape_ListTasks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *tapeClient) WriteValue(ctx context.Context, in *WriteValueRequest, opts ...grpc.CallOption) (*ValueRecord, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ValueRecord)
@@ -458,7 +573,7 @@ func (c *tapeClient) GetValue(ctx context.Context, in *GetValueRequest, opts ...
 
 func (c *tapeClient) WatchValue(ctx context.Context, in *WatchValueRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ValueEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Tape_ServiceDesc.Streams[2], Tape_WatchValue_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Tape_ServiceDesc.Streams[3], Tape_WatchValue_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -576,7 +691,25 @@ type TapeServer interface {
 	CancelTimer(context.Context, *CancelTimerRequest) (*CancelTimerResponse, error)
 	ListDueTimers(context.Context, *ListDueTimersRequest) (*ListDueTimersResponse, error)
 	// ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
+	// The legacy cross-run journal stream; preserved for back-compat.
+	// `SubscribeEventsRequest` now also accepts `from_global_seq` and
+	// `subject_pattern`; pass them instead of `from_ts_ms` for new code.
 	SubscribeEvents(*SubscribeEventsRequest, grpc.ServerStreamingServer[EventEntry]) error
+	// The subject-routed, global-seq-cursored bus. Path-style subjects with
+	// `*` (one segment) / `**` (rest) wildcards; optional CEL predicate.
+	SubscribeBySubject(*SubscribeBySubjectRequest, grpc.ServerStreamingServer[EventEntry]) error
+	// ── reactions & tasks (the event-bus surface; see design-principles/tape-event-bus.md) ─
+	// Reactions are server-side subscriptions: a subject pattern + optional CEL
+	// predicate + a handler kind (agent | task | publish) + back-pressure config.
+	// Matching journal entries become `tape_tasks` rows that dispatchers claim,
+	// run, and complete/nack.
+	RegisterReaction(context.Context, *Reaction) (*Reaction, error)
+	DeregisterReaction(context.Context, *DeregisterReactionRequest) (*DeregisterReactionResponse, error)
+	ListReactions(context.Context, *ListReactionsRequest) (*ListReactionsResponse, error)
+	ClaimTasks(context.Context, *ClaimTasksRequest) (*ClaimTasksResponse, error)
+	CompleteTask(context.Context, *CompleteTaskRequest) (*CompleteTaskResponse, error)
+	NackTask(context.Context, *NackTaskRequest) (*NackTaskResponse, error)
+	ListTasks(context.Context, *ListTasksRequest) (*ListTasksResponse, error)
 	// ── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
 	// Coordination through journaled state, not messages (treatise §IX ⑥).
 	// Writes are atomic and versioned; WatchValue streams the current value plus
@@ -684,6 +817,30 @@ func (UnimplementedTapeServer) ListDueTimers(context.Context, *ListDueTimersRequ
 }
 func (UnimplementedTapeServer) SubscribeEvents(*SubscribeEventsRequest, grpc.ServerStreamingServer[EventEntry]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeEvents not implemented")
+}
+func (UnimplementedTapeServer) SubscribeBySubject(*SubscribeBySubjectRequest, grpc.ServerStreamingServer[EventEntry]) error {
+	return status.Error(codes.Unimplemented, "method SubscribeBySubject not implemented")
+}
+func (UnimplementedTapeServer) RegisterReaction(context.Context, *Reaction) (*Reaction, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterReaction not implemented")
+}
+func (UnimplementedTapeServer) DeregisterReaction(context.Context, *DeregisterReactionRequest) (*DeregisterReactionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeregisterReaction not implemented")
+}
+func (UnimplementedTapeServer) ListReactions(context.Context, *ListReactionsRequest) (*ListReactionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListReactions not implemented")
+}
+func (UnimplementedTapeServer) ClaimTasks(context.Context, *ClaimTasksRequest) (*ClaimTasksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClaimTasks not implemented")
+}
+func (UnimplementedTapeServer) CompleteTask(context.Context, *CompleteTaskRequest) (*CompleteTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompleteTask not implemented")
+}
+func (UnimplementedTapeServer) NackTask(context.Context, *NackTaskRequest) (*NackTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method NackTask not implemented")
+}
+func (UnimplementedTapeServer) ListTasks(context.Context, *ListTasksRequest) (*ListTasksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTasks not implemented")
 }
 func (UnimplementedTapeServer) WriteValue(context.Context, *WriteValueRequest) (*ValueRecord, error) {
 	return nil, status.Error(codes.Unimplemented, "method WriteValue not implemented")
@@ -1223,6 +1380,143 @@ func _Tape_SubscribeEvents_Handler(srv interface{}, stream grpc.ServerStream) er
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Tape_SubscribeEventsServer = grpc.ServerStreamingServer[EventEntry]
 
+func _Tape_SubscribeBySubject_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SubscribeBySubjectRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(TapeServer).SubscribeBySubject(m, &grpc.GenericServerStream[SubscribeBySubjectRequest, EventEntry]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Tape_SubscribeBySubjectServer = grpc.ServerStreamingServer[EventEntry]
+
+func _Tape_RegisterReaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Reaction)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).RegisterReaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_RegisterReaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).RegisterReaction(ctx, req.(*Reaction))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_DeregisterReaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeregisterReactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).DeregisterReaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_DeregisterReaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).DeregisterReaction(ctx, req.(*DeregisterReactionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ListReactions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListReactionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ListReactions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ListReactions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ListReactions(ctx, req.(*ListReactionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ClaimTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimTasksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ClaimTasks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ClaimTasks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ClaimTasks(ctx, req.(*ClaimTasksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_CompleteTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompleteTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).CompleteTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_CompleteTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).CompleteTask(ctx, req.(*CompleteTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_NackTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NackTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).NackTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_NackTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).NackTask(ctx, req.(*NackTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ListTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTasksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ListTasks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ListTasks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ListTasks(ctx, req.(*ListTasksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Tape_WriteValue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(WriteValueRequest)
 	if err := dec(in); err != nil {
@@ -1490,6 +1784,34 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Tape_ListDueTimers_Handler,
 		},
 		{
+			MethodName: "RegisterReaction",
+			Handler:    _Tape_RegisterReaction_Handler,
+		},
+		{
+			MethodName: "DeregisterReaction",
+			Handler:    _Tape_DeregisterReaction_Handler,
+		},
+		{
+			MethodName: "ListReactions",
+			Handler:    _Tape_ListReactions_Handler,
+		},
+		{
+			MethodName: "ClaimTasks",
+			Handler:    _Tape_ClaimTasks_Handler,
+		},
+		{
+			MethodName: "CompleteTask",
+			Handler:    _Tape_CompleteTask_Handler,
+		},
+		{
+			MethodName: "NackTask",
+			Handler:    _Tape_NackTask_Handler,
+		},
+		{
+			MethodName: "ListTasks",
+			Handler:    _Tape_ListTasks_Handler,
+		},
+		{
 			MethodName: "WriteValue",
 			Handler:    _Tape_WriteValue_Handler,
 		},
@@ -1531,6 +1853,11 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SubscribeEvents",
 			Handler:       _Tape_SubscribeEvents_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "SubscribeBySubject",
+			Handler:       _Tape_SubscribeBySubject_Handler,
 			ServerStreams: true,
 		},
 		{

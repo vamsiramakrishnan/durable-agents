@@ -137,6 +137,105 @@ def _bank_wires(ledger_dir: Path) -> int:
     return sum(1 for k in json.loads(p.read_text()) if not k.startswith("reverse:"))
 
 
+def test_bigtable_event_bus_register_and_claim(bigtable_server):
+    """Event-bus surface on Bigtable: RegisterReaction → matcher creates a
+    task → ClaimTasks returns it → CompleteTask finishes it."""
+    from tape.client import (
+        HANDLER_KIND_TASK, TASK_STATUS_DONE, TASK_STATUS_PENDING, TapeClient,
+    )
+
+    url = bigtable_server["url"]
+    with TapeClient(url) as c:
+        r = c.register_reaction(
+            name="bt-event-bus-1",
+            subject_pattern="/tape/value/changed/btns/**",
+            handler_kind=HANDLER_KIND_TASK,
+        )
+        rid = r.reaction_id
+        assert rid
+
+        # Trigger a matching journal entry.
+        c.write_value(namespace="btns", key="k1",
+                      value_json='{"v":1}', writer="t")
+
+        # Wait for the matcher (1 s poll) to create the task.
+        deadline = time.time() + 8.0
+        tasks = []
+        while time.time() < deadline:
+            tasks = c.list_tasks(reaction_id=rid, limit=10)
+            if tasks:
+                break
+            time.sleep(0.25)
+        assert tasks, "matcher should have created one task within 8 s"
+        assert tasks[0].subject.startswith("/tape/value/changed/btns/"), tasks[0].subject
+
+        # Claim it.
+        claimed = c.claim_tasks(reaction_id=rid, owner="dispatcher-A",
+                                lease_ms=60_000, max=10)
+        assert len(claimed) == 1
+        assert claimed[0].task_id == tasks[0].task_id
+
+        # Complete it.
+        done = c.complete_task(task_id=claimed[0].task_id, owner="dispatcher-A")
+        assert done.status == TASK_STATUS_DONE
+
+        # And confirm via list_tasks(status=DONE).
+        done_list = c.list_tasks(reaction_id=rid, status=TASK_STATUS_DONE, limit=10)
+        assert any(t.task_id == claimed[0].task_id for t in done_list)
+
+
+def test_bigtable_bootstrap_from_head_skips_backlog(bigtable_server):
+    """`bootstrap_from_head=True` seeds the reaction's cursor at the current
+    journal head — so writes that happened before registration produce zero
+    tasks, and writes after produce one each."""
+    from tape.client import HANDLER_KIND_TASK, TapeClient
+
+    url = bigtable_server["url"]
+    with TapeClient(url) as c:
+        # Write a few value entries BEFORE registering — these should be the
+        # backlog that the reaction must skip.
+        for i in range(3):
+            c.write_value(namespace="bt-boot", key=f"backlog-{i}",
+                          value_json=str(i), writer="t")
+        # Small pause so the meta#global_seq counter is definitely past the
+        # backlog before we register.
+        time.sleep(0.2)
+
+        # Register with bootstrap_from_head=True. The Python SDK helper doesn't
+        # expose the flag, so we build the proto directly.
+        from tape._gen import tape_pb2 as pb
+        r = c.stub.RegisterReaction(pb.Reaction(
+            name="bt-bootstrap",
+            subject_pattern="/tape/value/changed/bt-boot/**",
+            handler_kind=HANDLER_KIND_TASK,
+            bootstrap_from_head=True,
+            max_concurrency=1, num_shards=1,
+        ))
+        rid = r.reaction_id
+
+        # Give the matcher a tick to process the backlog (which it should skip
+        # because the cursor was bootstrapped past it).
+        time.sleep(2.0)
+        backlog_tasks = c.list_tasks(reaction_id=rid, limit=10)
+        assert backlog_tasks == [], (
+            f"bootstrap_from_head must skip pre-registration entries; "
+            f"got {len(backlog_tasks)} tasks: "
+            f"{[t.subject for t in backlog_tasks]}")
+
+        # Now write a fresh entry post-registration — it MUST produce a task.
+        c.write_value(namespace="bt-boot", key="post",
+                      value_json="post", writer="t")
+        deadline = time.time() + 8.0
+        post_tasks = []
+        while time.time() < deadline:
+            post_tasks = c.list_tasks(reaction_id=rid, limit=10)
+            if post_tasks:
+                break
+            time.sleep(0.25)
+        assert post_tasks, "post-registration write must yield a task"
+        assert any("/tape/value/changed/bt-boot/" in t.subject for t in post_tasks)
+
+
 def test_bigtable_crash_then_resume_closes_the_book_once(bigtable_server, tmp_path):
     from tape.client import TapeClient
     import tape.client as tc

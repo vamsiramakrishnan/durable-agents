@@ -168,6 +168,100 @@ pub trait RunStore: Send + Sync {
     async fn events_since(&self, from_ts_ms: i64, run_id: &str, kind: &str, limit: i64)
         -> StoreResult<Vec<EventEntry>>;
 
+    // ── event bus (see design-principles/tape-event-bus.md) ─────────────────
+    /// Subject-filtered, global_seq-cursored WAL tail. Returns events with
+    /// `global_seq > from_global_seq` whose `subject` matches `subject_pattern`
+    /// (`*` = one segment, `**` = trailing segments; empty pattern = all).
+    /// Ordered by `global_seq ASC`, capped at `limit`.
+    async fn events_by_subject(&self, from_global_seq: i64, subject_pattern: &str, limit: i64)
+        -> StoreResult<Vec<EventEntry>> {
+        let _ = (from_global_seq, subject_pattern, limit);
+        Err(StoreError::msg("events_by_subject: not supported on this backend"))
+    }
+    /// Raw journal tail used by the matcher: every entry with
+    /// `global_seq > from_global_seq`, ordered by `global_seq ASC`, capped.
+    async fn read_journal_after(&self, from_global_seq: i64, limit: i64)
+        -> StoreResult<Vec<EventEntry>> {
+        // Default to events_by_subject with the match-all pattern.
+        self.events_by_subject(from_global_seq, "", limit).await
+    }
+
+    // ── reactions ───────────────────────────────────────────────────────────
+    async fn register_reaction(&self, r: &Reaction) -> StoreResult<Reaction> {
+        let _ = r;
+        Err(StoreError::msg("register_reaction: not supported on this backend"))
+    }
+    async fn deregister_reaction(&self, reaction_id: &str) -> StoreResult<bool> {
+        let _ = reaction_id;
+        Err(StoreError::msg("deregister_reaction: not supported on this backend"))
+    }
+    async fn list_reactions(&self, subject_pattern: &str) -> StoreResult<Vec<Reaction>> {
+        let _ = subject_pattern;
+        Err(StoreError::msg("list_reactions: not supported on this backend"))
+    }
+    async fn get_reaction_cursor(&self, reaction_id: &str, shard: i32) -> StoreResult<i64> {
+        let _ = (reaction_id, shard);
+        Ok(0)
+    }
+    async fn set_reaction_cursor(&self, reaction_id: &str, shard: i32, global_seq: i64,
+                                 now_ms: i64) -> StoreResult<()> {
+        let _ = (reaction_id, shard, global_seq, now_ms);
+        Err(StoreError::msg("set_reaction_cursor: not supported on this backend"))
+    }
+
+    // ── tasks ───────────────────────────────────────────────────────────────
+    async fn create_task(&self, t: &Task) -> StoreResult<Task> {
+        let _ = t;
+        Err(StoreError::msg("create_task: not supported on this backend"))
+    }
+    async fn claim_tasks(&self, reaction_id: &str, shard: i32, owner: &str, lease_ms: i64,
+                         max: i32, now_ms: i64) -> StoreResult<Vec<Task>> {
+        let _ = (reaction_id, shard, owner, lease_ms, max, now_ms);
+        Err(StoreError::msg("claim_tasks: not supported on this backend"))
+    }
+    async fn complete_task(&self, task_id: &str, owner: &str) -> StoreResult<Option<Task>> {
+        let _ = (task_id, owner);
+        Err(StoreError::msg("complete_task: not supported on this backend"))
+    }
+    async fn nack_task(&self, task_id: &str, owner: &str, error: &str, permanent: bool,
+                       now_ms: i64) -> StoreResult<Option<Task>> {
+        let _ = (task_id, owner, error, permanent, now_ms);
+        Err(StoreError::msg("nack_task: not supported on this backend"))
+    }
+    async fn list_tasks(&self, reaction_id: &str, status: i32, limit: i64) -> StoreResult<Vec<Task>> {
+        let _ = (reaction_id, status, limit);
+        Err(StoreError::msg("list_tasks: not supported on this backend"))
+    }
+    /// The newest PENDING task for `(reaction_id, subject)` (or None). Used by
+    /// the matcher to drive server-side debounce: if a PENDING task is still
+    /// within its debounce window, the next match coalesces into it rather
+    /// than inserting a new row.
+    async fn find_pending_task_for_subject(&self, reaction_id: &str, subject: &str)
+        -> StoreResult<Option<Task>> {
+        let _ = (reaction_id, subject);
+        Err(StoreError::msg("find_pending_task_for_subject: not supported on this backend"))
+    }
+    /// Conditional UPDATE for server-side debounce coalescing. Only succeeds
+    /// if the task is still PENDING (so a race with `claim_tasks` falls back
+    /// to inserting a fresh task). `attempts`, `status`, `next_attempt_at_ms`,
+    /// and `created_at_ms` are NOT touched — the task keeps its existing
+    /// schedule; only the payload, source pointer, and trace pair advance to
+    /// the latest entry. Returns the updated row, or None if the row was no
+    /// longer PENDING (lost the race).
+    async fn coalesce_task(&self, task_id: &str, source_global_seq: i64, payload_json: &str,
+                           trace_id: &str, parent_span_id: &str) -> StoreResult<Option<Task>> {
+        let _ = (task_id, source_global_seq, payload_json, trace_id, parent_span_id);
+        Err(StoreError::msg("coalesce_task: not supported on this backend"))
+    }
+
+    /// Returns a hook that is notified whenever the journal grows. Used by the
+    /// matcher and the SubscribeBySubject stream to avoid busy-polling. Default:
+    /// a freshly created Notify that never fires (back-compat for backends that
+    /// can't push wake-ups).
+    fn journal_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::new(tokio::sync::Notify::new())
+    }
+
     // ── reactive key-value store (treatise §IX ⑥: coordination through state) ─
     /// Atomic versioned write. Returns the new ValueRecord. If `if_version >= 0`,
     /// the write is conditional on `current_version == if_version` (CAS); a
@@ -214,8 +308,14 @@ pub async fn open(url: &str) -> StoreResult<Arc<dyn RunStore>> {
         if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
             return Err(StoreError::msg("bigtable URL must be bigtable://<project>/<instance>/<table>"));
         }
-        let s = bigtable::BigtableRunStore::connect(parts[0], parts[1], parts[2]).await?;
-        return Ok(Arc::new(s));
+        let s = Arc::new(bigtable::BigtableRunStore::connect(parts[0], parts[1], parts[2]).await?);
+        // Start the optional change-stream wake-up watcher. Best-effort: if the
+        // table doesn't have change-streams enabled (or we're on the emulator,
+        // which doesn't implement the RPC), the watcher logs a warning and
+        // returns; the matcher continues polling — see
+        // `crate::bigtable_change_stream` for the contract.
+        crate::bigtable_change_stream::spawn(s.clone(), s.notify_handle());
+        return Ok(s);
     }
     if url.starts_with("spanner://") {
         return Err(StoreError::msg(
