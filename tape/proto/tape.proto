@@ -468,6 +468,14 @@ message Reaction {
   int32       num_shards       = 14;  // <= 0 => 1; tasks hashed by source_run_id % num_shards
   int64       created_at_ms    = 15;
   bool        deleted          = 16;
+  // When true, RegisterReaction seeds the per-shard cursors at the current
+  // journal head — so the reaction only sees entries written AFTER its
+  // registration, never the backlog. When false (default), the cursors start
+  // at 0 and replay every existing journal entry through the reaction. Set
+  // this for reactions that don't want history (alerts on new effects, hot-
+  // path debounce of live FX writes); leave it false for replay-style work
+  // (audit projections, cold-start rebuilds).
+  bool        bootstrap_from_head = 17;
 }
 
 message DeregisterReactionRequest  { string reaction_id = 1; }
