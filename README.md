@@ -28,7 +28,53 @@ budget a piece of run state, every irreversible step compensable — so a crashe
 
 > Python will write the agent. Something else will run it. Tape is the something else.
 
-See [`tape/README.md`](tape/README.md) for the quickstart.
+## Mental model
+
+```text
+Decision Ledger
+  = memory of reasoning
+
+Effect Ledger
+  = memory of reality
+
+Obligation Ledger
+  = memory of responsibility
+```
+
+Tape is not checkpointing Python processes.
+
+Tape is:
+
+```text
+record every model decision
+record every external effect intent/result
+replay decisions
+skip confirmed effects
+stop on ambiguity
+reconcile reality
+compensate when reality disagrees
+```
+
+## Architecture guide
+
+If you're new to Tape, read these in order:
+
+1. [`tape/README.md`](tape/README.md) — quickstart and integration
+2. [`tape/docs/architecture.md`](tape/docs/architecture.md) — execution model, ledgers, replay, leases, reactors, non-idempotent upstreams
+3. [`design-principles/tape.md`](design-principles/tape.md) — the full design specification
+4. [`design-principles/agents-that-act-treatise.md`](design-principles/agents-that-act-treatise.md) — the broader argument
+
+The architecture guide includes:
+
+- how replay works
+- why the three ledgers exist
+- why WALs alone are insufficient
+- leases and recovery
+- outbox + reconciliation for non-idempotent APIs
+- the execution journal mental model
+- ASCII diagrams for recovery and runtime semantics
+
+See [`tape/docs/architecture.md`](tape/docs/architecture.md).
 
 ## License
 
