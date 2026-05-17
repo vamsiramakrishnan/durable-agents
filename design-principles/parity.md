@@ -1,12 +1,19 @@
-# Tape vs. Temporal — a feature-parity audit
+# Tape vs. {Temporal · LangGraph durable execution · Pydantic AI + DBOS}
 
-The honest comparison, organised by Temporal feature. Tape is the agent-runtime
-ceiling (scoped to ADK), Temporal is a (much more mature) durable-execution floor
-— they're not really rivals (the spec lists "Temporal/Restate engine behind
-`tape.proto`" as v2). This page is for choosing between them today, and for
-naming the gaps Tape closes (or doesn't yet).
+The honest comparisons, organised by feature. Tape is the agent-runtime ceiling
+(scoped to ADK); Temporal is a (much more mature) durable-execution floor; the
+others sit in the same agent layer Tape sits in, with different opinions about
+where the runtime should live. They're not all rivals — the spec lists
+"Temporal/Restate engine behind `tape.proto`" as v2 — but they're the live
+choices for "make my agent durable" today.
 
-## What Tape covers, end to end
+- [§1 Tape vs Temporal](#1-tape-vs-temporal) — feature-parity audit
+- [§2 Tape vs LangGraph durable execution](#2-tape-vs-langgraph-durable-execution) — same layer, different shape
+- [§3 Tape vs Pydantic AI + DBOS](#3-tape-vs-pydantic-ai--dbos-dbosagent) — same conclusion, different framework
+
+## 1. Tape vs Temporal
+
+### What Tape covers, end to end
 
 | Temporal feature | Tape | Notes |
 |---|---|---|
@@ -40,7 +47,7 @@ naming the gaps Tape closes (or doesn't yet).
 | Replay-testing tooling (re-execute history with new code) | ✗ | Roadmap (the journal + the session events have everything needed) |
 | Determinism enforcement (sandbox detects diverging replay) | ✗ | Tape can't sandbox ADK Python code. P11 documents the contract ("your code must be deterministic, route non-determinism through `tape.sample` / tools"); Temporal *enforces* it. Real difference, with real footguns on the Tape side if ignored |
 
-## Choosing between them
+### Choosing between Tape and Temporal
 
 **Pick Tape** when the job is "make my ADK agent durable, with minimal change to
 the agent, and I want the agent-shaped primitives" — decision ledger,
@@ -60,7 +67,7 @@ expressing your agent as a workflow + activities, which for ADK is a rewrite.
 you get the agent ceiling on top of the production-grade floor, which is the
 combination the treatise's architecture diagrams point at.
 
-## What's deferred, and how to bridge it today
+### What's deferred, and how to bridge it today
 
 - **Continue-as-new** — end the run TERMINAL with a summary state in the
   session; start a new session seeded with it. Plan: a `ContinueAsNew` RPC + a
@@ -77,7 +84,7 @@ combination the treatise's architecture diagrams point at.
 - **Sandbox-enforced determinism** — Python can't be sandboxed safely; lint
   `tape.sample` usage; document P11 prominently.
 
-## Test coverage of this parity work
+### Test coverage of this parity work
 
 - `tape/tests/test_features.py` — retry policies (succeeds-after-retries,
   gives-up-on-non-retryable, exhausts-max-attempts), cancellation (`cancel_run`
@@ -90,3 +97,137 @@ combination the treatise's architecture diagrams point at.
   CAS version-conflict rejection, and the headline X-70-to-90 watcher seeing
   both the snapshot and the transition with the previous value attached.
 - Rust: `cargo test` — the in-process store + the gRPC service.
+
+---
+
+## 2. Tape vs LangGraph durable execution
+
+Source for LangGraph claims: <https://docs.langchain.com/oss/python/langgraph/durable-execution>.
+
+LangGraph and Tape sit in the same layer: they make a *graph-shaped agent*
+durable without asking the developer to rewrite the agent as a workflow. The
+shape of the answer is different — LangGraph cuts the journal at node /
+entrypoint boundaries and asks the user to wrap non-determinism in `@task`;
+Tape cuts the journal at the **decision** and **effect** boundaries the
+treatise's §IX names, and the user wraps `@tape.effect(...)`. Both then ride
+on the counterparty's idempotency for the actual exactly-once-effective
+guarantee at the wire.
+
+| Question (the treatise's reactive-defence ⓵–⑦, applied to both) | LangGraph (durable execution) | Tape |
+|---|---|---|
+| **Is state durable?** | ✓ via `checkpointer=` on `compile()` (memory / SQLite / Postgres saver). Cut: at node boundaries (StateGraph) or entrypoint boundaries (Functional API). `durability="sync"\|"async"\|"exit"` chooses when the cut commits | ✓ via the Rust server + `RunStore` (SQLite/Postgres/AlloyDB/Bigtable). Cut: per **decision** (every model call) and per **effect** (every tool call's intent + outcome), each written in one txn with the ADK event |
+| **Does the trigger fire exactly-once?** | Within a thread (`thread_id`), the node either ran-to-completion (its checkpoint is committed) or it didn't (it re-runs on resume). The dedup for an effect *inside* a node still rides on the counterparty | The decision-keyed idempotency key (`run/decision-N/<tool>`) names the *decision* the model made, not its inputs. A `confirmed` effect short-circuits on re-drive; a `pending` effect re-issues with the same key; the counterparty dedupes |
+| **Is the handler itself durable?** | Node body re-runs from the top on resume. Inside a Functional API entrypoint, `@task`-wrapped sub-units cache their results — a completed task returns from history, an incomplete one re-runs | The agent re-drives via ADK's `invocation_id`; recorded decisions short-circuit at `before_model_callback`; confirmed effects short-circuit at `before_tool_callback`. The body never runs for already-confirmed work |
+| **Where is the timer?** | Within a node: ordinary Python (not durable across crashes). HITL `interrupt()` *does* hold the run across deploys via the checkpointer | `tape.set_timer(run_id, fire_at_ms, kind)`; a timer reactor fires due timers across processes. Kinds: `gate_timeout`, `redrive`, `reconcile`, custom |
+| **Is the condition still true when the handler runs?** | User discipline; no built-in atomic check-and-set | Optimistic versioning on the reactive store (`tape.set_value(ns, key, v, if_version=…)`) closes the TOCTOU race |
+| **Where is the journal?** | Checkpoints are state-versioned snapshots of the graph state. Not a decision/effect/obligation ledger — that shape is user-built on top | Three explicit ledgers — decision, effect, obligation — interleaved by `(run_id, seq)`. The journal *is* the audit |
+| **Is replay deterministic?** | Documented contract: wrap non-deterministic operations in `@task` (Functional API) or in nodes; otherwise replay drift. *Not* sandbox-enforced | Documented (P11): route non-determinism through `tape.sample` / tools. *Not* sandbox-enforced. Same footgun shape as LangGraph |
+| **Human in the loop** | `interrupt(payload)` pauses the graph; `invoke(Command(resume=…), config)` resumes with the user's reply. Survives crashes via the checkpointer | `tape.gate_tool("approval")` returns `pending` (a `LongRunningFunctionTool`); `SendSignal` resolves it; the recovery loop re-invokes the run; ADK injects the signal payload as the tool result |
+| **Graceful drain** | `RunControl.request_drain()` stops after the current superstep and saves a resumable checkpoint; `invoke(None, config)` resumes | `tape.cancel_run(run_id, reason=…)` marks the run CANCELLED; the plugin bails at the next model/tool boundary. Cooperative, not preemptive |
+| **The third outcome (`unknown` ack)** | ✗ — not first-class. You either rerun the node (re-issuing without a counterparty-side key is unsafe) or build your own reconciler | ✓ `EffectStatus.UNKNOWN` + a registered `status_check` reactor that asks the counterparty and flips `pending`/`unknown` → `confirmed` or re-issues with the same key |
+| **Compensation / sagas** | User-built. The graph can have a compensating branch, but there's no obligation ledger that runs LIFO on failure | `@tape.effect(compensate=…)` registers the inverse at commit; `tape.compensate_run(run_id)` walks obligations LIFO; failures land in `stuck` (never silently "compensated") |
+| **Budget as run state** | User-built (carry counters in graph state; the user enforces the cap in a node) | `tape.Budget(usd_cap=…, token_cap=…)`; `AdmitBudget` before, `ChargeBudget` after; spent counters survive crashes |
+| **Multi-agent coordination through journaled state** | Subgraphs + shared state in the parent graph; no monotonically-versioned, fan-out-watchable shared store as a primitive | `tape.set_value` / `get_value` / `watch_value` — monotonically-versioned, CAS-able, watchers see the *transition* (X: 70 → 90) with the previous value attached |
+| **Time travel / fork** | The checkpointer keeps every state version on the thread; you can `invoke(Command(...), config={"configurable": {"thread_id": t, "checkpoint_id": c}})` to resume from any past checkpoint (the linked `durable-execution` page does not document fork-from-checkpoint; the broader docs do). The durable-execution doc's focus is *resume*, not *time travel* | Not a feature. Tape replays forward from the resume point; the journal supports replay-testing but Tape is not a versioned state store you fork |
+| **Language scope** | Python and TypeScript SDKs of LangGraph itself | Python full (the ADK reference); TS / Go / Java wired-client + tests. Wire protocol is gRPC, so the runtime survives the agent's choice of language |
+| **Operational footprint** | In-process library + a checkpointer backend (your DB). No separate server | A separate Rust server (one process per cluster, behind a load balancer) + a backend (SQLite/Postgres/AlloyDB/Bigtable) |
+
+**The honest summary.** LangGraph's durable execution and Tape are answering
+adjacent questions with overlapping vocabulary. LangGraph asks *how do I make
+this graph survive a crash?* and gives you a checkpointer, a `@task`
+decorator, `interrupt()` for HITL, three durability modes, and a drain
+primitive — all in-process, all bound to the graph's notion of "what is a
+step". Tape asks *how do I make this ADK agent's **decisions**, **effects**,
+and **obligations** survive a crash?* and gives you a separate journaling
+server that the agent talks to over gRPC, with the third outcome (`unknown`),
+obligation-ledger compensation, decision-keyed idempotency, and a reconciler
+as first-class primitives — the §IX list, by name.
+
+**Pick LangGraph's durable execution** when your agent is *already* a
+LangGraph graph, your durability needs end at "resume the graph from the last
+node boundary", and the in-process checkpointer model fits your operational
+shape. The Functional API + `@task` + `interrupt()` is a real, mature
+implementation of the "checkpointed graph" pattern.
+
+**Pick Tape** when your agent is an ADK agent, you need the §IX primitives
+(`unknown`, model-written compensation, decision-keyed idempotency, gates as
+durable suspends, budget as run state, coordination through journaled state),
+and you can run the Rust server alongside your existing DB. The contract is
+"the agent stays as ADK code; the journal lives somewhere built to survive."
+
+**The composition.** Putting LangGraph *on top* of Tape is out of scope (Tape
+is wired to ADK's callbacks, not LangGraph's). Putting Tape *on top* of a
+LangGraph checkpointer is the wrong shape (LangGraph already commits at node
+boundaries; Tape would duplicate the cut). Where they meet honestly is the
+landscape claim Section XII makes: pick one runtime layer per agent, and
+prefer the one built for the boundaries you actually care about.
+
+---
+
+## 3. Tape vs Pydantic AI + DBOS (DBOSAgent)
+
+Source for Pydantic AI + DBOS claims: <https://pydantic.dev/articles/pydantic-ai-dbos>.
+
+Pydantic AI's `DBOSAgent` is the closest spiritual cousin Tape has. Both
+inherit the §XII conclusion — *put a durable engine underneath* — and apply
+it to a single agent framework. The differences are framework (Pydantic AI vs
+ADK), engine (DBOS in-process Postgres library vs Tape's stand-alone Rust
+server), and which §IX primitives are first-class.
+
+| Concern | Pydantic AI + DBOS (`DBOSAgent`) | Tape (ADK) |
+|---|---|---|
+| **Integration shape** | `DBOSAgent(agent)` wraps `Agent.run()` / `Agent.run_sync()` as a `@DBOS.workflow` and model + MCP calls as DBOS steps. Two lines: `from pydantic_ai.durable_exec.dbos import DBOSAgent; dbos_agent = DBOSAgent(agent)` | `Runner(..., plugins=[TapePlugin()], session_service=TapeSessionService(...))`. Two lines, no agent rewrite |
+| **Durable engine** | DBOS — an in-process Python library backed by Postgres. No separate server; the DB is the control plane | Tape — a stand-alone Rust server (gRPC) + pluggable `RunStore` (SQLite/Postgres/AlloyDB/Bigtable). Separate process; the agent talks to it |
+| **Workflow identity** | DBOS workflow UUID; identity flows from the framework | ADK's `invocation_id` (one `runner.run()` call) + `session_id`; Tape's `run_id` keyed to `(app_name, user_id, session_id, invocation_id)` |
+| **Step identity (the recovery model)** | Step ID by **call order** inside the workflow — the model the treatise §VI calls out as the DBOS pattern | `seq` per run, monotonic by call order within `(run_id, kind)`. **Same model** (Tape acknowledges this in tape.md §6.5: "DBOS's step-id-by-call-order") |
+| **Decision journal (the LLM call)** | Model calls are auto-wrapped as DBOS steps; the response is checkpointed and replayed from the DB on re-drive | `before_model_callback` short-circuits with the recorded `LlmResponse`; `after_model_callback` writes to `tape_decisions`. Same outcome (the decision is replayed, not re-sampled) |
+| **Effect journal (the tool call)** | Tool invocations wrap as DBOS steps; results are checkpointed | `before_tool_callback` → `BeginEffect(pending)` *commits before the body runs*; `after_tool_callback` → `CompleteEffect(confirmed)`. The intent-before-act split is explicit |
+| **Idempotency at the wire** | The user supplies the idempotency key inside the tool body (no decision-keyed key is mentioned in the article) | Tape *derives* the key — `run/decision-N/<tool>/<call_idx>` — and hands it back via the plugin; the body passes it to the counterparty |
+| **The third outcome (`unknown` ack)** | Not documented as first-class. A failed step retries (DBOS retries failed steps); reconciliation against the counterparty is user-built | `EffectStatus.UNKNOWN` + `status_check` reactor — first-class |
+| **Compensation / sagas** | DBOS has step-level retries; the article doesn't show a compensation primitive. Compensation is user-built as a separate workflow path | `@tape.effect(compensate=…)` registers the inverse at commit time; `tape.compensate_run` walks LIFO |
+| **Human in the loop** | Not covered in the article. Pattern would be a DBOS workflow that awaits a signal/event | `tape.gate_tool("approval")` — `LongRunningFunctionTool` + signal; the run holds in `waiting` across deploys |
+| **Sub-agent / fan-out** | "Sub-agent runs as child workflows" — `DBOS.start_workflow_async(...)` for fan-out/fan-in. End-to-end reliability across agents | Tape's child-runs are sketched (planned in §13). Workaround: spawn a fresh `begin_run` and signal back |
+| **Durable queues** | Yes — DBOS includes Postgres-backed queues with concurrency limits, rate limits, retries, prioritisation | No queue primitive — the run lease + the reactor pattern serve the recovery case; cross-run fan-out is via the WAL tail + sinks (`PubSubSink`, `WebhookSink`) |
+| **Budget as run state** | Not documented in the article | `tape.Budget` — admit before / charge after, survives crashes |
+| **Coordination through journaled state** | Not documented as a primitive | `tape.set_value` / `watch_value` — monotonically-versioned, CAS, watchers observe the *transition* |
+| **Observability** | DBOS Conductor (web UI), Pydantic Logfire via OpenTelemetry, MCP servers for natural-language queries | `SubscribeRun` / `SubscribeEvents` as machine feeds; no UI. The journal is the queryable surface |
+| **Determinism** | Article doesn't address it explicitly. DBOS, like Tape, relies on user discipline to keep workflows replay-safe | P11: documented, not enforced. Same shape |
+| **Operational footprint** | DBOS as a library + Postgres. No new infra | Rust server + the chosen backend. New infra |
+| **Language scope** | Python (Pydantic AI's home) | Python (reference SDK) + TS / Go / Java wired-client. The wire protocol means the agent's language is independent of the runtime's |
+
+**The honest summary.** Pydantic AI + DBOS and Tape are the *same conclusion*
+applied to two different agent frameworks: the runtime layer is something
+else, the agent stays as the framework's code, and the framework cedes
+durability to a purpose-built engine. The two diverge on three real axes:
+
+1. **Engine deployment.** DBOS is an in-process library on Postgres. Tape is
+   a separate Rust server with multiple backends. DBOS is operationally
+   simpler if you already run Postgres; Tape decouples the runtime from the
+   agent's process and language at the cost of a new service.
+2. **Which §IX primitives are first-class.** DBOS gives you durable
+   workflows, steps, child workflows, queues, retries, and observability —
+   the *floor* primitives. Tape adds the agent-shaped *ceiling*: `unknown`
+   acks, decision-keyed idempotency, gates as suspend-until-signal,
+   model-written compensation walked LIFO, budget as run state, and
+   coordination through versioned shared state — the §IX list, by name.
+3. **Framework scope.** DBOSAgent is Pydantic AI only. Tape is ADK only.
+   Picking one is mostly picking the agent framework.
+
+**Pick Pydantic AI + DBOS** when you want Pydantic AI's typed-agent ergonomics
+and DBOS's operationally-simple Postgres-backed runtime, and the §IX *floor*
+(workflows, steps, queues, retries) is enough — you'll build the ceiling
+primitives (compensation walked LIFO, `unknown` reconciliation, decision-keyed
+idempotency, budget as state) yourself when you need them.
+
+**Pick Tape** when you're on ADK, you want the §IX *ceiling* primitives as
+table stakes, and you can run the Rust server alongside your DB. The runtime
+is independent of your agent's language; the journal is the audit; the
+recovery model is the same step-by-call-order DBOS uses, expressed through
+ADK's callbacks.
+
+**The composition.** A `RunStore` backed by DBOS is *not* in the spec (Tape's
+backends are SQLite/Postgres/AlloyDB/Bigtable — storage, not durable
+execution). A Temporal-backed `RunStore` is (v2). The composition that makes
+sense across all three is the §XII picture: one runtime layer per agent —
+DBOS-under-Pydantic-AI, Tape-over-ADK, Temporal-under-Tape — chosen for the
+boundaries the workload cares about.
