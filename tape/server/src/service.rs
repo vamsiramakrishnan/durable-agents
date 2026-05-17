@@ -126,11 +126,45 @@ impl Tape for TapeService {
     // ── obligations ─────────────────────────────────────────────────────────
     async fn register_compensation(&self, req: Request<RegisterCompensationRequest>) -> Result<Response<ObligationRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store.register_compensation(&r.run_id, &r.effect_key, &r.kind, &r.payload_json).await.map_err(db)?))
+        Ok(Response::new(self.store
+            .register_compensation(&r.run_id, &r.effect_key, &r.kind, &r.payload_json,
+                                   &r.compensator_ref, r.max_attempts)
+            .await.map_err(db)?))
     }
     async fn list_obligations(&self, req: Request<ListObligationsRequest>) -> Result<Response<ListObligationsResponse>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(ListObligationsResponse { obligations: self.store.list_obligations(&r.run_id, r.only_unresolved).await.map_err(db)? }))
+        Ok(Response::new(ListObligationsResponse {
+            obligations: self.store.list_obligations(&r.run_id, r.only_unresolved, r.status_filter).await.map_err(db)?,
+        }))
+    }
+    async fn list_unresolved_obligations(&self, req: Request<ListUnresolvedObligationsRequest>)
+        -> Result<Response<ListUnresolvedObligationsResponse>, Status> {
+        let r = req.into_inner();
+        // Default: include_pending=true, include_committed_expired=true (the drainer
+        // wants ready-to-run and reclaim-stale-lease in one pass). Caller can flip.
+        let include_pending = r.include_pending || (!r.include_stuck && !r.include_committed_expired);
+        let include_committed_expired = r.include_committed_expired || include_pending;
+        let now = if r.now_ms > 0 { r.now_ms } else { now_ms() };
+        let limit = if r.limit > 0 { r.limit as i64 } else { 500 };
+        Ok(Response::new(ListUnresolvedObligationsResponse {
+            obligations: self.store
+                .list_unresolved_obligations(now, include_pending, r.include_stuck, include_committed_expired, limit)
+                .await.map_err(db)?,
+        }))
+    }
+    async fn claim_obligation(&self, req: Request<ClaimObligationRequest>) -> Result<Response<ClaimObligationResponse>, Status> {
+        let r = req.into_inner();
+        let (acquired, ob) = self.store
+            .claim_obligation(&r.run_id, r.obligation_seq, &r.claimer, r.lease_ttl_ms, now_ms())
+            .await.map_err(db)?;
+        Ok(Response::new(ClaimObligationResponse { acquired, obligation: ob }))
+    }
+    async fn record_obligation_attempt(&self, req: Request<RecordObligationAttemptRequest>) -> Result<Response<ObligationRecord>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(self.store
+            .record_obligation_attempt(&r.run_id, r.obligation_seq, &r.error, r.next_attempt_at_ms)
+            .await.map_err(db)?
+            .ok_or_else(|| Status::not_found("no such obligation"))?))
     }
     async fn resolve_obligation(&self, req: Request<ResolveObligationRequest>) -> Result<Response<ObligationRecord>, Status> {
         let r = req.into_inner();
@@ -340,9 +374,47 @@ mod tests {
         assert_eq!(ge.effect.as_ref().unwrap().status, EffectStatus::Confirmed as i32);
         assert!(ge.effect.unwrap().response_json.contains("wire_id"));
         // compensation
-        svc.register_compensation(Request::new(RegisterCompensationRequest { run_id: rid.clone(), effect_key: be.idempotency_key.clone(), kind: "reverse_wire".into(), payload_json: "{}".into() })).await.unwrap();
-        let obs = svc.list_obligations(Request::new(ListObligationsRequest { run_id: rid.clone(), only_unresolved: true })).await.unwrap().into_inner().obligations;
+        svc.register_compensation(Request::new(RegisterCompensationRequest {
+            run_id: rid.clone(), effect_key: be.idempotency_key.clone(),
+            kind: "reverse_wire".into(), payload_json: "{}".into(),
+            compensator_ref: "".into(), max_attempts: 0,
+        })).await.unwrap();
+        let obs = svc.list_obligations(Request::new(ListObligationsRequest {
+            run_id: rid.clone(), only_unresolved: true, status_filter: 0,
+        })).await.unwrap().into_inner().obligations;
         assert_eq!(obs.len(), 1);
+        // The newly-registered obligation is PENDING, eligible immediately.
+        assert_eq!(obs[0].status, ObligationStatus::Pending as i32);
+        assert_eq!(obs[0].max_attempts, 5);
+        // Claim → COMMITTED with lease.
+        let claim = svc.claim_obligation(Request::new(ClaimObligationRequest {
+            run_id: rid.clone(), obligation_seq: obs[0].seq, claimer: "test-drainer".into(),
+            lease_ttl_ms: 30_000,
+        })).await.unwrap().into_inner();
+        assert!(claim.acquired);
+        assert_eq!(claim.obligation.as_ref().unwrap().status, ObligationStatus::Committed as i32);
+        assert_eq!(claim.obligation.as_ref().unwrap().claimed_by, "test-drainer");
+        // A second claim by a different drainer is rejected while the lease is live.
+        let claim2 = svc.claim_obligation(Request::new(ClaimObligationRequest {
+            run_id: rid.clone(), obligation_seq: obs[0].seq, claimer: "other".into(),
+            lease_ttl_ms: 30_000,
+        })).await.unwrap().into_inner();
+        assert!(!claim2.acquired);
+        // Record a failed attempt → back to PENDING with attempts=1.
+        let attempt = svc.record_obligation_attempt(Request::new(RecordObligationAttemptRequest {
+            run_id: rid.clone(), obligation_seq: obs[0].seq, error: "network blip".into(),
+            next_attempt_at_ms: now_ms() + 1_000,
+        })).await.unwrap().into_inner();
+        assert_eq!(attempt.status, ObligationStatus::Pending as i32);
+        assert_eq!(attempt.attempts, 1);
+        assert_eq!(attempt.last_error, "network blip");
+        // Resolve terminal.
+        let resolved = svc.resolve_obligation(Request::new(ResolveObligationRequest {
+            run_id: rid.clone(), obligation_seq: obs[0].seq,
+            status: ObligationStatus::Compensated as i32, result_json: "{\"ok\":true}".into(),
+        })).await.unwrap().into_inner();
+        assert_eq!(resolved.status, ObligationStatus::Compensated as i32);
+        assert_eq!(resolved.result_json, "{\"ok\":true}");
         // budget
         svc.set_budget(Request::new(SetBudgetRequest { run_id: rid.clone(), usd_cap: 1.0, token_cap: 0 })).await.unwrap();
         assert!(svc.admit_budget(Request::new(AdmitBudgetRequest { run_id: rid.clone(), usd_estimate: 0.5, token_estimate: 0 })).await.unwrap().into_inner().admitted);

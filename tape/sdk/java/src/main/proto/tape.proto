@@ -16,6 +16,7 @@ syntax = "proto3";
 
 package tape.v1;
 
+// Java code generation options (no-op for the other languages).
 option java_package = "dev.tape.proto";
 option java_multiple_files = true;
 option java_outer_classname = "TapeProto";
@@ -40,9 +41,13 @@ service Tape {
   rpc ReconcileEffect (ReconcileEffectRequest) returns (EffectRecord);
 
   // ── obligations / compensation ────────────────────────────────────────────
-  rpc RegisterCompensation (RegisterCompensationRequest) returns (ObligationRecord);
-  rpc ListObligations      (ListObligationsRequest)      returns (ListObligationsResponse); // LIFO order
-  rpc ResolveObligation    (ResolveObligationRequest)    returns (ObligationRecord);
+  rpc RegisterCompensation     (RegisterCompensationRequest)     returns (ObligationRecord);
+  rpc ListObligations          (ListObligationsRequest)          returns (ListObligationsResponse); // LIFO, per-run
+  rpc ResolveObligation        (ResolveObligationRequest)        returns (ObligationRecord);
+  // The drainer surface — for the obligations reactor and operator queries.
+  rpc ListUnresolvedObligations (ListUnresolvedObligationsRequest) returns (ListUnresolvedObligationsResponse); // cross-run
+  rpc ClaimObligation          (ClaimObligationRequest)          returns (ClaimObligationResponse);  // atomic lease
+  rpc RecordObligationAttempt  (RecordObligationAttemptRequest)  returns (ObligationRecord);          // failure with backoff
 
   // ── budget ────────────────────────────────────────────────────────────────
   rpc SetBudget       (SetBudgetRequest)       returns (BudgetState);
@@ -63,6 +68,15 @@ service Tape {
 
   // ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
   rpc SubscribeEvents (SubscribeEventsRequest) returns (stream EventEntry);
+
+  // ── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
+  // Coordination through journaled state, not messages (treatise §IX ⑥).
+  // Writes are atomic and versioned; WatchValue streams the current value plus
+  // every change (with the prior value, so subscribers see the transition).
+  rpc WriteValue   (WriteValueRequest)   returns (ValueRecord);
+  rpc GetValue     (GetValueRequest)     returns (GetValueResponse);
+  rpc WatchValue   (WatchValueRequest)   returns (stream ValueEvent);
+  rpc DeleteValue  (DeleteValueRequest)  returns (DeleteValueResponse);
 
   // ── ADK SessionService shim ───────────────────────────────────────────────
   rpc CreateSession   (CreateSessionRequest)   returns (Session);
@@ -248,32 +262,68 @@ message EffectRecord {
 }
 
 // ── obligations / compensation ──────────────────────────────────────────────
+//
+// State machine, mirroring the effect ledger's PENDING/CONFIRMED/FAILED/UNKNOWN
+// thickness on the compensation side:
+//
+//   register_compensation
+//           │
+//           ▼
+//   ┌──────────────┐    claim_obligation (CAS, with lease)
+//   │   PENDING    │ ──────────────────────────────────► ┌────────────┐
+//   │ (queued; or  │ ◄── record_obligation_attempt ───── │ COMMITTED  │
+//   │  backoff if  │     (failure with retries left)     │ (in flight)│
+//   │  next_attempt│                                     └─────┬──────┘
+//   │  _at_ms > now│                  resolve_obligation       │
+//   └──────────────┘                  ┌───────────────┬────────┘
+//                                     ▼               ▼
+//                              COMPENSATED          STUCK
+//                              (success,            (failure;
+//                               terminal)           retries exhausted)
+//
+// PENDING is the only state the drainer touches. The reactor calls
+// ClaimObligation (CAS — eligible iff status==PENDING AND next_attempt_at_ms<=now
+// AND no live lease) to move PENDING → COMMITTED with `claimed_by` +
+// `claim_expires_at_ms`. From COMMITTED the drainer either calls
+// ResolveObligation(COMPENSATED|STUCK) terminally, or RecordObligationAttempt
+// to set last_error+attempts+next_attempt_at_ms and slide back to PENDING for
+// the next retry (or terminally to STUCK if attempts exceed max_attempts).
+// Expired COMMITTED leases are reclaimed by the next ClaimObligation that
+// sees claim_expires_at_ms < now — same atomic CAS, no manual recovery.
 
 enum ObligationStatus {
   OBLIGATION_STATUS_UNSPECIFIED = 0;
-  OBLIGATION_STATUS_PENDING = 1;        // registered, not yet needed
-  OBLIGATION_STATUS_COMMITTED = 2;      // the effect it unwinds is confirmed
-  OBLIGATION_STATUS_COMPENSATED = 3;    // the inverse ran successfully
-  OBLIGATION_STATUS_STUCK = 4;          // the inverse failed — needs a human
+  OBLIGATION_STATUS_PENDING = 1;        // queued; eligible when next_attempt_at_ms <= now and no live lease
+  OBLIGATION_STATUS_COMMITTED = 2;      // a drainer holds the lease; in flight
+  OBLIGATION_STATUS_COMPENSATED = 3;    // the inverse ran successfully (terminal)
+  OBLIGATION_STATUS_STUCK = 4;          // retries exhausted; needs a human (terminal)
 }
 
 message RegisterCompensationRequest {
   string run_id = 1;
   string effect_key = 2;         // the idempotency_key of the effect this unwinds
-  string kind = 3;               // e.g. "reverse_wire"
+  string kind = 3;               // e.g. "reverse_wire" — used for the in-process registry lookup
   string payload_json = 4;
+  // The fully-qualified callable for a cross-process drainer to import, e.g.
+  // "treasury.agent:reverse_wire". Optional — when set, a generic drainer
+  // process (one that doesn't import the agent module at boot) can resolve
+  // the inverse on demand. The in-process registry (`kind`) still takes
+  // precedence when both are available.
+  string compensator_ref = 5;
+  int32  max_attempts = 6;       // 0 => server default (5)
 }
 message ListObligationsRequest {
   string run_id = 1;
-  bool   only_unresolved = 2;
+  bool   only_unresolved = 2;          // shorthand: exclude COMPENSATED and STUCK
+  ObligationStatus status_filter = 3;  // 0 (UNSPECIFIED) = any; otherwise an exact match
 }
 message ListObligationsResponse {
-  repeated ObligationRecord obligations = 1;   // newest-first (LIFO)
+  repeated ObligationRecord obligations = 1;   // newest-first (LIFO) — the LIFO drain order
 }
 message ResolveObligationRequest {
   string run_id = 1;
   int64  obligation_seq = 2;
-  ObligationStatus status = 3;   // OBLIGATION_COMPENSATED | OBLIGATION_STUCK
+  ObligationStatus status = 3;   // COMPENSATED | STUCK — terminal transitions only
   string result_json = 4;
 }
 message ObligationRecord {
@@ -284,6 +334,53 @@ message ObligationRecord {
   string payload_json = 5;
   ObligationStatus status = 6;
   int64  ts_ms = 7;
+  // The drainer surface.
+  string compensator_ref = 8;        // optional "module:attr" for generic drainers
+  int32  attempts = 9;                // count of failed attempts; bumped by RecordObligationAttempt
+  int32  max_attempts = 10;           // 0 => server default (5)
+  int64  next_attempt_at_ms = 11;     // backoff: PENDING is eligible only when this <= now
+  string last_error = 12;             // populated by RecordObligationAttempt
+  string claimed_by = 13;             // the drainer holding the lease (empty when not COMMITTED)
+  int64  claim_expires_at_ms = 14;    // lease deadline; expired COMMITTED is re-claimable
+  string result_json = 15;            // populated by ResolveObligation
+}
+
+message ListUnresolvedObligationsRequest {
+  // Cross-run query for the obligations reactor (and operator dashboards).
+  // Defaults: include_pending=true, include_stuck=false, include_committed_expired=true.
+  int32 limit = 1;                    // 0 => server default (500)
+  int64 now_ms = 2;                   // 0 => server's current clock
+  bool  include_pending = 3;          // PENDING with next_attempt_at_ms <= now
+  bool  include_stuck = 4;            // terminal STUCK rows (operator triage)
+  bool  include_committed_expired = 5;// COMMITTED with claim_expires_at_ms <= now (reclaim)
+}
+message ListUnresolvedObligationsResponse {
+  repeated ObligationRecord obligations = 1;
+}
+
+message ClaimObligationRequest {
+  // Atomic CAS:  PENDING (and next_attempt_at_ms <= now)  ──► COMMITTED with lease.
+  // Also reclaims COMMITTED rows whose claim_expires_at_ms <= now (stale leases).
+  // Returns acquired=false (with the current row) if another claimer won.
+  string run_id = 1;
+  int64  obligation_seq = 2;
+  string claimer = 3;                 // hostname / pod id — recorded as claimed_by
+  int64  lease_ttl_ms = 4;            // 0 => server default (60_000)
+}
+message ClaimObligationResponse {
+  bool acquired = 1;
+  ObligationRecord obligation = 2;
+}
+
+message RecordObligationAttemptRequest {
+  // Reports a *failed* attempt. The server bumps `attempts`, sets `last_error`,
+  // and either schedules a retry (status -> PENDING with next_attempt_at_ms) or
+  // marks the obligation terminally STUCK (when attempts >= max_attempts, or
+  // when next_attempt_at_ms == 0 meaning "this is a final failure").
+  string run_id = 1;
+  int64  obligation_seq = 2;
+  string error = 3;
+  int64  next_attempt_at_ms = 4;      // 0 => terminal (force STUCK regardless of attempts)
 }
 
 // ── budget ──────────────────────────────────────────────────────────────────
@@ -394,6 +491,43 @@ message EventEntry {
   string payload_json = 4;
   int64  ts_ms = 5;
 }
+
+// ── reactive key-value store ───────────────────────────────────────────────
+
+message ValueRecord {
+  string namespace = 1;         // user-chosen namespace (e.g. "treasury", "user:<id>", "run:<run_id>", "")
+  string key = 2;
+  string value_json = 3;
+  int64  version = 4;            // monotonic per (namespace, key); CAS uses this
+  int64  ts_ms = 5;
+  string writer = 6;             // free-form attribution (a process id, an agent name, …)
+  bool   deleted = 7;            // set on the event emitted by DeleteValue
+}
+
+message WriteValueRequest {
+  string namespace = 1;
+  string key = 2;
+  string value_json = 3;
+  int64  if_version = 4;         // optimistic CAS: only write if the current version == if_version. < 0 disables.
+  string writer = 5;
+}
+
+message GetValueRequest { string namespace = 1; string key = 2; }
+message GetValueResponse { bool found = 1; ValueRecord value = 2; }
+
+message WatchValueRequest {
+  string namespace = 1;
+  string key = 2;
+  int64  from_version = 3;       // 0 => start from the current value (one snapshot, then changes)
+}
+message ValueEvent {
+  ValueRecord value = 1;         // the new value (or `deleted = true`)
+  int64  prev_version = 2;       // 0 if no prior value
+  string prev_value_json = 3;    // "" if no prior value
+}
+
+message DeleteValueRequest { string namespace = 1; string key = 2; }
+message DeleteValueResponse { bool deleted = 1; int64 version = 2; }
 
 // ── ADK SessionService shim ─────────────────────────────────────────────────
 

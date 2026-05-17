@@ -161,10 +161,10 @@ type ObligationStatus int32
 
 const (
 	ObligationStatus_OBLIGATION_STATUS_UNSPECIFIED ObligationStatus = 0
-	ObligationStatus_OBLIGATION_STATUS_PENDING     ObligationStatus = 1 // registered, not yet needed
-	ObligationStatus_OBLIGATION_STATUS_COMMITTED   ObligationStatus = 2 // the effect it unwinds is confirmed
-	ObligationStatus_OBLIGATION_STATUS_COMPENSATED ObligationStatus = 3 // the inverse ran successfully
-	ObligationStatus_OBLIGATION_STATUS_STUCK       ObligationStatus = 4 // the inverse failed — needs a human
+	ObligationStatus_OBLIGATION_STATUS_PENDING     ObligationStatus = 1 // queued; eligible when next_attempt_at_ms <= now and no live lease
+	ObligationStatus_OBLIGATION_STATUS_COMMITTED   ObligationStatus = 2 // a drainer holds the lease; in flight
+	ObligationStatus_OBLIGATION_STATUS_COMPENSATED ObligationStatus = 3 // the inverse ran successfully (terminal)
+	ObligationStatus_OBLIGATION_STATUS_STUCK       ObligationStatus = 4 // retries exhausted; needs a human (terminal)
 )
 
 // Enum value maps for ObligationStatus.
@@ -1801,13 +1801,20 @@ func (x *EffectRecord) GetTsMs() int64 {
 }
 
 type RegisterCompensationRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	EffectKey     string                 `protobuf:"bytes,2,opt,name=effect_key,json=effectKey,proto3" json:"effect_key,omitempty"` // the idempotency_key of the effect this unwinds
-	Kind          string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`                            // e.g. "reverse_wire"
-	PayloadJson   string                 `protobuf:"bytes,4,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	RunId       string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	EffectKey   string                 `protobuf:"bytes,2,opt,name=effect_key,json=effectKey,proto3" json:"effect_key,omitempty"` // the idempotency_key of the effect this unwinds
+	Kind        string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`                            // e.g. "reverse_wire" — used for the in-process registry lookup
+	PayloadJson string                 `protobuf:"bytes,4,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
+	// The fully-qualified callable for a cross-process drainer to import, e.g.
+	// "treasury.agent:reverse_wire". Optional — when set, a generic drainer
+	// process (one that doesn't import the agent module at boot) can resolve
+	// the inverse on demand. The in-process registry (`kind`) still takes
+	// precedence when both are available.
+	CompensatorRef string `protobuf:"bytes,5,opt,name=compensator_ref,json=compensatorRef,proto3" json:"compensator_ref,omitempty"`
+	MaxAttempts    int32  `protobuf:"varint,6,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"` // 0 => server default (5)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RegisterCompensationRequest) Reset() {
@@ -1868,10 +1875,25 @@ func (x *RegisterCompensationRequest) GetPayloadJson() string {
 	return ""
 }
 
+func (x *RegisterCompensationRequest) GetCompensatorRef() string {
+	if x != nil {
+		return x.CompensatorRef
+	}
+	return ""
+}
+
+func (x *RegisterCompensationRequest) GetMaxAttempts() int32 {
+	if x != nil {
+		return x.MaxAttempts
+	}
+	return 0
+}
+
 type ListObligationsRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	RunId          string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	OnlyUnresolved bool                   `protobuf:"varint,2,opt,name=only_unresolved,json=onlyUnresolved,proto3" json:"only_unresolved,omitempty"`
+	OnlyUnresolved bool                   `protobuf:"varint,2,opt,name=only_unresolved,json=onlyUnresolved,proto3" json:"only_unresolved,omitempty"`                         // shorthand: exclude COMPENSATED and STUCK
+	StatusFilter   ObligationStatus       `protobuf:"varint,3,opt,name=status_filter,json=statusFilter,proto3,enum=tape.v1.ObligationStatus" json:"status_filter,omitempty"` // 0 (UNSPECIFIED) = any; otherwise an exact match
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1920,9 +1942,16 @@ func (x *ListObligationsRequest) GetOnlyUnresolved() bool {
 	return false
 }
 
+func (x *ListObligationsRequest) GetStatusFilter() ObligationStatus {
+	if x != nil {
+		return x.StatusFilter
+	}
+	return ObligationStatus_OBLIGATION_STATUS_UNSPECIFIED
+}
+
 type ListObligationsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Obligations   []*ObligationRecord    `protobuf:"bytes,1,rep,name=obligations,proto3" json:"obligations,omitempty"` // newest-first (LIFO)
+	Obligations   []*ObligationRecord    `protobuf:"bytes,1,rep,name=obligations,proto3" json:"obligations,omitempty"` // newest-first (LIFO) — the LIFO drain order
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1968,7 +1997,7 @@ type ResolveObligationRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	ObligationSeq int64                  `protobuf:"varint,2,opt,name=obligation_seq,json=obligationSeq,proto3" json:"obligation_seq,omitempty"`
-	Status        ObligationStatus       `protobuf:"varint,3,opt,name=status,proto3,enum=tape.v1.ObligationStatus" json:"status,omitempty"` // OBLIGATION_COMPENSATED | OBLIGATION_STUCK
+	Status        ObligationStatus       `protobuf:"varint,3,opt,name=status,proto3,enum=tape.v1.ObligationStatus" json:"status,omitempty"` // COMPENSATED | STUCK — terminal transitions only
 	ResultJson    string                 `protobuf:"bytes,4,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2033,16 +2062,25 @@ func (x *ResolveObligationRequest) GetResultJson() string {
 }
 
 type ObligationRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	Seq           int64                  `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
-	EffectKey     string                 `protobuf:"bytes,3,opt,name=effect_key,json=effectKey,proto3" json:"effect_key,omitempty"`
-	Kind          string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`
-	PayloadJson   string                 `protobuf:"bytes,5,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
-	Status        ObligationStatus       `protobuf:"varint,6,opt,name=status,proto3,enum=tape.v1.ObligationStatus" json:"status,omitempty"`
-	TsMs          int64                  `protobuf:"varint,7,opt,name=ts_ms,json=tsMs,proto3" json:"ts_ms,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	RunId       string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	Seq         int64                  `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
+	EffectKey   string                 `protobuf:"bytes,3,opt,name=effect_key,json=effectKey,proto3" json:"effect_key,omitempty"`
+	Kind        string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`
+	PayloadJson string                 `protobuf:"bytes,5,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
+	Status      ObligationStatus       `protobuf:"varint,6,opt,name=status,proto3,enum=tape.v1.ObligationStatus" json:"status,omitempty"`
+	TsMs        int64                  `protobuf:"varint,7,opt,name=ts_ms,json=tsMs,proto3" json:"ts_ms,omitempty"`
+	// The drainer surface.
+	CompensatorRef   string `protobuf:"bytes,8,opt,name=compensator_ref,json=compensatorRef,proto3" json:"compensator_ref,omitempty"`             // optional "module:attr" for generic drainers
+	Attempts         int32  `protobuf:"varint,9,opt,name=attempts,proto3" json:"attempts,omitempty"`                                              // count of failed attempts; bumped by RecordObligationAttempt
+	MaxAttempts      int32  `protobuf:"varint,10,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`                    // 0 => server default (5)
+	NextAttemptAtMs  int64  `protobuf:"varint,11,opt,name=next_attempt_at_ms,json=nextAttemptAtMs,proto3" json:"next_attempt_at_ms,omitempty"`    // backoff: PENDING is eligible only when this <= now
+	LastError        string `protobuf:"bytes,12,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`                           // populated by RecordObligationAttempt
+	ClaimedBy        string `protobuf:"bytes,13,opt,name=claimed_by,json=claimedBy,proto3" json:"claimed_by,omitempty"`                           // the drainer holding the lease (empty when not COMMITTED)
+	ClaimExpiresAtMs int64  `protobuf:"varint,14,opt,name=claim_expires_at_ms,json=claimExpiresAtMs,proto3" json:"claim_expires_at_ms,omitempty"` // lease deadline; expired COMMITTED is re-claimable
+	ResultJson       string `protobuf:"bytes,15,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`                        // populated by ResolveObligation
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ObligationRecord) Reset() {
@@ -2124,6 +2162,379 @@ func (x *ObligationRecord) GetTsMs() int64 {
 	return 0
 }
 
+func (x *ObligationRecord) GetCompensatorRef() string {
+	if x != nil {
+		return x.CompensatorRef
+	}
+	return ""
+}
+
+func (x *ObligationRecord) GetAttempts() int32 {
+	if x != nil {
+		return x.Attempts
+	}
+	return 0
+}
+
+func (x *ObligationRecord) GetMaxAttempts() int32 {
+	if x != nil {
+		return x.MaxAttempts
+	}
+	return 0
+}
+
+func (x *ObligationRecord) GetNextAttemptAtMs() int64 {
+	if x != nil {
+		return x.NextAttemptAtMs
+	}
+	return 0
+}
+
+func (x *ObligationRecord) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *ObligationRecord) GetClaimedBy() string {
+	if x != nil {
+		return x.ClaimedBy
+	}
+	return ""
+}
+
+func (x *ObligationRecord) GetClaimExpiresAtMs() int64 {
+	if x != nil {
+		return x.ClaimExpiresAtMs
+	}
+	return 0
+}
+
+func (x *ObligationRecord) GetResultJson() string {
+	if x != nil {
+		return x.ResultJson
+	}
+	return ""
+}
+
+type ListUnresolvedObligationsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Cross-run query for the obligations reactor (and operator dashboards).
+	// Defaults: include_pending=true, include_stuck=false, include_committed_expired=true.
+	Limit                   int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`                                                                      // 0 => server default (500)
+	NowMs                   int64 `protobuf:"varint,2,opt,name=now_ms,json=nowMs,proto3" json:"now_ms,omitempty"`                                                         // 0 => server's current clock
+	IncludePending          bool  `protobuf:"varint,3,opt,name=include_pending,json=includePending,proto3" json:"include_pending,omitempty"`                              // PENDING with next_attempt_at_ms <= now
+	IncludeStuck            bool  `protobuf:"varint,4,opt,name=include_stuck,json=includeStuck,proto3" json:"include_stuck,omitempty"`                                    // terminal STUCK rows (operator triage)
+	IncludeCommittedExpired bool  `protobuf:"varint,5,opt,name=include_committed_expired,json=includeCommittedExpired,proto3" json:"include_committed_expired,omitempty"` // COMMITTED with claim_expires_at_ms <= now (reclaim)
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *ListUnresolvedObligationsRequest) Reset() {
+	*x = ListUnresolvedObligationsRequest{}
+	mi := &file_tape_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListUnresolvedObligationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListUnresolvedObligationsRequest) ProtoMessage() {}
+
+func (x *ListUnresolvedObligationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListUnresolvedObligationsRequest.ProtoReflect.Descriptor instead.
+func (*ListUnresolvedObligationsRequest) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ListUnresolvedObligationsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListUnresolvedObligationsRequest) GetNowMs() int64 {
+	if x != nil {
+		return x.NowMs
+	}
+	return 0
+}
+
+func (x *ListUnresolvedObligationsRequest) GetIncludePending() bool {
+	if x != nil {
+		return x.IncludePending
+	}
+	return false
+}
+
+func (x *ListUnresolvedObligationsRequest) GetIncludeStuck() bool {
+	if x != nil {
+		return x.IncludeStuck
+	}
+	return false
+}
+
+func (x *ListUnresolvedObligationsRequest) GetIncludeCommittedExpired() bool {
+	if x != nil {
+		return x.IncludeCommittedExpired
+	}
+	return false
+}
+
+type ListUnresolvedObligationsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Obligations   []*ObligationRecord    `protobuf:"bytes,1,rep,name=obligations,proto3" json:"obligations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListUnresolvedObligationsResponse) Reset() {
+	*x = ListUnresolvedObligationsResponse{}
+	mi := &file_tape_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListUnresolvedObligationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListUnresolvedObligationsResponse) ProtoMessage() {}
+
+func (x *ListUnresolvedObligationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListUnresolvedObligationsResponse.ProtoReflect.Descriptor instead.
+func (*ListUnresolvedObligationsResponse) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ListUnresolvedObligationsResponse) GetObligations() []*ObligationRecord {
+	if x != nil {
+		return x.Obligations
+	}
+	return nil
+}
+
+type ClaimObligationRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Atomic CAS:  PENDING (and next_attempt_at_ms <= now)  ──► COMMITTED with lease.
+	// Also reclaims COMMITTED rows whose claim_expires_at_ms <= now (stale leases).
+	// Returns acquired=false (with the current row) if another claimer won.
+	RunId         string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	ObligationSeq int64  `protobuf:"varint,2,opt,name=obligation_seq,json=obligationSeq,proto3" json:"obligation_seq,omitempty"`
+	Claimer       string `protobuf:"bytes,3,opt,name=claimer,proto3" json:"claimer,omitempty"`                            // hostname / pod id — recorded as claimed_by
+	LeaseTtlMs    int64  `protobuf:"varint,4,opt,name=lease_ttl_ms,json=leaseTtlMs,proto3" json:"lease_ttl_ms,omitempty"` // 0 => server default (60_000)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClaimObligationRequest) Reset() {
+	*x = ClaimObligationRequest{}
+	mi := &file_tape_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClaimObligationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClaimObligationRequest) ProtoMessage() {}
+
+func (x *ClaimObligationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClaimObligationRequest.ProtoReflect.Descriptor instead.
+func (*ClaimObligationRequest) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ClaimObligationRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *ClaimObligationRequest) GetObligationSeq() int64 {
+	if x != nil {
+		return x.ObligationSeq
+	}
+	return 0
+}
+
+func (x *ClaimObligationRequest) GetClaimer() string {
+	if x != nil {
+		return x.Claimer
+	}
+	return ""
+}
+
+func (x *ClaimObligationRequest) GetLeaseTtlMs() int64 {
+	if x != nil {
+		return x.LeaseTtlMs
+	}
+	return 0
+}
+
+type ClaimObligationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Acquired      bool                   `protobuf:"varint,1,opt,name=acquired,proto3" json:"acquired,omitempty"`
+	Obligation    *ObligationRecord      `protobuf:"bytes,2,opt,name=obligation,proto3" json:"obligation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClaimObligationResponse) Reset() {
+	*x = ClaimObligationResponse{}
+	mi := &file_tape_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClaimObligationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClaimObligationResponse) ProtoMessage() {}
+
+func (x *ClaimObligationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClaimObligationResponse.ProtoReflect.Descriptor instead.
+func (*ClaimObligationResponse) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ClaimObligationResponse) GetAcquired() bool {
+	if x != nil {
+		return x.Acquired
+	}
+	return false
+}
+
+func (x *ClaimObligationResponse) GetObligation() *ObligationRecord {
+	if x != nil {
+		return x.Obligation
+	}
+	return nil
+}
+
+type RecordObligationAttemptRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Reports a *failed* attempt. The server bumps `attempts`, sets `last_error`,
+	// and either schedules a retry (status -> PENDING with next_attempt_at_ms) or
+	// marks the obligation terminally STUCK (when attempts >= max_attempts, or
+	// when next_attempt_at_ms == 0 meaning "this is a final failure").
+	RunId           string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	ObligationSeq   int64  `protobuf:"varint,2,opt,name=obligation_seq,json=obligationSeq,proto3" json:"obligation_seq,omitempty"`
+	Error           string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	NextAttemptAtMs int64  `protobuf:"varint,4,opt,name=next_attempt_at_ms,json=nextAttemptAtMs,proto3" json:"next_attempt_at_ms,omitempty"` // 0 => terminal (force STUCK regardless of attempts)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RecordObligationAttemptRequest) Reset() {
+	*x = RecordObligationAttemptRequest{}
+	mi := &file_tape_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordObligationAttemptRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordObligationAttemptRequest) ProtoMessage() {}
+
+func (x *RecordObligationAttemptRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordObligationAttemptRequest.ProtoReflect.Descriptor instead.
+func (*RecordObligationAttemptRequest) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *RecordObligationAttemptRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *RecordObligationAttemptRequest) GetObligationSeq() int64 {
+	if x != nil {
+		return x.ObligationSeq
+	}
+	return 0
+}
+
+func (x *RecordObligationAttemptRequest) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *RecordObligationAttemptRequest) GetNextAttemptAtMs() int64 {
+	if x != nil {
+		return x.NextAttemptAtMs
+	}
+	return 0
+}
+
 type SetBudgetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
@@ -2135,7 +2546,7 @@ type SetBudgetRequest struct {
 
 func (x *SetBudgetRequest) Reset() {
 	*x = SetBudgetRequest{}
-	mi := &file_tape_proto_msgTypes[28]
+	mi := &file_tape_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2147,7 +2558,7 @@ func (x *SetBudgetRequest) String() string {
 func (*SetBudgetRequest) ProtoMessage() {}
 
 func (x *SetBudgetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[28]
+	mi := &file_tape_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2160,7 +2571,7 @@ func (x *SetBudgetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetBudgetRequest.ProtoReflect.Descriptor instead.
 func (*SetBudgetRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{28}
+	return file_tape_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SetBudgetRequest) GetRunId() string {
@@ -2195,7 +2606,7 @@ type AdmitBudgetRequest struct {
 
 func (x *AdmitBudgetRequest) Reset() {
 	*x = AdmitBudgetRequest{}
-	mi := &file_tape_proto_msgTypes[29]
+	mi := &file_tape_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2207,7 +2618,7 @@ func (x *AdmitBudgetRequest) String() string {
 func (*AdmitBudgetRequest) ProtoMessage() {}
 
 func (x *AdmitBudgetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[29]
+	mi := &file_tape_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2220,7 +2631,7 @@ func (x *AdmitBudgetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdmitBudgetRequest.ProtoReflect.Descriptor instead.
 func (*AdmitBudgetRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{29}
+	return file_tape_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AdmitBudgetRequest) GetRunId() string {
@@ -2255,7 +2666,7 @@ type AdmitBudgetResponse struct {
 
 func (x *AdmitBudgetResponse) Reset() {
 	*x = AdmitBudgetResponse{}
-	mi := &file_tape_proto_msgTypes[30]
+	mi := &file_tape_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2267,7 +2678,7 @@ func (x *AdmitBudgetResponse) String() string {
 func (*AdmitBudgetResponse) ProtoMessage() {}
 
 func (x *AdmitBudgetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[30]
+	mi := &file_tape_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2280,7 +2691,7 @@ func (x *AdmitBudgetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdmitBudgetResponse.ProtoReflect.Descriptor instead.
 func (*AdmitBudgetResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{30}
+	return file_tape_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *AdmitBudgetResponse) GetAdmitted() bool {
@@ -2315,7 +2726,7 @@ type ChargeBudgetRequest struct {
 
 func (x *ChargeBudgetRequest) Reset() {
 	*x = ChargeBudgetRequest{}
-	mi := &file_tape_proto_msgTypes[31]
+	mi := &file_tape_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2327,7 +2738,7 @@ func (x *ChargeBudgetRequest) String() string {
 func (*ChargeBudgetRequest) ProtoMessage() {}
 
 func (x *ChargeBudgetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[31]
+	mi := &file_tape_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2340,7 +2751,7 @@ func (x *ChargeBudgetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChargeBudgetRequest.ProtoReflect.Descriptor instead.
 func (*ChargeBudgetRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{31}
+	return file_tape_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ChargeBudgetRequest) GetRunId() string {
@@ -2377,7 +2788,7 @@ type BudgetState struct {
 
 func (x *BudgetState) Reset() {
 	*x = BudgetState{}
-	mi := &file_tape_proto_msgTypes[32]
+	mi := &file_tape_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2389,7 +2800,7 @@ func (x *BudgetState) String() string {
 func (*BudgetState) ProtoMessage() {}
 
 func (x *BudgetState) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[32]
+	mi := &file_tape_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2402,7 +2813,7 @@ func (x *BudgetState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BudgetState.ProtoReflect.Descriptor instead.
 func (*BudgetState) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{32}
+	return file_tape_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *BudgetState) GetRunId() string {
@@ -2451,7 +2862,7 @@ type AwaitSignalRequest struct {
 
 func (x *AwaitSignalRequest) Reset() {
 	*x = AwaitSignalRequest{}
-	mi := &file_tape_proto_msgTypes[33]
+	mi := &file_tape_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2463,7 +2874,7 @@ func (x *AwaitSignalRequest) String() string {
 func (*AwaitSignalRequest) ProtoMessage() {}
 
 func (x *AwaitSignalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[33]
+	mi := &file_tape_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2476,7 +2887,7 @@ func (x *AwaitSignalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwaitSignalRequest.ProtoReflect.Descriptor instead.
 func (*AwaitSignalRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{33}
+	return file_tape_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *AwaitSignalRequest) GetRunId() string {
@@ -2510,7 +2921,7 @@ type AwaitSignalResponse struct {
 
 func (x *AwaitSignalResponse) Reset() {
 	*x = AwaitSignalResponse{}
-	mi := &file_tape_proto_msgTypes[34]
+	mi := &file_tape_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2522,7 +2933,7 @@ func (x *AwaitSignalResponse) String() string {
 func (*AwaitSignalResponse) ProtoMessage() {}
 
 func (x *AwaitSignalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[34]
+	mi := &file_tape_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2535,7 +2946,7 @@ func (x *AwaitSignalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwaitSignalResponse.ProtoReflect.Descriptor instead.
 func (*AwaitSignalResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{34}
+	return file_tape_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *AwaitSignalResponse) GetDelivered() bool {
@@ -2566,7 +2977,7 @@ type SendSignalRequest struct {
 
 func (x *SendSignalRequest) Reset() {
 	*x = SendSignalRequest{}
-	mi := &file_tape_proto_msgTypes[35]
+	mi := &file_tape_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2578,7 +2989,7 @@ func (x *SendSignalRequest) String() string {
 func (*SendSignalRequest) ProtoMessage() {}
 
 func (x *SendSignalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[35]
+	mi := &file_tape_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2591,7 +3002,7 @@ func (x *SendSignalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendSignalRequest.ProtoReflect.Descriptor instead.
 func (*SendSignalRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{35}
+	return file_tape_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *SendSignalRequest) GetRunId() string {
@@ -2647,7 +3058,7 @@ type SendSignalResponse struct {
 
 func (x *SendSignalResponse) Reset() {
 	*x = SendSignalResponse{}
-	mi := &file_tape_proto_msgTypes[36]
+	mi := &file_tape_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2659,7 +3070,7 @@ func (x *SendSignalResponse) String() string {
 func (*SendSignalResponse) ProtoMessage() {}
 
 func (x *SendSignalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[36]
+	mi := &file_tape_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2672,7 +3083,7 @@ func (x *SendSignalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendSignalResponse.ProtoReflect.Descriptor instead.
 func (*SendSignalResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{36}
+	return file_tape_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SendSignalResponse) GetAccepted() bool {
@@ -2708,7 +3119,7 @@ type ListPendingEffectsRequest struct {
 
 func (x *ListPendingEffectsRequest) Reset() {
 	*x = ListPendingEffectsRequest{}
-	mi := &file_tape_proto_msgTypes[37]
+	mi := &file_tape_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2720,7 +3131,7 @@ func (x *ListPendingEffectsRequest) String() string {
 func (*ListPendingEffectsRequest) ProtoMessage() {}
 
 func (x *ListPendingEffectsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[37]
+	mi := &file_tape_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2733,7 +3144,7 @@ func (x *ListPendingEffectsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPendingEffectsRequest.ProtoReflect.Descriptor instead.
 func (*ListPendingEffectsRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{37}
+	return file_tape_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ListPendingEffectsRequest) GetOlderThanMs() int64 {
@@ -2773,7 +3184,7 @@ type ListPendingEffectsResponse struct {
 
 func (x *ListPendingEffectsResponse) Reset() {
 	*x = ListPendingEffectsResponse{}
-	mi := &file_tape_proto_msgTypes[38]
+	mi := &file_tape_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2785,7 +3196,7 @@ func (x *ListPendingEffectsResponse) String() string {
 func (*ListPendingEffectsResponse) ProtoMessage() {}
 
 func (x *ListPendingEffectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[38]
+	mi := &file_tape_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2798,7 +3209,7 @@ func (x *ListPendingEffectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPendingEffectsResponse.ProtoReflect.Descriptor instead.
 func (*ListPendingEffectsResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{38}
+	return file_tape_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ListPendingEffectsResponse) GetEffects() []*EffectRecord {
@@ -2821,7 +3232,7 @@ type SetTimerRequest struct {
 
 func (x *SetTimerRequest) Reset() {
 	*x = SetTimerRequest{}
-	mi := &file_tape_proto_msgTypes[39]
+	mi := &file_tape_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2833,7 +3244,7 @@ func (x *SetTimerRequest) String() string {
 func (*SetTimerRequest) ProtoMessage() {}
 
 func (x *SetTimerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[39]
+	mi := &file_tape_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2846,7 +3257,7 @@ func (x *SetTimerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetTimerRequest.ProtoReflect.Descriptor instead.
 func (*SetTimerRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{39}
+	return file_tape_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SetTimerRequest) GetRunId() string {
@@ -2899,7 +3310,7 @@ type TimerRecord struct {
 
 func (x *TimerRecord) Reset() {
 	*x = TimerRecord{}
-	mi := &file_tape_proto_msgTypes[40]
+	mi := &file_tape_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2911,7 +3322,7 @@ func (x *TimerRecord) String() string {
 func (*TimerRecord) ProtoMessage() {}
 
 func (x *TimerRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[40]
+	mi := &file_tape_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2924,7 +3335,7 @@ func (x *TimerRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimerRecord.ProtoReflect.Descriptor instead.
 func (*TimerRecord) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{40}
+	return file_tape_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *TimerRecord) GetRunId() string {
@@ -2986,7 +3397,7 @@ type CancelTimerRequest struct {
 
 func (x *CancelTimerRequest) Reset() {
 	*x = CancelTimerRequest{}
-	mi := &file_tape_proto_msgTypes[41]
+	mi := &file_tape_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2998,7 +3409,7 @@ func (x *CancelTimerRequest) String() string {
 func (*CancelTimerRequest) ProtoMessage() {}
 
 func (x *CancelTimerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[41]
+	mi := &file_tape_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3011,7 +3422,7 @@ func (x *CancelTimerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelTimerRequest.ProtoReflect.Descriptor instead.
 func (*CancelTimerRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{41}
+	return file_tape_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *CancelTimerRequest) GetRunId() string {
@@ -3037,7 +3448,7 @@ type CancelTimerResponse struct {
 
 func (x *CancelTimerResponse) Reset() {
 	*x = CancelTimerResponse{}
-	mi := &file_tape_proto_msgTypes[42]
+	mi := &file_tape_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3049,7 +3460,7 @@ func (x *CancelTimerResponse) String() string {
 func (*CancelTimerResponse) ProtoMessage() {}
 
 func (x *CancelTimerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[42]
+	mi := &file_tape_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3062,7 +3473,7 @@ func (x *CancelTimerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelTimerResponse.ProtoReflect.Descriptor instead.
 func (*CancelTimerResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{42}
+	return file_tape_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *CancelTimerResponse) GetCancelled() bool {
@@ -3083,7 +3494,7 @@ type ListDueTimersRequest struct {
 
 func (x *ListDueTimersRequest) Reset() {
 	*x = ListDueTimersRequest{}
-	mi := &file_tape_proto_msgTypes[43]
+	mi := &file_tape_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3095,7 +3506,7 @@ func (x *ListDueTimersRequest) String() string {
 func (*ListDueTimersRequest) ProtoMessage() {}
 
 func (x *ListDueTimersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[43]
+	mi := &file_tape_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3108,7 +3519,7 @@ func (x *ListDueTimersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDueTimersRequest.ProtoReflect.Descriptor instead.
 func (*ListDueTimersRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{43}
+	return file_tape_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListDueTimersRequest) GetNowMs() int64 {
@@ -3141,7 +3552,7 @@ type ListDueTimersResponse struct {
 
 func (x *ListDueTimersResponse) Reset() {
 	*x = ListDueTimersResponse{}
-	mi := &file_tape_proto_msgTypes[44]
+	mi := &file_tape_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3153,7 +3564,7 @@ func (x *ListDueTimersResponse) String() string {
 func (*ListDueTimersResponse) ProtoMessage() {}
 
 func (x *ListDueTimersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[44]
+	mi := &file_tape_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3166,7 +3577,7 @@ func (x *ListDueTimersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDueTimersResponse.ProtoReflect.Descriptor instead.
 func (*ListDueTimersResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{44}
+	return file_tape_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ListDueTimersResponse) GetTimers() []*TimerRecord {
@@ -3187,7 +3598,7 @@ type SubscribeEventsRequest struct {
 
 func (x *SubscribeEventsRequest) Reset() {
 	*x = SubscribeEventsRequest{}
-	mi := &file_tape_proto_msgTypes[45]
+	mi := &file_tape_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3199,7 +3610,7 @@ func (x *SubscribeEventsRequest) String() string {
 func (*SubscribeEventsRequest) ProtoMessage() {}
 
 func (x *SubscribeEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[45]
+	mi := &file_tape_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3212,7 +3623,7 @@ func (x *SubscribeEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeEventsRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeEventsRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{45}
+	return file_tape_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SubscribeEventsRequest) GetFromTsMs() int64 {
@@ -3249,7 +3660,7 @@ type EventEntry struct {
 
 func (x *EventEntry) Reset() {
 	*x = EventEntry{}
-	mi := &file_tape_proto_msgTypes[46]
+	mi := &file_tape_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3261,7 +3672,7 @@ func (x *EventEntry) String() string {
 func (*EventEntry) ProtoMessage() {}
 
 func (x *EventEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[46]
+	mi := &file_tape_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3274,7 +3685,7 @@ func (x *EventEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventEntry.ProtoReflect.Descriptor instead.
 func (*EventEntry) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{46}
+	return file_tape_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *EventEntry) GetRunId() string {
@@ -3312,6 +3723,502 @@ func (x *EventEntry) GetTsMs() int64 {
 	return 0
 }
 
+type ValueRecord struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"` // user-chosen namespace (e.g. "treasury", "user:<id>", "run:<run_id>", "")
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ValueJson     string                 `protobuf:"bytes,3,opt,name=value_json,json=valueJson,proto3" json:"value_json,omitempty"`
+	Version       int64                  `protobuf:"varint,4,opt,name=version,proto3" json:"version,omitempty"` // monotonic per (namespace, key); CAS uses this
+	TsMs          int64                  `protobuf:"varint,5,opt,name=ts_ms,json=tsMs,proto3" json:"ts_ms,omitempty"`
+	Writer        string                 `protobuf:"bytes,6,opt,name=writer,proto3" json:"writer,omitempty"`    // free-form attribution (a process id, an agent name, …)
+	Deleted       bool                   `protobuf:"varint,7,opt,name=deleted,proto3" json:"deleted,omitempty"` // set on the event emitted by DeleteValue
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValueRecord) Reset() {
+	*x = ValueRecord{}
+	mi := &file_tape_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValueRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValueRecord) ProtoMessage() {}
+
+func (x *ValueRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValueRecord.ProtoReflect.Descriptor instead.
+func (*ValueRecord) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *ValueRecord) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *ValueRecord) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ValueRecord) GetValueJson() string {
+	if x != nil {
+		return x.ValueJson
+	}
+	return ""
+}
+
+func (x *ValueRecord) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ValueRecord) GetTsMs() int64 {
+	if x != nil {
+		return x.TsMs
+	}
+	return 0
+}
+
+func (x *ValueRecord) GetWriter() string {
+	if x != nil {
+		return x.Writer
+	}
+	return ""
+}
+
+func (x *ValueRecord) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+type WriteValueRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ValueJson     string                 `protobuf:"bytes,3,opt,name=value_json,json=valueJson,proto3" json:"value_json,omitempty"`
+	IfVersion     int64                  `protobuf:"varint,4,opt,name=if_version,json=ifVersion,proto3" json:"if_version,omitempty"` // optimistic CAS: only write if the current version == if_version. < 0 disables.
+	Writer        string                 `protobuf:"bytes,5,opt,name=writer,proto3" json:"writer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteValueRequest) Reset() {
+	*x = WriteValueRequest{}
+	mi := &file_tape_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteValueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteValueRequest) ProtoMessage() {}
+
+func (x *WriteValueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteValueRequest.ProtoReflect.Descriptor instead.
+func (*WriteValueRequest) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *WriteValueRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *WriteValueRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *WriteValueRequest) GetValueJson() string {
+	if x != nil {
+		return x.ValueJson
+	}
+	return ""
+}
+
+func (x *WriteValueRequest) GetIfVersion() int64 {
+	if x != nil {
+		return x.IfVersion
+	}
+	return 0
+}
+
+func (x *WriteValueRequest) GetWriter() string {
+	if x != nil {
+		return x.Writer
+	}
+	return ""
+}
+
+type GetValueRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetValueRequest) Reset() {
+	*x = GetValueRequest{}
+	mi := &file_tape_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetValueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetValueRequest) ProtoMessage() {}
+
+func (x *GetValueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetValueRequest.ProtoReflect.Descriptor instead.
+func (*GetValueRequest) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *GetValueRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *GetValueRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type GetValueResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Found         bool                   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	Value         *ValueRecord           `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetValueResponse) Reset() {
+	*x = GetValueResponse{}
+	mi := &file_tape_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetValueResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetValueResponse) ProtoMessage() {}
+
+func (x *GetValueResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetValueResponse.ProtoReflect.Descriptor instead.
+func (*GetValueResponse) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *GetValueResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *GetValueResponse) GetValue() *ValueRecord {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+type WatchValueRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	FromVersion   int64                  `protobuf:"varint,3,opt,name=from_version,json=fromVersion,proto3" json:"from_version,omitempty"` // 0 => start from the current value (one snapshot, then changes)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchValueRequest) Reset() {
+	*x = WatchValueRequest{}
+	mi := &file_tape_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchValueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchValueRequest) ProtoMessage() {}
+
+func (x *WatchValueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchValueRequest.ProtoReflect.Descriptor instead.
+func (*WatchValueRequest) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *WatchValueRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *WatchValueRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *WatchValueRequest) GetFromVersion() int64 {
+	if x != nil {
+		return x.FromVersion
+	}
+	return 0
+}
+
+type ValueEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         *ValueRecord           `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`                                        // the new value (or `deleted = true`)
+	PrevVersion   int64                  `protobuf:"varint,2,opt,name=prev_version,json=prevVersion,proto3" json:"prev_version,omitempty"`        // 0 if no prior value
+	PrevValueJson string                 `protobuf:"bytes,3,opt,name=prev_value_json,json=prevValueJson,proto3" json:"prev_value_json,omitempty"` // "" if no prior value
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValueEvent) Reset() {
+	*x = ValueEvent{}
+	mi := &file_tape_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValueEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValueEvent) ProtoMessage() {}
+
+func (x *ValueEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValueEvent.ProtoReflect.Descriptor instead.
+func (*ValueEvent) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *ValueEvent) GetValue() *ValueRecord {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *ValueEvent) GetPrevVersion() int64 {
+	if x != nil {
+		return x.PrevVersion
+	}
+	return 0
+}
+
+func (x *ValueEvent) GetPrevValueJson() string {
+	if x != nil {
+		return x.PrevValueJson
+	}
+	return ""
+}
+
+type DeleteValueRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteValueRequest) Reset() {
+	*x = DeleteValueRequest{}
+	mi := &file_tape_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteValueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteValueRequest) ProtoMessage() {}
+
+func (x *DeleteValueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteValueRequest.ProtoReflect.Descriptor instead.
+func (*DeleteValueRequest) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *DeleteValueRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *DeleteValueRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type DeleteValueResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	Version       int64                  `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteValueResponse) Reset() {
+	*x = DeleteValueResponse{}
+	mi := &file_tape_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteValueResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteValueResponse) ProtoMessage() {}
+
+func (x *DeleteValueResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tape_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteValueResponse.ProtoReflect.Descriptor instead.
+func (*DeleteValueResponse) Descriptor() ([]byte, []int) {
+	return file_tape_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *DeleteValueResponse) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+func (x *DeleteValueResponse) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
 type Session struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	AppName          string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
@@ -3326,7 +4233,7 @@ type Session struct {
 
 func (x *Session) Reset() {
 	*x = Session{}
-	mi := &file_tape_proto_msgTypes[47]
+	mi := &file_tape_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3338,7 +4245,7 @@ func (x *Session) String() string {
 func (*Session) ProtoMessage() {}
 
 func (x *Session) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[47]
+	mi := &file_tape_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3351,7 +4258,7 @@ func (x *Session) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Session.ProtoReflect.Descriptor instead.
 func (*Session) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{47}
+	return file_tape_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *Session) GetAppName() string {
@@ -3411,7 +4318,7 @@ type EventRecord struct {
 
 func (x *EventRecord) Reset() {
 	*x = EventRecord{}
-	mi := &file_tape_proto_msgTypes[48]
+	mi := &file_tape_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3423,7 +4330,7 @@ func (x *EventRecord) String() string {
 func (*EventRecord) ProtoMessage() {}
 
 func (x *EventRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[48]
+	mi := &file_tape_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3436,7 +4343,7 @@ func (x *EventRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventRecord.ProtoReflect.Descriptor instead.
 func (*EventRecord) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{48}
+	return file_tape_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *EventRecord) GetId() string {
@@ -3500,7 +4407,7 @@ type CreateSessionRequest struct {
 
 func (x *CreateSessionRequest) Reset() {
 	*x = CreateSessionRequest{}
-	mi := &file_tape_proto_msgTypes[49]
+	mi := &file_tape_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3512,7 +4419,7 @@ func (x *CreateSessionRequest) String() string {
 func (*CreateSessionRequest) ProtoMessage() {}
 
 func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[49]
+	mi := &file_tape_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3525,7 +4432,7 @@ func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionRequest.ProtoReflect.Descriptor instead.
 func (*CreateSessionRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{49}
+	return file_tape_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *CreateSessionRequest) GetAppName() string {
@@ -3568,7 +4475,7 @@ type GetSessionRequest struct {
 
 func (x *GetSessionRequest) Reset() {
 	*x = GetSessionRequest{}
-	mi := &file_tape_proto_msgTypes[50]
+	mi := &file_tape_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3580,7 +4487,7 @@ func (x *GetSessionRequest) String() string {
 func (*GetSessionRequest) ProtoMessage() {}
 
 func (x *GetSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[50]
+	mi := &file_tape_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3593,7 +4500,7 @@ func (x *GetSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionRequest.ProtoReflect.Descriptor instead.
 func (*GetSessionRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{50}
+	return file_tape_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *GetSessionRequest) GetAppName() string {
@@ -3634,7 +4541,7 @@ type GetSessionResponse struct {
 
 func (x *GetSessionResponse) Reset() {
 	*x = GetSessionResponse{}
-	mi := &file_tape_proto_msgTypes[51]
+	mi := &file_tape_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3646,7 +4553,7 @@ func (x *GetSessionResponse) String() string {
 func (*GetSessionResponse) ProtoMessage() {}
 
 func (x *GetSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[51]
+	mi := &file_tape_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3659,7 +4566,7 @@ func (x *GetSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionResponse.ProtoReflect.Descriptor instead.
 func (*GetSessionResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{51}
+	return file_tape_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *GetSessionResponse) GetFound() bool {
@@ -3686,7 +4593,7 @@ type ListSessionsRequest struct {
 
 func (x *ListSessionsRequest) Reset() {
 	*x = ListSessionsRequest{}
-	mi := &file_tape_proto_msgTypes[52]
+	mi := &file_tape_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3698,7 +4605,7 @@ func (x *ListSessionsRequest) String() string {
 func (*ListSessionsRequest) ProtoMessage() {}
 
 func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[52]
+	mi := &file_tape_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3711,7 +4618,7 @@ func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{52}
+	return file_tape_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *ListSessionsRequest) GetAppName() string {
@@ -3737,7 +4644,7 @@ type ListSessionsResponse struct {
 
 func (x *ListSessionsResponse) Reset() {
 	*x = ListSessionsResponse{}
-	mi := &file_tape_proto_msgTypes[53]
+	mi := &file_tape_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3749,7 +4656,7 @@ func (x *ListSessionsResponse) String() string {
 func (*ListSessionsResponse) ProtoMessage() {}
 
 func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[53]
+	mi := &file_tape_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3762,7 +4669,7 @@ func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{53}
+	return file_tape_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *ListSessionsResponse) GetSessions() []*Session {
@@ -3783,7 +4690,7 @@ type DeleteSessionRequest struct {
 
 func (x *DeleteSessionRequest) Reset() {
 	*x = DeleteSessionRequest{}
-	mi := &file_tape_proto_msgTypes[54]
+	mi := &file_tape_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3795,7 +4702,7 @@ func (x *DeleteSessionRequest) String() string {
 func (*DeleteSessionRequest) ProtoMessage() {}
 
 func (x *DeleteSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[54]
+	mi := &file_tape_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3808,7 +4715,7 @@ func (x *DeleteSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSessionRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSessionRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{54}
+	return file_tape_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *DeleteSessionRequest) GetAppName() string {
@@ -3841,7 +4748,7 @@ type DeleteSessionResponse struct {
 
 func (x *DeleteSessionResponse) Reset() {
 	*x = DeleteSessionResponse{}
-	mi := &file_tape_proto_msgTypes[55]
+	mi := &file_tape_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3853,7 +4760,7 @@ func (x *DeleteSessionResponse) String() string {
 func (*DeleteSessionResponse) ProtoMessage() {}
 
 func (x *DeleteSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[55]
+	mi := &file_tape_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3866,7 +4773,7 @@ func (x *DeleteSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSessionResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSessionResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{55}
+	return file_tape_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *DeleteSessionResponse) GetDeleted() bool {
@@ -3889,7 +4796,7 @@ type AppendEventRequest struct {
 
 func (x *AppendEventRequest) Reset() {
 	*x = AppendEventRequest{}
-	mi := &file_tape_proto_msgTypes[56]
+	mi := &file_tape_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3901,7 +4808,7 @@ func (x *AppendEventRequest) String() string {
 func (*AppendEventRequest) ProtoMessage() {}
 
 func (x *AppendEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[56]
+	mi := &file_tape_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3914,7 +4821,7 @@ func (x *AppendEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendEventRequest.ProtoReflect.Descriptor instead.
 func (*AppendEventRequest) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{56}
+	return file_tape_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *AppendEventRequest) GetAppName() string {
@@ -3962,7 +4869,7 @@ type AppendEventResponse struct {
 
 func (x *AppendEventResponse) Reset() {
 	*x = AppendEventResponse{}
-	mi := &file_tape_proto_msgTypes[57]
+	mi := &file_tape_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3974,7 +4881,7 @@ func (x *AppendEventResponse) String() string {
 func (*AppendEventResponse) ProtoMessage() {}
 
 func (x *AppendEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tape_proto_msgTypes[57]
+	mi := &file_tape_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3987,7 +4894,7 @@ func (x *AppendEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendEventResponse.ProtoReflect.Descriptor instead.
 func (*AppendEventResponse) Descriptor() ([]byte, []int) {
-	return file_tape_proto_rawDescGZIP(), []int{57}
+	return file_tape_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *AppendEventResponse) GetEvent() *EventRecord {
@@ -4144,16 +5051,19 @@ const file_tape_proto_rawDesc = "" +
 	"\n" +
 	"error_json\x18\t \x01(\tR\terrorJson\x12\x13\n" +
 	"\x05ts_ms\x18\n" +
-	" \x01(\x03R\x04tsMs\"\x8a\x01\n" +
+	" \x01(\x03R\x04tsMs\"\xd6\x01\n" +
 	"\x1bRegisterCompensationRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1d\n" +
 	"\n" +
 	"effect_key\x18\x02 \x01(\tR\teffectKey\x12\x12\n" +
 	"\x04kind\x18\x03 \x01(\tR\x04kind\x12!\n" +
-	"\fpayload_json\x18\x04 \x01(\tR\vpayloadJson\"X\n" +
+	"\fpayload_json\x18\x04 \x01(\tR\vpayloadJson\x12'\n" +
+	"\x0fcompensator_ref\x18\x05 \x01(\tR\x0ecompensatorRef\x12!\n" +
+	"\fmax_attempts\x18\x06 \x01(\x05R\vmaxAttempts\"\x98\x01\n" +
 	"\x16ListObligationsRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12'\n" +
-	"\x0fonly_unresolved\x18\x02 \x01(\bR\x0eonlyUnresolved\"V\n" +
+	"\x0fonly_unresolved\x18\x02 \x01(\bR\x0eonlyUnresolved\x12>\n" +
+	"\rstatus_filter\x18\x03 \x01(\x0e2\x19.tape.v1.ObligationStatusR\fstatusFilter\"V\n" +
 	"\x17ListObligationsResponse\x12;\n" +
 	"\vobligations\x18\x01 \x03(\v2\x19.tape.v1.ObligationRecordR\vobligations\"\xac\x01\n" +
 	"\x18ResolveObligationRequest\x12\x15\n" +
@@ -4161,7 +5071,7 @@ const file_tape_proto_rawDesc = "" +
 	"\x0eobligation_seq\x18\x02 \x01(\x03R\robligationSeq\x121\n" +
 	"\x06status\x18\x03 \x01(\x0e2\x19.tape.v1.ObligationStatusR\x06status\x12\x1f\n" +
 	"\vresult_json\x18\x04 \x01(\tR\n" +
-	"resultJson\"\xd9\x01\n" +
+	"resultJson\"\xfc\x03\n" +
 	"\x10ObligationRecord\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x10\n" +
 	"\x03seq\x18\x02 \x01(\x03R\x03seq\x12\x1d\n" +
@@ -4170,7 +5080,43 @@ const file_tape_proto_rawDesc = "" +
 	"\x04kind\x18\x04 \x01(\tR\x04kind\x12!\n" +
 	"\fpayload_json\x18\x05 \x01(\tR\vpayloadJson\x121\n" +
 	"\x06status\x18\x06 \x01(\x0e2\x19.tape.v1.ObligationStatusR\x06status\x12\x13\n" +
-	"\x05ts_ms\x18\a \x01(\x03R\x04tsMs\"_\n" +
+	"\x05ts_ms\x18\a \x01(\x03R\x04tsMs\x12'\n" +
+	"\x0fcompensator_ref\x18\b \x01(\tR\x0ecompensatorRef\x12\x1a\n" +
+	"\battempts\x18\t \x01(\x05R\battempts\x12!\n" +
+	"\fmax_attempts\x18\n" +
+	" \x01(\x05R\vmaxAttempts\x12+\n" +
+	"\x12next_attempt_at_ms\x18\v \x01(\x03R\x0fnextAttemptAtMs\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\f \x01(\tR\tlastError\x12\x1d\n" +
+	"\n" +
+	"claimed_by\x18\r \x01(\tR\tclaimedBy\x12-\n" +
+	"\x13claim_expires_at_ms\x18\x0e \x01(\x03R\x10claimExpiresAtMs\x12\x1f\n" +
+	"\vresult_json\x18\x0f \x01(\tR\n" +
+	"resultJson\"\xd9\x01\n" +
+	" ListUnresolvedObligationsRequest\x12\x14\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x15\n" +
+	"\x06now_ms\x18\x02 \x01(\x03R\x05nowMs\x12'\n" +
+	"\x0finclude_pending\x18\x03 \x01(\bR\x0eincludePending\x12#\n" +
+	"\rinclude_stuck\x18\x04 \x01(\bR\fincludeStuck\x12:\n" +
+	"\x19include_committed_expired\x18\x05 \x01(\bR\x17includeCommittedExpired\"`\n" +
+	"!ListUnresolvedObligationsResponse\x12;\n" +
+	"\vobligations\x18\x01 \x03(\v2\x19.tape.v1.ObligationRecordR\vobligations\"\x92\x01\n" +
+	"\x16ClaimObligationRequest\x12\x15\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12%\n" +
+	"\x0eobligation_seq\x18\x02 \x01(\x03R\robligationSeq\x12\x18\n" +
+	"\aclaimer\x18\x03 \x01(\tR\aclaimer\x12 \n" +
+	"\flease_ttl_ms\x18\x04 \x01(\x03R\n" +
+	"leaseTtlMs\"p\n" +
+	"\x17ClaimObligationResponse\x12\x1a\n" +
+	"\bacquired\x18\x01 \x01(\bR\bacquired\x129\n" +
+	"\n" +
+	"obligation\x18\x02 \x01(\v2\x19.tape.v1.ObligationRecordR\n" +
+	"obligation\"\xa1\x01\n" +
+	"\x1eRecordObligationAttemptRequest\x12\x15\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12%\n" +
+	"\x0eobligation_seq\x18\x02 \x01(\x03R\robligationSeq\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12+\n" +
+	"\x12next_attempt_at_ms\x18\x04 \x01(\x03R\x0fnextAttemptAtMs\"_\n" +
 	"\x10SetBudgetRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x17\n" +
 	"\ausd_cap\x18\x02 \x01(\x01R\x06usdCap\x12\x1b\n" +
@@ -4258,7 +5204,45 @@ const file_tape_proto_rawDesc = "" +
 	"\x03seq\x18\x02 \x01(\x03R\x03seq\x12\x12\n" +
 	"\x04kind\x18\x03 \x01(\tR\x04kind\x12!\n" +
 	"\fpayload_json\x18\x04 \x01(\tR\vpayloadJson\x12\x13\n" +
-	"\x05ts_ms\x18\x05 \x01(\x03R\x04tsMs\"\xd8\x01\n" +
+	"\x05ts_ms\x18\x05 \x01(\x03R\x04tsMs\"\xbd\x01\n" +
+	"\vValueRecord\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12\x1d\n" +
+	"\n" +
+	"value_json\x18\x03 \x01(\tR\tvalueJson\x12\x18\n" +
+	"\aversion\x18\x04 \x01(\x03R\aversion\x12\x13\n" +
+	"\x05ts_ms\x18\x05 \x01(\x03R\x04tsMs\x12\x16\n" +
+	"\x06writer\x18\x06 \x01(\tR\x06writer\x12\x18\n" +
+	"\adeleted\x18\a \x01(\bR\adeleted\"\x99\x01\n" +
+	"\x11WriteValueRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12\x1d\n" +
+	"\n" +
+	"value_json\x18\x03 \x01(\tR\tvalueJson\x12\x1d\n" +
+	"\n" +
+	"if_version\x18\x04 \x01(\x03R\tifVersion\x12\x16\n" +
+	"\x06writer\x18\x05 \x01(\tR\x06writer\"A\n" +
+	"\x0fGetValueRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\"T\n" +
+	"\x10GetValueResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12*\n" +
+	"\x05value\x18\x02 \x01(\v2\x14.tape.v1.ValueRecordR\x05value\"f\n" +
+	"\x11WatchValueRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12!\n" +
+	"\ffrom_version\x18\x03 \x01(\x03R\vfromVersion\"\x83\x01\n" +
+	"\n" +
+	"ValueEvent\x12*\n" +
+	"\x05value\x18\x01 \x01(\v2\x14.tape.v1.ValueRecordR\x05value\x12!\n" +
+	"\fprev_version\x18\x02 \x01(\x03R\vprevVersion\x12&\n" +
+	"\x0fprev_value_json\x18\x03 \x01(\tR\rprevValueJson\"D\n" +
+	"\x12DeleteValueRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\"I\n" +
+	"\x13DeleteValueResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x03R\aversion\"\xd8\x01\n" +
 	"\aSession\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1d\n" +
@@ -4336,7 +5320,7 @@ const file_tape_proto_rawDesc = "" +
 	"\x19OBLIGATION_STATUS_PENDING\x10\x01\x12\x1f\n" +
 	"\x1bOBLIGATION_STATUS_COMMITTED\x10\x02\x12!\n" +
 	"\x1dOBLIGATION_STATUS_COMPENSATED\x10\x03\x12\x1b\n" +
-	"\x17OBLIGATION_STATUS_STUCK\x10\x042\xa4\x11\n" +
+	"\x17OBLIGATION_STATUS_STUCK\x10\x042\xd9\x15\n" +
 	"\x04Tape\x12?\n" +
 	"\bBeginRun\x12\x18.tape.v1.BeginRunRequest\x1a\x19.tape.v1.BeginRunResponse\x12B\n" +
 	"\tResumeRun\x12\x19.tape.v1.ResumeRunRequest\x1a\x1a.tape.v1.ResumeRunResponse\x129\n" +
@@ -4352,7 +5336,10 @@ const file_tape_proto_rawDesc = "" +
 	"\x0fReconcileEffect\x12\x1f.tape.v1.ReconcileEffectRequest\x1a\x15.tape.v1.EffectRecord\x12W\n" +
 	"\x14RegisterCompensation\x12$.tape.v1.RegisterCompensationRequest\x1a\x19.tape.v1.ObligationRecord\x12T\n" +
 	"\x0fListObligations\x12\x1f.tape.v1.ListObligationsRequest\x1a .tape.v1.ListObligationsResponse\x12Q\n" +
-	"\x11ResolveObligation\x12!.tape.v1.ResolveObligationRequest\x1a\x19.tape.v1.ObligationRecord\x12<\n" +
+	"\x11ResolveObligation\x12!.tape.v1.ResolveObligationRequest\x1a\x19.tape.v1.ObligationRecord\x12r\n" +
+	"\x19ListUnresolvedObligations\x12).tape.v1.ListUnresolvedObligationsRequest\x1a*.tape.v1.ListUnresolvedObligationsResponse\x12T\n" +
+	"\x0fClaimObligation\x12\x1f.tape.v1.ClaimObligationRequest\x1a .tape.v1.ClaimObligationResponse\x12]\n" +
+	"\x17RecordObligationAttempt\x12'.tape.v1.RecordObligationAttemptRequest\x1a\x19.tape.v1.ObligationRecord\x12<\n" +
 	"\tSetBudget\x12\x19.tape.v1.SetBudgetRequest\x1a\x14.tape.v1.BudgetState\x12H\n" +
 	"\vAdmitBudget\x12\x1b.tape.v1.AdmitBudgetRequest\x1a\x1c.tape.v1.AdmitBudgetResponse\x12B\n" +
 	"\fChargeBudget\x12\x1c.tape.v1.ChargeBudgetRequest\x1a\x14.tape.v1.BudgetState\x12H\n" +
@@ -4363,13 +5350,19 @@ const file_tape_proto_rawDesc = "" +
 	"\bSetTimer\x12\x18.tape.v1.SetTimerRequest\x1a\x14.tape.v1.TimerRecord\x12H\n" +
 	"\vCancelTimer\x12\x1b.tape.v1.CancelTimerRequest\x1a\x1c.tape.v1.CancelTimerResponse\x12N\n" +
 	"\rListDueTimers\x12\x1d.tape.v1.ListDueTimersRequest\x1a\x1e.tape.v1.ListDueTimersResponse\x12I\n" +
-	"\x0fSubscribeEvents\x12\x1f.tape.v1.SubscribeEventsRequest\x1a\x13.tape.v1.EventEntry0\x01\x12@\n" +
+	"\x0fSubscribeEvents\x12\x1f.tape.v1.SubscribeEventsRequest\x1a\x13.tape.v1.EventEntry0\x01\x12>\n" +
+	"\n" +
+	"WriteValue\x12\x1a.tape.v1.WriteValueRequest\x1a\x14.tape.v1.ValueRecord\x12?\n" +
+	"\bGetValue\x12\x18.tape.v1.GetValueRequest\x1a\x19.tape.v1.GetValueResponse\x12?\n" +
+	"\n" +
+	"WatchValue\x12\x1a.tape.v1.WatchValueRequest\x1a\x13.tape.v1.ValueEvent0\x01\x12H\n" +
+	"\vDeleteValue\x12\x1b.tape.v1.DeleteValueRequest\x1a\x1c.tape.v1.DeleteValueResponse\x12@\n" +
 	"\rCreateSession\x12\x1d.tape.v1.CreateSessionRequest\x1a\x10.tape.v1.Session\x12E\n" +
 	"\n" +
 	"GetSession\x12\x1a.tape.v1.GetSessionRequest\x1a\x1b.tape.v1.GetSessionResponse\x12K\n" +
 	"\fListSessions\x12\x1c.tape.v1.ListSessionsRequest\x1a\x1d.tape.v1.ListSessionsResponse\x12N\n" +
 	"\rDeleteSession\x12\x1d.tape.v1.DeleteSessionRequest\x1a\x1e.tape.v1.DeleteSessionResponse\x12H\n" +
-	"\vAppendEvent\x12\x1b.tape.v1.AppendEventRequest\x1a\x1c.tape.v1.AppendEventResponseBGZEgithub.com/vamsiramakrishnan/durable-agents/tape/sdk/go/tapepb;tapepbb\x06proto3"
+	"\vAppendEvent\x12\x1b.tape.v1.AppendEventRequest\x1a\x1c.tape.v1.AppendEventResponseb\x06proto3"
 
 var (
 	file_tape_proto_rawDescOnce sync.Once
@@ -4384,69 +5377,82 @@ func file_tape_proto_rawDescGZIP() []byte {
 }
 
 var file_tape_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_tape_proto_msgTypes = make([]protoimpl.MessageInfo, 58)
+var file_tape_proto_msgTypes = make([]protoimpl.MessageInfo, 71)
 var file_tape_proto_goTypes = []any{
-	(RunStatus)(0),                      // 0: tape.v1.RunStatus
-	(EffectStatus)(0),                   // 1: tape.v1.EffectStatus
-	(ObligationStatus)(0),               // 2: tape.v1.ObligationStatus
-	(*BeginRunRequest)(nil),             // 3: tape.v1.BeginRunRequest
-	(*BeginRunResponse)(nil),            // 4: tape.v1.BeginRunResponse
-	(*ResumeRunRequest)(nil),            // 5: tape.v1.ResumeRunRequest
-	(*ResumeRunResponse)(nil),           // 6: tape.v1.ResumeRunResponse
-	(*EndRunRequest)(nil),               // 7: tape.v1.EndRunRequest
-	(*EndRunResponse)(nil),              // 8: tape.v1.EndRunResponse
-	(*GetRunRequest)(nil),               // 9: tape.v1.GetRunRequest
-	(*ListRunsToRecoverRequest)(nil),    // 10: tape.v1.ListRunsToRecoverRequest
-	(*ListRunsToRecoverResponse)(nil),   // 11: tape.v1.ListRunsToRecoverResponse
-	(*SubscribeRunRequest)(nil),         // 12: tape.v1.SubscribeRunRequest
-	(*RunState)(nil),                    // 13: tape.v1.RunState
-	(*JournalEntry)(nil),                // 14: tape.v1.JournalEntry
-	(*RecordDecisionRequest)(nil),       // 15: tape.v1.RecordDecisionRequest
-	(*DecisionRecord)(nil),              // 16: tape.v1.DecisionRecord
-	(*GetDecisionRequest)(nil),          // 17: tape.v1.GetDecisionRequest
-	(*GetDecisionResponse)(nil),         // 18: tape.v1.GetDecisionResponse
-	(*BeginEffectRequest)(nil),          // 19: tape.v1.BeginEffectRequest
-	(*BeginEffectResponse)(nil),         // 20: tape.v1.BeginEffectResponse
-	(*CompleteEffectRequest)(nil),       // 21: tape.v1.CompleteEffectRequest
-	(*GetEffectRequest)(nil),            // 22: tape.v1.GetEffectRequest
-	(*GetEffectResponse)(nil),           // 23: tape.v1.GetEffectResponse
-	(*ReconcileEffectRequest)(nil),      // 24: tape.v1.ReconcileEffectRequest
-	(*EffectRecord)(nil),                // 25: tape.v1.EffectRecord
-	(*RegisterCompensationRequest)(nil), // 26: tape.v1.RegisterCompensationRequest
-	(*ListObligationsRequest)(nil),      // 27: tape.v1.ListObligationsRequest
-	(*ListObligationsResponse)(nil),     // 28: tape.v1.ListObligationsResponse
-	(*ResolveObligationRequest)(nil),    // 29: tape.v1.ResolveObligationRequest
-	(*ObligationRecord)(nil),            // 30: tape.v1.ObligationRecord
-	(*SetBudgetRequest)(nil),            // 31: tape.v1.SetBudgetRequest
-	(*AdmitBudgetRequest)(nil),          // 32: tape.v1.AdmitBudgetRequest
-	(*AdmitBudgetResponse)(nil),         // 33: tape.v1.AdmitBudgetResponse
-	(*ChargeBudgetRequest)(nil),         // 34: tape.v1.ChargeBudgetRequest
-	(*BudgetState)(nil),                 // 35: tape.v1.BudgetState
-	(*AwaitSignalRequest)(nil),          // 36: tape.v1.AwaitSignalRequest
-	(*AwaitSignalResponse)(nil),         // 37: tape.v1.AwaitSignalResponse
-	(*SendSignalRequest)(nil),           // 38: tape.v1.SendSignalRequest
-	(*SendSignalResponse)(nil),          // 39: tape.v1.SendSignalResponse
-	(*ListPendingEffectsRequest)(nil),   // 40: tape.v1.ListPendingEffectsRequest
-	(*ListPendingEffectsResponse)(nil),  // 41: tape.v1.ListPendingEffectsResponse
-	(*SetTimerRequest)(nil),             // 42: tape.v1.SetTimerRequest
-	(*TimerRecord)(nil),                 // 43: tape.v1.TimerRecord
-	(*CancelTimerRequest)(nil),          // 44: tape.v1.CancelTimerRequest
-	(*CancelTimerResponse)(nil),         // 45: tape.v1.CancelTimerResponse
-	(*ListDueTimersRequest)(nil),        // 46: tape.v1.ListDueTimersRequest
-	(*ListDueTimersResponse)(nil),       // 47: tape.v1.ListDueTimersResponse
-	(*SubscribeEventsRequest)(nil),      // 48: tape.v1.SubscribeEventsRequest
-	(*EventEntry)(nil),                  // 49: tape.v1.EventEntry
-	(*Session)(nil),                     // 50: tape.v1.Session
-	(*EventRecord)(nil),                 // 51: tape.v1.EventRecord
-	(*CreateSessionRequest)(nil),        // 52: tape.v1.CreateSessionRequest
-	(*GetSessionRequest)(nil),           // 53: tape.v1.GetSessionRequest
-	(*GetSessionResponse)(nil),          // 54: tape.v1.GetSessionResponse
-	(*ListSessionsRequest)(nil),         // 55: tape.v1.ListSessionsRequest
-	(*ListSessionsResponse)(nil),        // 56: tape.v1.ListSessionsResponse
-	(*DeleteSessionRequest)(nil),        // 57: tape.v1.DeleteSessionRequest
-	(*DeleteSessionResponse)(nil),       // 58: tape.v1.DeleteSessionResponse
-	(*AppendEventRequest)(nil),          // 59: tape.v1.AppendEventRequest
-	(*AppendEventResponse)(nil),         // 60: tape.v1.AppendEventResponse
+	(RunStatus)(0),                            // 0: tape.v1.RunStatus
+	(EffectStatus)(0),                         // 1: tape.v1.EffectStatus
+	(ObligationStatus)(0),                     // 2: tape.v1.ObligationStatus
+	(*BeginRunRequest)(nil),                   // 3: tape.v1.BeginRunRequest
+	(*BeginRunResponse)(nil),                  // 4: tape.v1.BeginRunResponse
+	(*ResumeRunRequest)(nil),                  // 5: tape.v1.ResumeRunRequest
+	(*ResumeRunResponse)(nil),                 // 6: tape.v1.ResumeRunResponse
+	(*EndRunRequest)(nil),                     // 7: tape.v1.EndRunRequest
+	(*EndRunResponse)(nil),                    // 8: tape.v1.EndRunResponse
+	(*GetRunRequest)(nil),                     // 9: tape.v1.GetRunRequest
+	(*ListRunsToRecoverRequest)(nil),          // 10: tape.v1.ListRunsToRecoverRequest
+	(*ListRunsToRecoverResponse)(nil),         // 11: tape.v1.ListRunsToRecoverResponse
+	(*SubscribeRunRequest)(nil),               // 12: tape.v1.SubscribeRunRequest
+	(*RunState)(nil),                          // 13: tape.v1.RunState
+	(*JournalEntry)(nil),                      // 14: tape.v1.JournalEntry
+	(*RecordDecisionRequest)(nil),             // 15: tape.v1.RecordDecisionRequest
+	(*DecisionRecord)(nil),                    // 16: tape.v1.DecisionRecord
+	(*GetDecisionRequest)(nil),                // 17: tape.v1.GetDecisionRequest
+	(*GetDecisionResponse)(nil),               // 18: tape.v1.GetDecisionResponse
+	(*BeginEffectRequest)(nil),                // 19: tape.v1.BeginEffectRequest
+	(*BeginEffectResponse)(nil),               // 20: tape.v1.BeginEffectResponse
+	(*CompleteEffectRequest)(nil),             // 21: tape.v1.CompleteEffectRequest
+	(*GetEffectRequest)(nil),                  // 22: tape.v1.GetEffectRequest
+	(*GetEffectResponse)(nil),                 // 23: tape.v1.GetEffectResponse
+	(*ReconcileEffectRequest)(nil),            // 24: tape.v1.ReconcileEffectRequest
+	(*EffectRecord)(nil),                      // 25: tape.v1.EffectRecord
+	(*RegisterCompensationRequest)(nil),       // 26: tape.v1.RegisterCompensationRequest
+	(*ListObligationsRequest)(nil),            // 27: tape.v1.ListObligationsRequest
+	(*ListObligationsResponse)(nil),           // 28: tape.v1.ListObligationsResponse
+	(*ResolveObligationRequest)(nil),          // 29: tape.v1.ResolveObligationRequest
+	(*ObligationRecord)(nil),                  // 30: tape.v1.ObligationRecord
+	(*ListUnresolvedObligationsRequest)(nil),  // 31: tape.v1.ListUnresolvedObligationsRequest
+	(*ListUnresolvedObligationsResponse)(nil), // 32: tape.v1.ListUnresolvedObligationsResponse
+	(*ClaimObligationRequest)(nil),            // 33: tape.v1.ClaimObligationRequest
+	(*ClaimObligationResponse)(nil),           // 34: tape.v1.ClaimObligationResponse
+	(*RecordObligationAttemptRequest)(nil),    // 35: tape.v1.RecordObligationAttemptRequest
+	(*SetBudgetRequest)(nil),                  // 36: tape.v1.SetBudgetRequest
+	(*AdmitBudgetRequest)(nil),                // 37: tape.v1.AdmitBudgetRequest
+	(*AdmitBudgetResponse)(nil),               // 38: tape.v1.AdmitBudgetResponse
+	(*ChargeBudgetRequest)(nil),               // 39: tape.v1.ChargeBudgetRequest
+	(*BudgetState)(nil),                       // 40: tape.v1.BudgetState
+	(*AwaitSignalRequest)(nil),                // 41: tape.v1.AwaitSignalRequest
+	(*AwaitSignalResponse)(nil),               // 42: tape.v1.AwaitSignalResponse
+	(*SendSignalRequest)(nil),                 // 43: tape.v1.SendSignalRequest
+	(*SendSignalResponse)(nil),                // 44: tape.v1.SendSignalResponse
+	(*ListPendingEffectsRequest)(nil),         // 45: tape.v1.ListPendingEffectsRequest
+	(*ListPendingEffectsResponse)(nil),        // 46: tape.v1.ListPendingEffectsResponse
+	(*SetTimerRequest)(nil),                   // 47: tape.v1.SetTimerRequest
+	(*TimerRecord)(nil),                       // 48: tape.v1.TimerRecord
+	(*CancelTimerRequest)(nil),                // 49: tape.v1.CancelTimerRequest
+	(*CancelTimerResponse)(nil),               // 50: tape.v1.CancelTimerResponse
+	(*ListDueTimersRequest)(nil),              // 51: tape.v1.ListDueTimersRequest
+	(*ListDueTimersResponse)(nil),             // 52: tape.v1.ListDueTimersResponse
+	(*SubscribeEventsRequest)(nil),            // 53: tape.v1.SubscribeEventsRequest
+	(*EventEntry)(nil),                        // 54: tape.v1.EventEntry
+	(*ValueRecord)(nil),                       // 55: tape.v1.ValueRecord
+	(*WriteValueRequest)(nil),                 // 56: tape.v1.WriteValueRequest
+	(*GetValueRequest)(nil),                   // 57: tape.v1.GetValueRequest
+	(*GetValueResponse)(nil),                  // 58: tape.v1.GetValueResponse
+	(*WatchValueRequest)(nil),                 // 59: tape.v1.WatchValueRequest
+	(*ValueEvent)(nil),                        // 60: tape.v1.ValueEvent
+	(*DeleteValueRequest)(nil),                // 61: tape.v1.DeleteValueRequest
+	(*DeleteValueResponse)(nil),               // 62: tape.v1.DeleteValueResponse
+	(*Session)(nil),                           // 63: tape.v1.Session
+	(*EventRecord)(nil),                       // 64: tape.v1.EventRecord
+	(*CreateSessionRequest)(nil),              // 65: tape.v1.CreateSessionRequest
+	(*GetSessionRequest)(nil),                 // 66: tape.v1.GetSessionRequest
+	(*GetSessionResponse)(nil),                // 67: tape.v1.GetSessionResponse
+	(*ListSessionsRequest)(nil),               // 68: tape.v1.ListSessionsRequest
+	(*ListSessionsResponse)(nil),              // 69: tape.v1.ListSessionsResponse
+	(*DeleteSessionRequest)(nil),              // 70: tape.v1.DeleteSessionRequest
+	(*DeleteSessionResponse)(nil),             // 71: tape.v1.DeleteSessionResponse
+	(*AppendEventRequest)(nil),                // 72: tape.v1.AppendEventRequest
+	(*AppendEventResponse)(nil),               // 73: tape.v1.AppendEventResponse
 }
 var file_tape_proto_depIdxs = []int32{
 	0,  // 0: tape.v1.BeginRunResponse.status:type_name -> tape.v1.RunStatus
@@ -4461,83 +5467,102 @@ var file_tape_proto_depIdxs = []int32{
 	25, // 9: tape.v1.GetEffectResponse.effect:type_name -> tape.v1.EffectRecord
 	1,  // 10: tape.v1.ReconcileEffectRequest.resolved_status:type_name -> tape.v1.EffectStatus
 	1,  // 11: tape.v1.EffectRecord.status:type_name -> tape.v1.EffectStatus
-	30, // 12: tape.v1.ListObligationsResponse.obligations:type_name -> tape.v1.ObligationRecord
-	2,  // 13: tape.v1.ResolveObligationRequest.status:type_name -> tape.v1.ObligationStatus
-	2,  // 14: tape.v1.ObligationRecord.status:type_name -> tape.v1.ObligationStatus
-	35, // 15: tape.v1.AdmitBudgetResponse.budget:type_name -> tape.v1.BudgetState
-	0,  // 16: tape.v1.SendSignalResponse.run_status:type_name -> tape.v1.RunStatus
-	25, // 17: tape.v1.ListPendingEffectsResponse.effects:type_name -> tape.v1.EffectRecord
-	43, // 18: tape.v1.ListDueTimersResponse.timers:type_name -> tape.v1.TimerRecord
-	51, // 19: tape.v1.Session.events:type_name -> tape.v1.EventRecord
-	50, // 20: tape.v1.GetSessionResponse.session:type_name -> tape.v1.Session
-	50, // 21: tape.v1.ListSessionsResponse.sessions:type_name -> tape.v1.Session
-	51, // 22: tape.v1.AppendEventRequest.event:type_name -> tape.v1.EventRecord
-	51, // 23: tape.v1.AppendEventResponse.event:type_name -> tape.v1.EventRecord
-	3,  // 24: tape.v1.Tape.BeginRun:input_type -> tape.v1.BeginRunRequest
-	5,  // 25: tape.v1.Tape.ResumeRun:input_type -> tape.v1.ResumeRunRequest
-	7,  // 26: tape.v1.Tape.EndRun:input_type -> tape.v1.EndRunRequest
-	9,  // 27: tape.v1.Tape.GetRun:input_type -> tape.v1.GetRunRequest
-	10, // 28: tape.v1.Tape.ListRunsToRecover:input_type -> tape.v1.ListRunsToRecoverRequest
-	12, // 29: tape.v1.Tape.SubscribeRun:input_type -> tape.v1.SubscribeRunRequest
-	15, // 30: tape.v1.Tape.RecordDecision:input_type -> tape.v1.RecordDecisionRequest
-	17, // 31: tape.v1.Tape.GetDecision:input_type -> tape.v1.GetDecisionRequest
-	19, // 32: tape.v1.Tape.BeginEffect:input_type -> tape.v1.BeginEffectRequest
-	21, // 33: tape.v1.Tape.CompleteEffect:input_type -> tape.v1.CompleteEffectRequest
-	22, // 34: tape.v1.Tape.GetEffect:input_type -> tape.v1.GetEffectRequest
-	24, // 35: tape.v1.Tape.ReconcileEffect:input_type -> tape.v1.ReconcileEffectRequest
-	26, // 36: tape.v1.Tape.RegisterCompensation:input_type -> tape.v1.RegisterCompensationRequest
-	27, // 37: tape.v1.Tape.ListObligations:input_type -> tape.v1.ListObligationsRequest
-	29, // 38: tape.v1.Tape.ResolveObligation:input_type -> tape.v1.ResolveObligationRequest
-	31, // 39: tape.v1.Tape.SetBudget:input_type -> tape.v1.SetBudgetRequest
-	32, // 40: tape.v1.Tape.AdmitBudget:input_type -> tape.v1.AdmitBudgetRequest
-	34, // 41: tape.v1.Tape.ChargeBudget:input_type -> tape.v1.ChargeBudgetRequest
-	36, // 42: tape.v1.Tape.AwaitSignal:input_type -> tape.v1.AwaitSignalRequest
-	38, // 43: tape.v1.Tape.SendSignal:input_type -> tape.v1.SendSignalRequest
-	40, // 44: tape.v1.Tape.ListPendingEffects:input_type -> tape.v1.ListPendingEffectsRequest
-	42, // 45: tape.v1.Tape.SetTimer:input_type -> tape.v1.SetTimerRequest
-	44, // 46: tape.v1.Tape.CancelTimer:input_type -> tape.v1.CancelTimerRequest
-	46, // 47: tape.v1.Tape.ListDueTimers:input_type -> tape.v1.ListDueTimersRequest
-	48, // 48: tape.v1.Tape.SubscribeEvents:input_type -> tape.v1.SubscribeEventsRequest
-	52, // 49: tape.v1.Tape.CreateSession:input_type -> tape.v1.CreateSessionRequest
-	53, // 50: tape.v1.Tape.GetSession:input_type -> tape.v1.GetSessionRequest
-	55, // 51: tape.v1.Tape.ListSessions:input_type -> tape.v1.ListSessionsRequest
-	57, // 52: tape.v1.Tape.DeleteSession:input_type -> tape.v1.DeleteSessionRequest
-	59, // 53: tape.v1.Tape.AppendEvent:input_type -> tape.v1.AppendEventRequest
-	4,  // 54: tape.v1.Tape.BeginRun:output_type -> tape.v1.BeginRunResponse
-	6,  // 55: tape.v1.Tape.ResumeRun:output_type -> tape.v1.ResumeRunResponse
-	8,  // 56: tape.v1.Tape.EndRun:output_type -> tape.v1.EndRunResponse
-	13, // 57: tape.v1.Tape.GetRun:output_type -> tape.v1.RunState
-	11, // 58: tape.v1.Tape.ListRunsToRecover:output_type -> tape.v1.ListRunsToRecoverResponse
-	14, // 59: tape.v1.Tape.SubscribeRun:output_type -> tape.v1.JournalEntry
-	16, // 60: tape.v1.Tape.RecordDecision:output_type -> tape.v1.DecisionRecord
-	18, // 61: tape.v1.Tape.GetDecision:output_type -> tape.v1.GetDecisionResponse
-	20, // 62: tape.v1.Tape.BeginEffect:output_type -> tape.v1.BeginEffectResponse
-	25, // 63: tape.v1.Tape.CompleteEffect:output_type -> tape.v1.EffectRecord
-	23, // 64: tape.v1.Tape.GetEffect:output_type -> tape.v1.GetEffectResponse
-	25, // 65: tape.v1.Tape.ReconcileEffect:output_type -> tape.v1.EffectRecord
-	30, // 66: tape.v1.Tape.RegisterCompensation:output_type -> tape.v1.ObligationRecord
-	28, // 67: tape.v1.Tape.ListObligations:output_type -> tape.v1.ListObligationsResponse
-	30, // 68: tape.v1.Tape.ResolveObligation:output_type -> tape.v1.ObligationRecord
-	35, // 69: tape.v1.Tape.SetBudget:output_type -> tape.v1.BudgetState
-	33, // 70: tape.v1.Tape.AdmitBudget:output_type -> tape.v1.AdmitBudgetResponse
-	35, // 71: tape.v1.Tape.ChargeBudget:output_type -> tape.v1.BudgetState
-	37, // 72: tape.v1.Tape.AwaitSignal:output_type -> tape.v1.AwaitSignalResponse
-	39, // 73: tape.v1.Tape.SendSignal:output_type -> tape.v1.SendSignalResponse
-	41, // 74: tape.v1.Tape.ListPendingEffects:output_type -> tape.v1.ListPendingEffectsResponse
-	43, // 75: tape.v1.Tape.SetTimer:output_type -> tape.v1.TimerRecord
-	45, // 76: tape.v1.Tape.CancelTimer:output_type -> tape.v1.CancelTimerResponse
-	47, // 77: tape.v1.Tape.ListDueTimers:output_type -> tape.v1.ListDueTimersResponse
-	49, // 78: tape.v1.Tape.SubscribeEvents:output_type -> tape.v1.EventEntry
-	50, // 79: tape.v1.Tape.CreateSession:output_type -> tape.v1.Session
-	54, // 80: tape.v1.Tape.GetSession:output_type -> tape.v1.GetSessionResponse
-	56, // 81: tape.v1.Tape.ListSessions:output_type -> tape.v1.ListSessionsResponse
-	58, // 82: tape.v1.Tape.DeleteSession:output_type -> tape.v1.DeleteSessionResponse
-	60, // 83: tape.v1.Tape.AppendEvent:output_type -> tape.v1.AppendEventResponse
-	54, // [54:84] is the sub-list for method output_type
-	24, // [24:54] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	2,  // 12: tape.v1.ListObligationsRequest.status_filter:type_name -> tape.v1.ObligationStatus
+	30, // 13: tape.v1.ListObligationsResponse.obligations:type_name -> tape.v1.ObligationRecord
+	2,  // 14: tape.v1.ResolveObligationRequest.status:type_name -> tape.v1.ObligationStatus
+	2,  // 15: tape.v1.ObligationRecord.status:type_name -> tape.v1.ObligationStatus
+	30, // 16: tape.v1.ListUnresolvedObligationsResponse.obligations:type_name -> tape.v1.ObligationRecord
+	30, // 17: tape.v1.ClaimObligationResponse.obligation:type_name -> tape.v1.ObligationRecord
+	40, // 18: tape.v1.AdmitBudgetResponse.budget:type_name -> tape.v1.BudgetState
+	0,  // 19: tape.v1.SendSignalResponse.run_status:type_name -> tape.v1.RunStatus
+	25, // 20: tape.v1.ListPendingEffectsResponse.effects:type_name -> tape.v1.EffectRecord
+	48, // 21: tape.v1.ListDueTimersResponse.timers:type_name -> tape.v1.TimerRecord
+	55, // 22: tape.v1.GetValueResponse.value:type_name -> tape.v1.ValueRecord
+	55, // 23: tape.v1.ValueEvent.value:type_name -> tape.v1.ValueRecord
+	64, // 24: tape.v1.Session.events:type_name -> tape.v1.EventRecord
+	63, // 25: tape.v1.GetSessionResponse.session:type_name -> tape.v1.Session
+	63, // 26: tape.v1.ListSessionsResponse.sessions:type_name -> tape.v1.Session
+	64, // 27: tape.v1.AppendEventRequest.event:type_name -> tape.v1.EventRecord
+	64, // 28: tape.v1.AppendEventResponse.event:type_name -> tape.v1.EventRecord
+	3,  // 29: tape.v1.Tape.BeginRun:input_type -> tape.v1.BeginRunRequest
+	5,  // 30: tape.v1.Tape.ResumeRun:input_type -> tape.v1.ResumeRunRequest
+	7,  // 31: tape.v1.Tape.EndRun:input_type -> tape.v1.EndRunRequest
+	9,  // 32: tape.v1.Tape.GetRun:input_type -> tape.v1.GetRunRequest
+	10, // 33: tape.v1.Tape.ListRunsToRecover:input_type -> tape.v1.ListRunsToRecoverRequest
+	12, // 34: tape.v1.Tape.SubscribeRun:input_type -> tape.v1.SubscribeRunRequest
+	15, // 35: tape.v1.Tape.RecordDecision:input_type -> tape.v1.RecordDecisionRequest
+	17, // 36: tape.v1.Tape.GetDecision:input_type -> tape.v1.GetDecisionRequest
+	19, // 37: tape.v1.Tape.BeginEffect:input_type -> tape.v1.BeginEffectRequest
+	21, // 38: tape.v1.Tape.CompleteEffect:input_type -> tape.v1.CompleteEffectRequest
+	22, // 39: tape.v1.Tape.GetEffect:input_type -> tape.v1.GetEffectRequest
+	24, // 40: tape.v1.Tape.ReconcileEffect:input_type -> tape.v1.ReconcileEffectRequest
+	26, // 41: tape.v1.Tape.RegisterCompensation:input_type -> tape.v1.RegisterCompensationRequest
+	27, // 42: tape.v1.Tape.ListObligations:input_type -> tape.v1.ListObligationsRequest
+	29, // 43: tape.v1.Tape.ResolveObligation:input_type -> tape.v1.ResolveObligationRequest
+	31, // 44: tape.v1.Tape.ListUnresolvedObligations:input_type -> tape.v1.ListUnresolvedObligationsRequest
+	33, // 45: tape.v1.Tape.ClaimObligation:input_type -> tape.v1.ClaimObligationRequest
+	35, // 46: tape.v1.Tape.RecordObligationAttempt:input_type -> tape.v1.RecordObligationAttemptRequest
+	36, // 47: tape.v1.Tape.SetBudget:input_type -> tape.v1.SetBudgetRequest
+	37, // 48: tape.v1.Tape.AdmitBudget:input_type -> tape.v1.AdmitBudgetRequest
+	39, // 49: tape.v1.Tape.ChargeBudget:input_type -> tape.v1.ChargeBudgetRequest
+	41, // 50: tape.v1.Tape.AwaitSignal:input_type -> tape.v1.AwaitSignalRequest
+	43, // 51: tape.v1.Tape.SendSignal:input_type -> tape.v1.SendSignalRequest
+	45, // 52: tape.v1.Tape.ListPendingEffects:input_type -> tape.v1.ListPendingEffectsRequest
+	47, // 53: tape.v1.Tape.SetTimer:input_type -> tape.v1.SetTimerRequest
+	49, // 54: tape.v1.Tape.CancelTimer:input_type -> tape.v1.CancelTimerRequest
+	51, // 55: tape.v1.Tape.ListDueTimers:input_type -> tape.v1.ListDueTimersRequest
+	53, // 56: tape.v1.Tape.SubscribeEvents:input_type -> tape.v1.SubscribeEventsRequest
+	56, // 57: tape.v1.Tape.WriteValue:input_type -> tape.v1.WriteValueRequest
+	57, // 58: tape.v1.Tape.GetValue:input_type -> tape.v1.GetValueRequest
+	59, // 59: tape.v1.Tape.WatchValue:input_type -> tape.v1.WatchValueRequest
+	61, // 60: tape.v1.Tape.DeleteValue:input_type -> tape.v1.DeleteValueRequest
+	65, // 61: tape.v1.Tape.CreateSession:input_type -> tape.v1.CreateSessionRequest
+	66, // 62: tape.v1.Tape.GetSession:input_type -> tape.v1.GetSessionRequest
+	68, // 63: tape.v1.Tape.ListSessions:input_type -> tape.v1.ListSessionsRequest
+	70, // 64: tape.v1.Tape.DeleteSession:input_type -> tape.v1.DeleteSessionRequest
+	72, // 65: tape.v1.Tape.AppendEvent:input_type -> tape.v1.AppendEventRequest
+	4,  // 66: tape.v1.Tape.BeginRun:output_type -> tape.v1.BeginRunResponse
+	6,  // 67: tape.v1.Tape.ResumeRun:output_type -> tape.v1.ResumeRunResponse
+	8,  // 68: tape.v1.Tape.EndRun:output_type -> tape.v1.EndRunResponse
+	13, // 69: tape.v1.Tape.GetRun:output_type -> tape.v1.RunState
+	11, // 70: tape.v1.Tape.ListRunsToRecover:output_type -> tape.v1.ListRunsToRecoverResponse
+	14, // 71: tape.v1.Tape.SubscribeRun:output_type -> tape.v1.JournalEntry
+	16, // 72: tape.v1.Tape.RecordDecision:output_type -> tape.v1.DecisionRecord
+	18, // 73: tape.v1.Tape.GetDecision:output_type -> tape.v1.GetDecisionResponse
+	20, // 74: tape.v1.Tape.BeginEffect:output_type -> tape.v1.BeginEffectResponse
+	25, // 75: tape.v1.Tape.CompleteEffect:output_type -> tape.v1.EffectRecord
+	23, // 76: tape.v1.Tape.GetEffect:output_type -> tape.v1.GetEffectResponse
+	25, // 77: tape.v1.Tape.ReconcileEffect:output_type -> tape.v1.EffectRecord
+	30, // 78: tape.v1.Tape.RegisterCompensation:output_type -> tape.v1.ObligationRecord
+	28, // 79: tape.v1.Tape.ListObligations:output_type -> tape.v1.ListObligationsResponse
+	30, // 80: tape.v1.Tape.ResolveObligation:output_type -> tape.v1.ObligationRecord
+	32, // 81: tape.v1.Tape.ListUnresolvedObligations:output_type -> tape.v1.ListUnresolvedObligationsResponse
+	34, // 82: tape.v1.Tape.ClaimObligation:output_type -> tape.v1.ClaimObligationResponse
+	30, // 83: tape.v1.Tape.RecordObligationAttempt:output_type -> tape.v1.ObligationRecord
+	40, // 84: tape.v1.Tape.SetBudget:output_type -> tape.v1.BudgetState
+	38, // 85: tape.v1.Tape.AdmitBudget:output_type -> tape.v1.AdmitBudgetResponse
+	40, // 86: tape.v1.Tape.ChargeBudget:output_type -> tape.v1.BudgetState
+	42, // 87: tape.v1.Tape.AwaitSignal:output_type -> tape.v1.AwaitSignalResponse
+	44, // 88: tape.v1.Tape.SendSignal:output_type -> tape.v1.SendSignalResponse
+	46, // 89: tape.v1.Tape.ListPendingEffects:output_type -> tape.v1.ListPendingEffectsResponse
+	48, // 90: tape.v1.Tape.SetTimer:output_type -> tape.v1.TimerRecord
+	50, // 91: tape.v1.Tape.CancelTimer:output_type -> tape.v1.CancelTimerResponse
+	52, // 92: tape.v1.Tape.ListDueTimers:output_type -> tape.v1.ListDueTimersResponse
+	54, // 93: tape.v1.Tape.SubscribeEvents:output_type -> tape.v1.EventEntry
+	55, // 94: tape.v1.Tape.WriteValue:output_type -> tape.v1.ValueRecord
+	58, // 95: tape.v1.Tape.GetValue:output_type -> tape.v1.GetValueResponse
+	60, // 96: tape.v1.Tape.WatchValue:output_type -> tape.v1.ValueEvent
+	62, // 97: tape.v1.Tape.DeleteValue:output_type -> tape.v1.DeleteValueResponse
+	63, // 98: tape.v1.Tape.CreateSession:output_type -> tape.v1.Session
+	67, // 99: tape.v1.Tape.GetSession:output_type -> tape.v1.GetSessionResponse
+	69, // 100: tape.v1.Tape.ListSessions:output_type -> tape.v1.ListSessionsResponse
+	71, // 101: tape.v1.Tape.DeleteSession:output_type -> tape.v1.DeleteSessionResponse
+	73, // 102: tape.v1.Tape.AppendEvent:output_type -> tape.v1.AppendEventResponse
+	66, // [66:103] is the sub-list for method output_type
+	29, // [29:66] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_tape_proto_init() }
@@ -4551,7 +5576,7 @@ func file_tape_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tape_proto_rawDesc), len(file_tape_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   58,
+			NumMessages:   71,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

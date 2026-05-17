@@ -49,6 +49,7 @@ const (
 	EffectStatusFailed    = int32(pb.EffectStatus_EFFECT_STATUS_FAILED)
 	EffectStatusUnknown   = int32(pb.EffectStatus_EFFECT_STATUS_UNKNOWN)
 
+	ObligationPending     = int32(pb.ObligationStatus_OBLIGATION_STATUS_PENDING)
 	ObligationCommitted   = int32(pb.ObligationStatus_OBLIGATION_STATUS_COMMITTED)
 	ObligationCompensated = int32(pb.ObligationStatus_OBLIGATION_STATUS_COMPENSATED)
 	ObligationStuck       = int32(pb.ObligationStatus_OBLIGATION_STATUS_STUCK)
@@ -223,14 +224,78 @@ func (c *Client) ReconcileEffect(ctx context.Context, runID, key string, resolve
 
 // ──── obligations ───────────────────────────────────────────────────────────
 
-func (c *Client) RegisterCompensation(ctx context.Context, runID, effectKey, kind, payloadJSON string) (*pb.ObligationRecord, error) {
+// RegisterCompensationOpts: the extra options grew over time; use named fields
+// rather than a five-arg positional call. CompensatorRef ("module:attr") lets a
+// generic drainer resolve the inverse without importing your agent. MaxAttempts
+// of 0 falls back to the server default (5).
+type RegisterCompensationOpts struct {
+	CompensatorRef string
+	MaxAttempts    int32
+}
+
+func (c *Client) RegisterCompensation(ctx context.Context, runID, effectKey, kind, payloadJSON string, opts ...RegisterCompensationOpts) (*pb.ObligationRecord, error) {
+	var o RegisterCompensationOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	return c.pb.RegisterCompensation(ctx, &pb.RegisterCompensationRequest{
 		RunId: runID, EffectKey: effectKey, Kind: kind, PayloadJson: payloadJSON,
+		CompensatorRef: o.CompensatorRef, MaxAttempts: o.MaxAttempts,
 	})
 }
 
-func (c *Client) ListObligations(ctx context.Context, runID string, onlyUnresolved bool) (*pb.ListObligationsResponse, error) {
-	return c.pb.ListObligations(ctx, &pb.ListObligationsRequest{RunId: runID, OnlyUnresolved: onlyUnresolved})
+// ListObligationsOpts: StatusFilter == 0 means "any status"; otherwise it's an
+// exact ObligationStatus match. OnlyUnresolved is the shorthand "exclude
+// terminal COMPENSATED/STUCK".
+type ListObligationsOpts struct {
+	StatusFilter int32
+}
+
+func (c *Client) ListObligations(ctx context.Context, runID string, onlyUnresolved bool, opts ...ListObligationsOpts) (*pb.ListObligationsResponse, error) {
+	var o ListObligationsOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return c.pb.ListObligations(ctx, &pb.ListObligationsRequest{
+		RunId: runID, OnlyUnresolved: onlyUnresolved, StatusFilter: pb.ObligationStatus(o.StatusFilter),
+	})
+}
+
+func (c *Client) ResolveObligation(ctx context.Context, runID string, obligationSeq int64, status int32, resultJSON string) (*pb.ObligationRecord, error) {
+	return c.pb.ResolveObligation(ctx, &pb.ResolveObligationRequest{
+		RunId: runID, ObligationSeq: obligationSeq,
+		Status: pb.ObligationStatus(status), ResultJson: resultJSON,
+	})
+}
+
+// ListUnresolvedObligationsOpts: the cross-run drainer feed. Defaults pick up
+// ready-to-run PENDING plus COMMITTED rows whose lease has expired.
+type ListUnresolvedObligationsOpts struct {
+	Limit                   int32
+	NowMs                   int64
+	IncludePending          bool
+	IncludeStuck            bool
+	IncludeCommittedExpired bool
+}
+
+func (c *Client) ListUnresolvedObligations(ctx context.Context, opts ListUnresolvedObligationsOpts) (*pb.ListUnresolvedObligationsResponse, error) {
+	return c.pb.ListUnresolvedObligations(ctx, &pb.ListUnresolvedObligationsRequest{
+		Limit: opts.Limit, NowMs: opts.NowMs,
+		IncludePending: opts.IncludePending, IncludeStuck: opts.IncludeStuck,
+		IncludeCommittedExpired: opts.IncludeCommittedExpired,
+	})
+}
+
+func (c *Client) ClaimObligation(ctx context.Context, runID string, obligationSeq int64, claimer string, leaseTtlMs int64) (*pb.ClaimObligationResponse, error) {
+	return c.pb.ClaimObligation(ctx, &pb.ClaimObligationRequest{
+		RunId: runID, ObligationSeq: obligationSeq, Claimer: claimer, LeaseTtlMs: leaseTtlMs,
+	})
+}
+
+func (c *Client) RecordObligationAttempt(ctx context.Context, runID string, obligationSeq int64, errMsg string, nextAttemptAtMs int64) (*pb.ObligationRecord, error) {
+	return c.pb.RecordObligationAttempt(ctx, &pb.RecordObligationAttemptRequest{
+		RunId: runID, ObligationSeq: obligationSeq, Error: errMsg, NextAttemptAtMs: nextAttemptAtMs,
+	})
 }
 
 // ──── budget ────────────────────────────────────────────────────────────────

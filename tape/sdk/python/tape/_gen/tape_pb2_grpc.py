@@ -109,6 +109,21 @@ class TapeStub(object):
                 request_serializer=tape__pb2.ResolveObligationRequest.SerializeToString,
                 response_deserializer=tape__pb2.ObligationRecord.FromString,
                 _registered_method=True)
+        self.ListUnresolvedObligations = channel.unary_unary(
+                '/tape.v1.Tape/ListUnresolvedObligations',
+                request_serializer=tape__pb2.ListUnresolvedObligationsRequest.SerializeToString,
+                response_deserializer=tape__pb2.ListUnresolvedObligationsResponse.FromString,
+                _registered_method=True)
+        self.ClaimObligation = channel.unary_unary(
+                '/tape.v1.Tape/ClaimObligation',
+                request_serializer=tape__pb2.ClaimObligationRequest.SerializeToString,
+                response_deserializer=tape__pb2.ClaimObligationResponse.FromString,
+                _registered_method=True)
+        self.RecordObligationAttempt = channel.unary_unary(
+                '/tape.v1.Tape/RecordObligationAttempt',
+                request_serializer=tape__pb2.RecordObligationAttemptRequest.SerializeToString,
+                response_deserializer=tape__pb2.ObligationRecord.FromString,
+                _registered_method=True)
         self.SetBudget = channel.unary_unary(
                 '/tape.v1.Tape/SetBudget',
                 request_serializer=tape__pb2.SetBudgetRequest.SerializeToString,
@@ -295,7 +310,7 @@ class TapeServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def ListObligations(self, request, context):
-        """LIFO order
+        """LIFO, per-run
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -303,6 +318,28 @@ class TapeServicer(object):
 
     def ResolveObligation(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListUnresolvedObligations(self, request, context):
+        """The drainer surface — for the obligations reactor and operator queries.
+        cross-run
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ClaimObligation(self, request, context):
+        """atomic lease
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RecordObligationAttempt(self, request, context):
+        """failure with backoff
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -514,6 +551,21 @@ def add_TapeServicer_to_server(servicer, server):
             'ResolveObligation': grpc.unary_unary_rpc_method_handler(
                     servicer.ResolveObligation,
                     request_deserializer=tape__pb2.ResolveObligationRequest.FromString,
+                    response_serializer=tape__pb2.ObligationRecord.SerializeToString,
+            ),
+            'ListUnresolvedObligations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListUnresolvedObligations,
+                    request_deserializer=tape__pb2.ListUnresolvedObligationsRequest.FromString,
+                    response_serializer=tape__pb2.ListUnresolvedObligationsResponse.SerializeToString,
+            ),
+            'ClaimObligation': grpc.unary_unary_rpc_method_handler(
+                    servicer.ClaimObligation,
+                    request_deserializer=tape__pb2.ClaimObligationRequest.FromString,
+                    response_serializer=tape__pb2.ClaimObligationResponse.SerializeToString,
+            ),
+            'RecordObligationAttempt': grpc.unary_unary_rpc_method_handler(
+                    servicer.RecordObligationAttempt,
+                    request_deserializer=tape__pb2.RecordObligationAttemptRequest.FromString,
                     response_serializer=tape__pb2.ObligationRecord.SerializeToString,
             ),
             'SetBudget': grpc.unary_unary_rpc_method_handler(
@@ -1016,6 +1068,87 @@ class Tape(object):
             target,
             '/tape.v1.Tape/ResolveObligation',
             tape__pb2.ResolveObligationRequest.SerializeToString,
+            tape__pb2.ObligationRecord.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListUnresolvedObligations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ListUnresolvedObligations',
+            tape__pb2.ListUnresolvedObligationsRequest.SerializeToString,
+            tape__pb2.ListUnresolvedObligationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ClaimObligation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ClaimObligation',
+            tape__pb2.ClaimObligationRequest.SerializeToString,
+            tape__pb2.ClaimObligationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RecordObligationAttempt(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/RecordObligationAttempt',
+            tape__pb2.RecordObligationAttemptRequest.SerializeToString,
             tape__pb2.ObligationRecord.FromString,
             options,
             channel_credentials,
