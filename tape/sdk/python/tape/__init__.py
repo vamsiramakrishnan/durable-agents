@@ -40,7 +40,7 @@ from .retry import RetryPolicy
 from .gates import AckLost, gate, gate_tool
 from .budget import Budget, with_budget
 from .det import sample, now, uuid, random
-from ._recover import resume, recover_once, compensate_run
+from ._recover import resume, recover_once, compensate_run, compensate_one
 from ._gen import tape_pb2 as pb
 from .reactions import (
     on,
@@ -64,7 +64,7 @@ __all__ = [
     "AckLost", "gate", "gate_tool",
     "Budget", "with_budget",
     "sample", "now", "uuid", "random",
-    "resume", "recover_once", "compensate_run", "send_signal", "set_timer", "cancel_timer",
+    "resume", "recover_once", "compensate_run", "compensate_one", "send_signal", "set_timer", "cancel_timer",
     "cancel_run", "is_cancelled", "heartbeat", "policy_is",
     "set_value", "get_value", "watch_value", "delete_value",
     "get_compensator", "get_status_check",

@@ -30,6 +30,7 @@ EFFECT_STATUS_CONFIRMED = pb.EFFECT_STATUS_CONFIRMED
 EFFECT_STATUS_FAILED = pb.EFFECT_STATUS_FAILED
 EFFECT_STATUS_UNKNOWN = pb.EFFECT_STATUS_UNKNOWN
 
+OBLIGATION_STATUS_PENDING = pb.OBLIGATION_STATUS_PENDING
 OBLIGATION_STATUS_COMMITTED = pb.OBLIGATION_STATUS_COMMITTED
 OBLIGATION_STATUS_COMPENSATED = pb.OBLIGATION_STATUS_COMPENSATED
 OBLIGATION_STATUS_STUCK = pb.OBLIGATION_STATUS_STUCK
@@ -213,12 +214,46 @@ class TapeClient:
 
     # ── obligations / compensation ──────────────────────────────────────────
 
-    def register_compensation(self, *, run_id, effect_key, kind, payload_json=""):
+    def register_compensation(self, *, run_id, effect_key, kind, payload_json="",
+                              compensator_ref="", max_attempts=0):
+        """Register an obligation in PENDING (immediately eligible for the drainer).
+        Idempotent on (run_id, effect_key, kind). `compensator_ref` is an optional
+        "module:attr" path so a generic drainer process can resolve the inverse
+        without having imported the agent module. `max_attempts` defaults to 5."""
         return self.stub.RegisterCompensation(pb.RegisterCompensationRequest(
-            run_id=run_id, effect_key=effect_key, kind=kind, payload_json=payload_json))
+            run_id=run_id, effect_key=effect_key, kind=kind, payload_json=payload_json,
+            compensator_ref=compensator_ref, max_attempts=max_attempts))
 
-    def list_obligations(self, *, run_id, only_unresolved=True):
-        return self.stub.ListObligations(pb.ListObligationsRequest(run_id=run_id, only_unresolved=only_unresolved))
+    def list_obligations(self, *, run_id, only_unresolved=True, status_filter=0):
+        """Per-run LIFO. `status_filter` matches an ObligationStatus exactly (or 0
+        for any); `only_unresolved` is a shorthand that excludes COMPENSATED/STUCK."""
+        return self.stub.ListObligations(pb.ListObligationsRequest(
+            run_id=run_id, only_unresolved=only_unresolved, status_filter=status_filter))
+
+    def list_unresolved_obligations(self, *, limit=500, now_ms=0,
+                                    include_pending=True, include_stuck=False,
+                                    include_committed_expired=True):
+        """Cross-run drainer feed. Defaults pick up ready-to-run PENDING plus
+        COMMITTED rows whose lease has expired — the drainer's normal hot set.
+        Pass `include_stuck=True` for an operator dashboard view."""
+        return self.stub.ListUnresolvedObligations(pb.ListUnresolvedObligationsRequest(
+            limit=limit, now_ms=now_ms,
+            include_pending=include_pending, include_stuck=include_stuck,
+            include_committed_expired=include_committed_expired))
+
+    def claim_obligation(self, *, run_id, obligation_seq, claimer, lease_ttl_ms=60_000):
+        """Atomic CAS lease. Returns a `ClaimObligationResponse` with `acquired`
+        and the current `obligation` row (whether or not the claim was won)."""
+        return self.stub.ClaimObligation(pb.ClaimObligationRequest(
+            run_id=run_id, obligation_seq=obligation_seq, claimer=claimer, lease_ttl_ms=lease_ttl_ms))
+
+    def record_obligation_attempt(self, *, run_id, obligation_seq, error, next_attempt_at_ms):
+        """Report a failed attempt. The server bumps `attempts` and either reschedules
+        (status -> PENDING with next_attempt_at_ms) or marks STUCK (when retries are
+        exhausted, or when `next_attempt_at_ms <= 0` means terminal-now)."""
+        return self.stub.RecordObligationAttempt(pb.RecordObligationAttemptRequest(
+            run_id=run_id, obligation_seq=obligation_seq, error=error,
+            next_attempt_at_ms=next_attempt_at_ms))
 
     def resolve_obligation(self, *, run_id, obligation_seq, status, result_json=""):
         return self.stub.ResolveObligation(pb.ResolveObligationRequest(

@@ -1,6 +1,6 @@
 """Reactors — the WAL-driven side of Tape.
 
-A *reactor* watches the journal and reacts. Three ship in the box, and they're
+A *reactor* watches the journal and reacts. Four ship in the box, and they're
 all idempotent (the lease + replay properties make a double-run harmless), so you
 run as many copies as you like behind a load balancer:
 
@@ -10,6 +10,10 @@ run as many copies as you like behind a load balancer:
     long-PENDING one), calls the per-tool status check registered via
     `@tape.effect(status_check=...)` and resolves the effect to CONFIRMED or
     FAILED (`reconcile_once`);
+  * the **obligations reactor** — drains ready-to-run PENDING obligations and
+    reclaims COMMITTED rows whose lease has expired, with bounded retry/backoff
+    via the drainer state machine (`compensate_once` for polling,
+    `run_compensations_event_driven` for the SubscribeEvents stream);
   * the **timer reactor** — fires due timers: `gate_timeout` (release a parked
     run with a timeout resolution), `redrive` (re-invoke a run), `reconcile`
     (resolve a specific effect), or your own kinds via a callback
@@ -49,7 +53,8 @@ from .client import (
     RUN_STATUS_TERMINAL,
 )
 from .effect import get_status_check
-from ._recover import resume as _resume
+from ._recover import resume as _resume, compensate_one as _compensate_one, _compensator_id
+from ._gen import tape_pb2 as pb
 
 
 # ── the reconciler reactor ──────────────────────────────────────────────────
@@ -143,6 +148,101 @@ def fire_due_timers_once(url: str = DEFAULT_URL, *, runner: Any = None, redrive_
     return out
 
 
+# ── the obligations reactor ─────────────────────────────────────────────────
+
+def compensate_once(url: str = DEFAULT_URL, *, claimer: str = "", limit: int = 200,
+                    include_committed_expired: bool = True,
+                    client: Optional[TapeClient] = None) -> list[dict]:
+    """Drain one batch of due obligations across all runs. Picks up ready-to-run
+    PENDING (with `next_attempt_at_ms <= now`) and — by default — COMMITTED rows
+    whose lease has expired (a previous drainer crashed mid-act). Returns a list
+    of per-obligation outcome dicts (see `compensate_one`)."""
+    c = client or TapeClient(url)
+    out: list[dict] = []
+    claimer = claimer or _compensator_id()
+    try:
+        rows = c.list_unresolved_obligations(
+            limit=limit, include_pending=True, include_stuck=False,
+            include_committed_expired=include_committed_expired).obligations
+        for ob in rows:
+            r = _compensate_one(ob, client=c, claimer=claimer)
+            r.update({"run_id": ob.run_id, "obligation_seq": ob.seq})
+            out.append(r)
+    finally:
+        if client is None:
+            c.close()
+    return out
+
+
+def run_compensations_event_driven(url: str = DEFAULT_URL, *, claimer: str = "",
+                                    from_ts_ms: int = 0, idle_window_s: float = 0.5,
+                                    catchup: bool = True,
+                                    on_event: Optional[Callable[[dict], None]] = None) -> None:
+    """Subscribe to the `kind="obligation"` event stream and drain on every
+    transition that puts work in the queue (registered, retry-scheduled). On
+    each event we don't trust the payload to point us at the right row — we
+    just call `compensate_once`, which sees everything ready *now*. That keeps
+    correctness in one place (the drainer state machine in the server) and
+    makes the reactor immune to lost / duplicate / reordered events.
+
+    Set `catchup=True` (default) to drain whatever's already queued before
+    blocking on the stream — important when the reactor starts after a backlog
+    has built up. `from_ts_ms=0` means "from the head of the stream forward."
+
+    This is the event-driven path. For a polling-only deployment (no
+    SubscribeEvents in your store, e.g. Bigtable in some configurations), call
+    `compensate_once` on a timer instead — both close the same queue, with
+    different latency characteristics.
+    """
+    import grpc as _grpc
+    c = TapeClient(url)
+    try:
+        if catchup:
+            for r in compensate_once(url, claimer=claimer, client=c):
+                if on_event is not None:
+                    on_event(r)
+        while True:
+            req = pb.SubscribeEventsRequest(from_ts_ms=from_ts_ms, run_id="", kind="obligation")
+            stream = c.stub.SubscribeEvents(req, timeout=idle_window_s)
+            saw_event = False
+            try:
+                for entry in stream:
+                    saw_event = True
+                    from_ts_ms = max(from_ts_ms, entry.ts_ms)
+                    # Don't drain on every single entry — that's a thundering herd
+                    # if many obligations transition at once. The "saw any event"
+                    # signal is enough; we drain the whole queue below.
+                    try:
+                        kind_label = ""
+                        if entry.payload_json:
+                            import json as _json
+                            kind_label = _json.loads(entry.payload_json).get("transition", "")
+                    except Exception:
+                        kind_label = ""
+                    if on_event is not None:
+                        on_event({"event": "obligation", "transition": kind_label, "ts_ms": entry.ts_ms})
+            except _grpc.RpcError as ex:
+                code = getattr(ex, "code", lambda: None)()
+                if code not in (_grpc.StatusCode.DEADLINE_EXCEEDED, _grpc.StatusCode.CANCELLED):
+                    raise
+            finally:
+                try:
+                    stream.cancel()
+                except Exception:
+                    pass
+            if saw_event:
+                # One event in the window → drain. The drainer is idempotent
+                # on (run_id, obligation_seq) (claim is a CAS), so concurrent
+                # reactors are safe.
+                for r in compensate_once(url, claimer=claimer, client=c):
+                    if on_event is not None:
+                        on_event(r)
+            # Else: empty window. Loop back to SubscribeEvents (the per-call
+            # timeout is the heartbeat — we don't add a sleep on top of it).
+    finally:
+        c.close()
+
+
 # ── recovery (re-exported from _recover for one-stop-shopping) ───────────────
 
 from ._recover import recover_once  # noqa: E402,F401
@@ -152,12 +252,19 @@ from ._recover import recover_once  # noqa: E402,F401
 
 def run_reactors(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAULT_URL,
                  recover: bool = True, reconcile: bool = True, timers: bool = True,
+                 compensations: bool = True,
                  interval_s: float = 2.0, reconcile_pending_after_s: float = 0.0,
+                 claimer: str = "",
                  once: bool = False, on_tick: Optional[Callable[[dict], None]] = None) -> None:
     """Loop: each tick, run the enabled reactors. Returns after one tick if `once`.
     Pass `runner=` for a local ADK Runner, or `redrive_fn=` (e.g. one that calls
     the Vertex AI Agent Engine `:streamQuery` API) when the agent is deployed
-    elsewhere — recovery still works, it just re-invokes through that callback."""
+    elsewhere — recovery still works, it just re-invokes through that callback.
+
+    `compensations=True` enables the obligations reactor on the same polling
+    cadence as the others. For event-driven draining (lower latency, less
+    polling pressure), call `run_compensations_event_driven` in its own
+    process / thread instead — both close the same queue."""
     client = TapeClient(url)
     can_redrive = runner is not None or redrive_fn is not None
     try:
@@ -178,6 +285,11 @@ def run_reactors(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAU
                     tick["timers_fired"] = fire_due_timers_once(url, runner=runner, redrive_fn=redrive_fn, client=client)
                 except Exception as ex:  # noqa: BLE001
                     tick["timer_error"] = str(ex)
+            if compensations:
+                try:
+                    tick["compensations"] = compensate_once(url, claimer=claimer, client=client)
+                except Exception as ex:  # noqa: BLE001
+                    tick["compensation_error"] = str(ex)
             if on_tick is not None:
                 on_tick(tick)
             if once:
@@ -358,16 +470,33 @@ def _main(argv=None) -> int:
     import argparse
     import importlib
 
-    p = argparse.ArgumentParser(prog="tape.reactors", description="Run Tape's reactors (recovery, reconciler, timers).")
+    p = argparse.ArgumentParser(prog="tape.reactors", description="Run Tape's reactors (recovery, reconciler, timers, compensations).")
     p.add_argument("--url", default=DEFAULT_URL)
     p.add_argument("--runner-from", help="module:attr that yields an ADK Runner (a callable factory, or the Runner itself)")
     p.add_argument("--no-recover", action="store_true")
     p.add_argument("--no-reconcile", action="store_true")
     p.add_argument("--no-timers", action="store_true")
+    p.add_argument("--no-compensations", action="store_true")
     p.add_argument("--reconcile-pending-after", type=float, default=0.0, help="also reconcile PENDING effects older than N seconds")
     p.add_argument("--interval", type=float, default=2.0)
+    p.add_argument("--claimer", default="", help="identity recorded as `claimed_by` on obligations this reactor drains")
     p.add_argument("--once", action="store_true")
+    p.add_argument("--compensations-only", action="store_true",
+                   help="run the event-driven obligations reactor only (subscribes to kind=\"obligation\" — no polling)")
+    p.add_argument("--load", action="append", default=[],
+                   help="module:attr to import at startup so its @tape.effect compensators register in this process (repeat to load several)")
     args = p.parse_args(argv)
+
+    # Optional eager loads — make sure @tape.effect-registered compensators are
+    # in this process's registry before the drainer claims anything.
+    for spec in args.load:
+        mod_name, _, attr = spec.partition(":")
+        try:
+            obj = importlib.import_module(mod_name)
+            if attr:
+                getattr(obj, attr, None)  # touch the attr if present
+        except Exception as ex:  # noqa: BLE001
+            print(f"[tape] --load {spec}: {ex}", file=__import__('sys').stderr, flush=True)
 
     runner = None
     if args.runner_from:
@@ -375,9 +504,15 @@ def _main(argv=None) -> int:
         obj = getattr(importlib.import_module(mod_name), attr or "runner")
         runner = obj() if callable(obj) else obj
 
+    if args.compensations_only:
+        run_compensations_event_driven(args.url, claimer=args.claimer,
+                                       on_event=lambda r: print(json.dumps(r, default=str)))
+        return 0
+
     run_reactors(runner=runner, url=args.url, recover=not args.no_recover, reconcile=not args.no_reconcile,
-                 timers=not args.no_timers, interval_s=args.interval,
-                 reconcile_pending_after_s=args.reconcile_pending_after, once=args.once,
+                 timers=not args.no_timers, compensations=not args.no_compensations,
+                 interval_s=args.interval, reconcile_pending_after_s=args.reconcile_pending_after,
+                 claimer=args.claimer, once=args.once,
                  on_tick=lambda t: print(json.dumps({"tick": t}, default=str)))
     return 0
 

@@ -445,6 +445,14 @@ fn obligation_from(run_id: &str, seq: i64, m: &RowMap) -> ObligationRecord {
     ObligationRecord {
         run_id: run_id.to_string(), seq, effect_key: m.gs("effect_key"), kind: m.gs("kind"),
         payload_json: m.gs("payload"), status: m.gi("status") as i32, ts_ms: m.gi("ts"),
+        compensator_ref: m.gs("compensator_ref"),
+        attempts: m.gi("attempts") as i32,
+        max_attempts: { let v = m.gi("max_attempts") as i32; if v <= 0 { 5 } else { v } },
+        next_attempt_at_ms: m.gi("next_attempt_at_ms"),
+        last_error: m.gs("last_error"),
+        claimed_by: m.gs("claimed_by"),
+        claim_expires_at_ms: m.gi("claim_expires_at_ms"),
+        result_json: m.gs("result"),
     }
 }
 
@@ -717,8 +725,18 @@ impl RunStore for BigtableRunStore {
     }
 
     // ── obligations ─────────────────────────────────────────────────────────
-    async fn register_compensation(&self, run_id: &str, effect_key: &str, kind: &str, payload_json: &str) -> StoreResult<ObligationRecord> {
-        // idempotent on (run_id, effect_key, kind): scan existing obligations.
+    //
+    // Note on CAS: the SQL store uses `UPDATE … WHERE` for the claim CAS. Bigtable
+    // does not have cross-row transactions, and the data-plane client crate used
+    // here does not expose `CheckAndMutateRow`, so the claim is implemented as
+    // read-then-write. Two drainers racing on the same obligation can both
+    // observe a claimable row and both write; whichever write lands second owns
+    // the lease, which is the usual Bigtable single-row last-writer-wins. The
+    // lease boundary then re-syncs the next time a claim is attempted. For
+    // strict CAS, run the SQL backend.
+    async fn register_compensation(&self, run_id: &str, effect_key: &str, kind: &str,
+                                   payload_json: &str, compensator_ref: &str,
+                                   max_attempts: i32) -> StoreResult<ObligationRecord> {
         for (key, m) in self.read_prefix(&format!("o#{run_id}#"), 100_000).await? {
             if m.gs("effect_key") == effect_key && m.gs("kind") == kind {
                 let seq: i64 = key.rsplit('#').next().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -727,24 +745,156 @@ impl RunStore for BigtableRunStore {
         }
         let ts = now_ms();
         let seq = self.next_seq(run_id).await?;
-        let status = ObligationStatus::Committed as i64;
-        self.write_row(&rk_obligation(run_id, seq), vec![set("effect_key", sv(effect_key)), set("kind", sv(kind)), set("payload", sv(payload_json)), set("status", iv(status)), set("ts", iv(ts))]).await?;
-        self.journal(run_id, seq, "obligation", &serde_json::json!({"effect_key": effect_key, "kind": kind}).to_string(), ts).await?;
-        Ok(ObligationRecord { run_id: run_id.into(), seq, effect_key: effect_key.into(), kind: kind.into(), payload_json: payload_json.into(), status: status as i32, ts_ms: ts })
+        let status = ObligationStatus::Pending as i64;
+        let max_att = if max_attempts <= 0 { 5 } else { max_attempts };
+        self.write_row(&rk_obligation(run_id, seq), vec![
+            set("effect_key", sv(effect_key)), set("kind", sv(kind)), set("payload", sv(payload_json)),
+            set("status", iv(status)), set("ts", iv(ts)),
+            set("compensator_ref", sv(compensator_ref)),
+            set("attempts", iv(0)), set("max_attempts", iv(max_att as i64)),
+            set("next_attempt_at_ms", iv(ts)), set("last_error", sv("")),
+            set("claimed_by", sv("")), set("claim_expires_at_ms", iv(0)),
+            set("result", sv("")),
+        ]).await?;
+        self.journal(run_id, seq, "obligation",
+            &serde_json::json!({"effect_key": effect_key, "kind": kind, "status": "pending", "transition": "registered"}).to_string(),
+            ts).await?;
+        Ok(ObligationRecord {
+            run_id: run_id.into(), seq, effect_key: effect_key.into(), kind: kind.into(),
+            payload_json: payload_json.into(), status: status as i32, ts_ms: ts,
+            compensator_ref: compensator_ref.into(), attempts: 0, max_attempts: max_att,
+            next_attempt_at_ms: ts, last_error: String::new(),
+            claimed_by: String::new(), claim_expires_at_ms: 0, result_json: String::new(),
+        })
     }
-    async fn list_obligations(&self, run_id: &str, only_unresolved: bool) -> StoreResult<Vec<ObligationRecord>> {
+    async fn list_obligations(&self, run_id: &str, only_unresolved: bool, status_filter: i32) -> StoreResult<Vec<ObligationRecord>> {
         let mut out: Vec<ObligationRecord> = self.read_prefix(&format!("o#{run_id}#"), 100_000).await?.into_iter().filter_map(|(key, m)| {
             let seq: i64 = key.rsplit('#').next().and_then(|s| s.parse().ok())?;
             let st = m.gi("status") as i32;
-            if only_unresolved && (st == ObligationStatus::Compensated as i32 || st == ObligationStatus::Stuck as i32) { None } else { Some(obligation_from(run_id, seq, &m)) }
+            if status_filter > 0 {
+                if st != status_filter { return None; }
+            } else if only_unresolved && (st == ObligationStatus::Compensated as i32 || st == ObligationStatus::Stuck as i32) {
+                return None;
+            }
+            Some(obligation_from(run_id, seq, &m))
         }).collect();
         out.sort_by(|a, b| b.seq.cmp(&a.seq)); // newest-first (LIFO)
         Ok(out)
     }
+    async fn list_unresolved_obligations(&self, now_ms_in: i64, include_pending: bool,
+                                         include_stuck: bool, include_committed_expired: bool,
+                                         limit: i64) -> StoreResult<Vec<ObligationRecord>> {
+        // Bigtable has no secondary indexes; this scans all `o#` rows. Fine at
+        // moderate scale; at very high scale, drive the drainer from Bigtable
+        // change streams (the obligation-state journal entries) instead.
+        let now = if now_ms_in > 0 { now_ms_in } else { now_ms() };
+        let lim = if limit > 0 { limit as usize } else { 500 };
+        let mut out: Vec<ObligationRecord> = Vec::new();
+        for (key, m) in self.read_prefix("o#", 100_000).await? {
+            let parts: Vec<&str> = key.splitn(3, '#').collect();
+            if parts.len() < 3 { continue; }
+            let run = parts[1];
+            let seq: i64 = parts[2].parse().unwrap_or(0);
+            let st = m.gi("status") as i32;
+            let next_at = m.gi("next_attempt_at_ms");
+            let claim_exp = m.gi("claim_expires_at_ms");
+            let keep = (include_pending && st == ObligationStatus::Pending as i32 && next_at <= now)
+                   || (include_committed_expired && st == ObligationStatus::Committed as i32 && claim_exp > 0 && claim_exp <= now)
+                   || (include_stuck && st == ObligationStatus::Stuck as i32);
+            if keep {
+                out.push(obligation_from(run, seq, &m));
+            }
+        }
+        // oldest-first by next_attempt_at_ms, then ts — same order as the SQL impl.
+        out.sort_by(|a, b| a.next_attempt_at_ms.cmp(&b.next_attempt_at_ms).then(a.ts_ms.cmp(&b.ts_ms)));
+        out.truncate(lim);
+        Ok(out)
+    }
+    async fn claim_obligation(&self, run_id: &str, obligation_seq: i64, claimer: &str,
+                              lease_ttl_ms: i64, now_ms_in: i64)
+        -> StoreResult<(bool, Option<ObligationRecord>)> {
+        let key = rk_obligation(run_id, obligation_seq);
+        let Some(m) = self.read_row(&key).await? else { return Ok((false, None)); };
+        let existing = obligation_from(run_id, obligation_seq, &m);
+        let now = if now_ms_in > 0 { now_ms_in } else { now_ms() };
+        let ttl = if lease_ttl_ms > 0 { lease_ttl_ms } else { 60_000 };
+        let claimable = (existing.status == ObligationStatus::Pending as i32 && existing.next_attempt_at_ms <= now)
+                     || (existing.status == ObligationStatus::Committed as i32
+                         && existing.claim_expires_at_ms > 0 && existing.claim_expires_at_ms <= now);
+        if !claimable {
+            return Ok((false, Some(existing)));
+        }
+        let lease_exp = now + ttl;
+        self.write_row(&key, vec![
+            set("status", iv(ObligationStatus::Committed as i64)),
+            set("claimed_by", sv(claimer)),
+            set("claim_expires_at_ms", iv(lease_exp)),
+            set("ts", iv(now)),
+        ]).await?;
+        let jseq = self.next_seq(run_id).await?;
+        self.journal(run_id, jseq, "obligation",
+            &serde_json::json!({"obligation_seq": existing.seq, "effect_key": existing.effect_key, "kind": existing.kind, "status": "committed", "transition": "claimed", "claimer": claimer}).to_string(),
+            now).await?;
+        let updated = self.read_row(&key).await?.map(|m| obligation_from(run_id, obligation_seq, &m));
+        Ok((true, updated))
+    }
+    async fn record_obligation_attempt(&self, run_id: &str, obligation_seq: i64,
+                                       error: &str, next_attempt_at_ms: i64)
+        -> StoreResult<Option<ObligationRecord>> {
+        let key = rk_obligation(run_id, obligation_seq);
+        let Some(m) = self.read_row(&key).await? else { return Ok(None); };
+        let existing = obligation_from(run_id, obligation_seq, &m);
+        let now = now_ms();
+        let new_attempts = existing.attempts + 1;
+        let terminal = next_attempt_at_ms <= 0 || new_attempts >= existing.max_attempts;
+        let (new_status, next_at) = if terminal {
+            (ObligationStatus::Stuck as i64, 0_i64)
+        } else {
+            (ObligationStatus::Pending as i64, next_attempt_at_ms)
+        };
+        self.write_row(&key, vec![
+            set("status", iv(new_status)),
+            set("attempts", iv(new_attempts as i64)),
+            set("last_error", sv(error)),
+            set("next_attempt_at_ms", iv(next_at)),
+            set("claimed_by", sv("")),
+            set("claim_expires_at_ms", iv(0)),
+            set("ts", iv(now)),
+        ]).await?;
+        let transition = if terminal { "stuck" } else { "retry-scheduled" };
+        let label = if terminal { "stuck" } else { "pending" };
+        let jseq = self.next_seq(run_id).await?;
+        self.journal(run_id, jseq, "obligation",
+            &serde_json::json!({"obligation_seq": existing.seq, "effect_key": existing.effect_key, "kind": existing.kind,
+                                "status": label, "transition": transition,
+                                "attempts": new_attempts, "error": error,
+                                "next_attempt_at_ms": next_at}).to_string(),
+            now).await?;
+        Ok(self.read_row(&key).await?.map(|m| obligation_from(run_id, obligation_seq, &m)))
+    }
     async fn resolve_obligation(&self, run_id: &str, obligation_seq: i64, status: i32, result_json: &str) -> StoreResult<Option<ObligationRecord>> {
         let key = rk_obligation(run_id, obligation_seq);
-        if self.read_row(&key).await?.is_none() { return Ok(None); }
-        self.write_row(&key, vec![set("status", iv(status as i64)), set("result", sv(result_json)), set("ts", iv(now_ms()))]).await?;
+        let Some(m) = self.read_row(&key).await? else { return Ok(None); };
+        let existing = obligation_from(run_id, obligation_seq, &m);
+        let target = if status == ObligationStatus::Compensated as i32 || status == ObligationStatus::Stuck as i32 {
+            status
+        } else {
+            ObligationStatus::Compensated as i32
+        };
+        let now = now_ms();
+        self.write_row(&key, vec![
+            set("status", iv(target as i64)),
+            set("result", sv(result_json)),
+            set("claimed_by", sv("")),
+            set("claim_expires_at_ms", iv(0)),
+            set("ts", iv(now)),
+        ]).await?;
+        let label = if target == ObligationStatus::Compensated as i32 { "compensated" } else { "stuck" };
+        let jseq = self.next_seq(run_id).await?;
+        self.journal(run_id, jseq, "obligation",
+            &serde_json::json!({"obligation_seq": existing.seq, "effect_key": existing.effect_key, "kind": existing.kind,
+                                "status": label, "transition": "resolved"}).to_string(),
+            now).await?;
         Ok(self.read_row(&key).await?.map(|m| obligation_from(run_id, obligation_seq, &m)))
     }
 

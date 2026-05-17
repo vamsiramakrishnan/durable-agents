@@ -265,8 +265,11 @@ class TapePlugin(BasePlugin):
             else:
                 payload = {**(tool_args or {}), **(result if isinstance(result, dict) else {})}
             try:
-                self._client.register_compensation(run_id=run_id, effect_key=key, kind=kind,
-                                                   payload_json=_safe_json(payload))
+                self._client.register_compensation(
+                    run_id=run_id, effect_key=key, kind=kind,
+                    payload_json=_safe_json(payload),
+                    compensator_ref=str(meta.get("compensator_ref") or ""),
+                    max_attempts=int(meta.get("max_attempts") or 0))
             except Exception:
                 pass
         return None

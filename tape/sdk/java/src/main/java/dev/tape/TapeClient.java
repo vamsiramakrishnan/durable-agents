@@ -141,16 +141,76 @@ public final class TapeClient implements AutoCloseable {
     }
 
     // ── obligations ─────────────────────────────────────────────────────────
+    //
+    // The state machine:
+    //   register_compensation  →  PENDING  (queued; eligible immediately)
+    //   claim_obligation       →  COMMITTED with lease (CAS — one drainer wins)
+    //   resolve_obligation     →  COMPENSATED | STUCK (terminal)
+    //   record_obligation_attempt → PENDING with backoff, or STUCK if exhausted
 
     public ObligationRecord registerCompensation(String runId, String effectKey, String kind, String payloadJson) {
+        return registerCompensation(runId, effectKey, kind, payloadJson, "", 0);
+    }
+
+    /** Extended form: `compensatorRef` ("module:attr") lets a generic drainer
+     *  resolve the inverse without importing the agent. `maxAttempts==0` falls
+     *  back to the server default (5). */
+    public ObligationRecord registerCompensation(String runId, String effectKey, String kind, String payloadJson,
+                                                  String compensatorRef, int maxAttempts) {
         return stub.registerCompensation(RegisterCompensationRequest.newBuilder()
                 .setRunId(runId).setEffectKey(effectKey).setKind(kind)
-                .setPayloadJson(payloadJson == null ? "" : payloadJson).build());
+                .setPayloadJson(payloadJson == null ? "" : payloadJson)
+                .setCompensatorRef(compensatorRef == null ? "" : compensatorRef)
+                .setMaxAttempts(maxAttempts).build());
     }
 
     public ListObligationsResponse listObligations(String runId, boolean onlyUnresolved) {
+        return listObligations(runId, onlyUnresolved, ObligationStatus.OBLIGATION_STATUS_UNSPECIFIED);
+    }
+
+    /** Extended form: `statusFilter==UNSPECIFIED` (the default) means "any
+     *  status"; otherwise it's an exact match. */
+    public ListObligationsResponse listObligations(String runId, boolean onlyUnresolved, ObligationStatus statusFilter) {
         return stub.listObligations(ListObligationsRequest.newBuilder()
-                .setRunId(runId).setOnlyUnresolved(onlyUnresolved).build());
+                .setRunId(runId).setOnlyUnresolved(onlyUnresolved)
+                .setStatusFilter(statusFilter == null ? ObligationStatus.OBLIGATION_STATUS_UNSPECIFIED : statusFilter)
+                .build());
+    }
+
+    public ObligationRecord resolveObligation(String runId, long obligationSeq, ObligationStatus status, String resultJson) {
+        return stub.resolveObligation(ResolveObligationRequest.newBuilder()
+                .setRunId(runId).setObligationSeq(obligationSeq).setStatus(status)
+                .setResultJson(resultJson == null ? "" : resultJson).build());
+    }
+
+    /** Cross-run drainer feed. Defaults (include_pending=true,
+     *  include_committed_expired=true) match the obligations reactor's hot set. */
+    public ListUnresolvedObligationsResponse listUnresolvedObligations(int limit, long nowMs,
+                                                                        boolean includePending,
+                                                                        boolean includeStuck,
+                                                                        boolean includeCommittedExpired) {
+        return stub.listUnresolvedObligations(ListUnresolvedObligationsRequest.newBuilder()
+                .setLimit(limit).setNowMs(nowMs)
+                .setIncludePending(includePending).setIncludeStuck(includeStuck)
+                .setIncludeCommittedExpired(includeCommittedExpired).build());
+    }
+
+    /** Atomic CAS lease. Returns acquired=false (with the current row) on
+     *  contention. `leaseTtlMs==0` uses the server default (60s). */
+    public ClaimObligationResponse claimObligation(String runId, long obligationSeq, String claimer, long leaseTtlMs) {
+        return stub.claimObligation(ClaimObligationRequest.newBuilder()
+                .setRunId(runId).setObligationSeq(obligationSeq)
+                .setClaimer(claimer == null ? "" : claimer)
+                .setLeaseTtlMs(leaseTtlMs).build());
+    }
+
+    /** Report a failed attempt. The server reschedules (PENDING + backoff) or
+     *  marks STUCK (when retries are exhausted, or `nextAttemptAtMs <= 0`). */
+    public ObligationRecord recordObligationAttempt(String runId, long obligationSeq, String error, long nextAttemptAtMs) {
+        return stub.recordObligationAttempt(RecordObligationAttemptRequest.newBuilder()
+                .setRunId(runId).setObligationSeq(obligationSeq)
+                .setError(error == null ? "" : error)
+                .setNextAttemptAtMs(nextAttemptAtMs).build());
     }
 
     // ── budget ──────────────────────────────────────────────────────────────

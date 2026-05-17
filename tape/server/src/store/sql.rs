@@ -450,13 +450,20 @@ fn decision_of(r: &Row) -> DecisionRecord {
         policy_version: r.str(7), ts_ms: r.i64(8),
     }
 }
-const OBLIGATION_COLS: &str = "run_id, seq, effect_key, kind, payload_json, status, ts_ms";
+const OBLIGATION_COLS: &str = "run_id, seq, effect_key, kind, payload_json, status, ts_ms, \
+    compensator_ref, attempts, max_attempts, next_attempt_at_ms, last_error, \
+    claimed_by, claim_expires_at_ms, result_json";
 fn obligation_of(r: &Row) -> ObligationRecord {
     ObligationRecord {
         run_id: r.str(0), seq: r.i64(1), effect_key: r.str(2), kind: r.str(3),
         payload_json: r.str(4), status: r.i32(5), ts_ms: r.i64(6),
+        compensator_ref: r.str(7), attempts: r.i32(8), max_attempts: r.i32(9),
+        next_attempt_at_ms: r.i64(10), last_error: r.str(11),
+        claimed_by: r.str(12), claim_expires_at_ms: r.i64(13), result_json: r.str(14),
     }
 }
+const DEFAULT_MAX_ATTEMPTS: i32 = 5;
+const DEFAULT_LEASE_MS: i64 = 60_000;
 
 #[async_trait]
 impl RunStore for SqlRunStore {
@@ -618,33 +625,183 @@ impl RunStore for SqlRunStore {
     }
 
     // ── obligations ─────────────────────────────────────────────────────────
-    async fn register_compensation(&self, run_id: &str, effect_key: &str, kind: &str, payload_json: &str) -> StoreResult<ObligationRecord> {
+    async fn register_compensation(&self, run_id: &str, effect_key: &str, kind: &str,
+                                   payload_json: &str, compensator_ref: &str,
+                                   max_attempts: i32) -> StoreResult<ObligationRecord> {
+        // idempotent on (run_id, effect_key, kind): a repeat returns the existing row.
         let sql = format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND effect_key=?2 AND kind=?3");
         if let Some(row) = self.d().query_opt(&sql, vec![run_id.into(), effect_key.into(), kind.into()]).await? {
             return Ok(obligation_of(&row));
         }
         let ts = now_ms();
         let seq = self.next_seq(run_id).await?;
-        let status = ObligationStatus::Committed as i32;
-        self.d().exec("INSERT INTO tape_obligations (run_id, seq, effect_key, kind, payload_json, status, ts_ms) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            vec![run_id.into(), seq.into(), effect_key.into(), kind.into(), payload_json.into(), status.into(), ts.into()]).await?;
-        self.journal(run_id, seq, "obligation", &serde_json::json!({"effect_key": effect_key, "kind": kind}).to_string(), ts).await?;
-        Ok(ObligationRecord { run_id: run_id.into(), seq, effect_key: effect_key.into(), kind: kind.into(), payload_json: payload_json.into(), status, ts_ms: ts })
+        let status = ObligationStatus::Pending as i32;
+        let max_att = if max_attempts <= 0 { DEFAULT_MAX_ATTEMPTS } else { max_attempts };
+        self.d().exec(
+            "INSERT INTO tape_obligations (run_id, seq, effect_key, kind, payload_json, status, ts_ms, \
+             compensator_ref, attempts, max_attempts, next_attempt_at_ms, last_error, claimed_by, claim_expires_at_ms, result_json) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10,'','',0,'')",
+            vec![run_id.into(), seq.into(), effect_key.into(), kind.into(), payload_json.into(),
+                 status.into(), ts.into(), compensator_ref.into(), max_att.into(), ts.into()]).await?;
+        self.journal(run_id, seq, "obligation",
+            &serde_json::json!({"effect_key": effect_key, "kind": kind, "status": "pending", "transition": "registered"}).to_string(),
+            ts).await?;
+        Ok(ObligationRecord {
+            run_id: run_id.into(), seq, effect_key: effect_key.into(), kind: kind.into(),
+            payload_json: payload_json.into(), status, ts_ms: ts,
+            compensator_ref: compensator_ref.into(), attempts: 0, max_attempts: max_att,
+            next_attempt_at_ms: ts, last_error: String::new(),
+            claimed_by: String::new(), claim_expires_at_ms: 0, result_json: String::new(),
+        })
     }
-    async fn list_obligations(&self, run_id: &str, only_unresolved: bool) -> StoreResult<Vec<ObligationRecord>> {
-        let (sql, params): (String, Vec<Val>) = if only_unresolved {
-            (format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND status NOT IN (?2,?3) ORDER BY seq DESC"),
-             vec![run_id.into(), (ObligationStatus::Compensated as i32).into(), (ObligationStatus::Stuck as i32).into()])
-        } else {
-            (format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 ORDER BY seq DESC"), vec![run_id.into()])
-        };
+    async fn list_obligations(&self, run_id: &str, only_unresolved: bool, status_filter: i32) -> StoreResult<Vec<ObligationRecord>> {
+        let mut sql = format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1");
+        let mut params: Vec<Val> = vec![run_id.into()];
+        if status_filter > 0 {
+            sql.push_str(" AND status=?2");
+            params.push(status_filter.into());
+        } else if only_unresolved {
+            sql.push_str(" AND status NOT IN (?2,?3)");
+            params.push((ObligationStatus::Compensated as i32).into());
+            params.push((ObligationStatus::Stuck as i32).into());
+        }
+        sql.push_str(" ORDER BY seq DESC");
         Ok(self.d().query(&sql, params).await?.iter().map(obligation_of).collect())
     }
-    async fn resolve_obligation(&self, run_id: &str, obligation_seq: i64, status: i32, result_json: &str) -> StoreResult<Option<ObligationRecord>> {
-        let _ = result_json;
-        self.d().exec("UPDATE tape_obligations SET status=?3, ts_ms=?4 WHERE run_id=?1 AND seq=?2",
-            vec![run_id.into(), obligation_seq.into(), status.into(), now_ms().into()]).await?;
+    async fn list_unresolved_obligations(&self, now_ms: i64, include_pending: bool,
+                                         include_stuck: bool, include_committed_expired: bool,
+                                         limit: i64) -> StoreResult<Vec<ObligationRecord>> {
+        // Build the OR list dynamically — every store backend will hit `idx_obligations_drain`
+        // (status, next_attempt_at_ms) for the PENDING arm and `idx_obligations_lease`
+        // (status, claim_expires_at_ms) for the COMMITTED-expired arm.
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let lim = if limit > 0 { limit } else { 500 };
+        let mut clauses: Vec<String> = Vec::new();
+        let mut params: Vec<Val> = Vec::new();
+        let bind = |c: &mut Vec<String>, p: &mut Vec<Val>, expr: String, values: Vec<Val>| {
+            let mut e = expr;
+            for v in values {
+                p.push(v);
+                let n = p.len();
+                e = e.replacen("?N", &format!("?{n}"), 1);
+            }
+            c.push(format!("({e})"));
+        };
+        if include_pending {
+            bind(&mut clauses, &mut params,
+                 "status=?N AND next_attempt_at_ms<=?N".into(),
+                 vec![(ObligationStatus::Pending as i32).into(), now.into()]);
+        }
+        if include_committed_expired {
+            bind(&mut clauses, &mut params,
+                 "status=?N AND claim_expires_at_ms<=?N AND claim_expires_at_ms>0".into(),
+                 vec![(ObligationStatus::Committed as i32).into(), now.into()]);
+        }
+        if include_stuck {
+            bind(&mut clauses, &mut params,
+                 "status=?N".into(),
+                 vec![(ObligationStatus::Stuck as i32).into()]);
+        }
+        if clauses.is_empty() {
+            return Ok(Vec::new());
+        }
+        let where_ = clauses.join(" OR ");
+        let lim_n = params.len() + 1;
+        params.push(lim.into());
+        let sql = format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE {where_} ORDER BY next_attempt_at_ms ASC, ts_ms ASC LIMIT ?{lim_n}");
+        Ok(self.d().query(&sql, params).await?.iter().map(obligation_of).collect())
+    }
+    async fn claim_obligation(&self, run_id: &str, obligation_seq: i64, claimer: &str,
+                              lease_ttl_ms: i64, now_ms: i64)
+        -> StoreResult<(bool, Option<ObligationRecord>)> {
+        let now = if now_ms > 0 { now_ms } else { super::now_ms() };
+        let ttl = if lease_ttl_ms > 0 { lease_ttl_ms } else { DEFAULT_LEASE_MS };
+        let lease_exp = now + ttl;
+        // Atomic CAS via the UPDATE … WHERE guard: succeeds only if the row is
+        // claimable right now (PENDING + due, or COMMITTED + lease expired).
+        let pending = ObligationStatus::Pending as i32;
+        let committed = ObligationStatus::Committed as i32;
+        // `?7` (now_ms) is bound once and referenced three times — pg_sql() rewrites
+        // it to `$7`, which Postgres allows reusing. rusqlite's `?7` is positional
+        // and reuses by index.
+        let updated = self.d().exec(
+            "UPDATE tape_obligations \
+             SET status=?4, claimed_by=?5, claim_expires_at_ms=?6, ts_ms=?7 \
+             WHERE run_id=?1 AND seq=?2 \
+               AND ((status=?3 AND next_attempt_at_ms<=?7) \
+                 OR (status=?4 AND claim_expires_at_ms<=?7 AND claim_expires_at_ms>0))",
+            vec![run_id.into(), obligation_seq.into(),
+                 pending.into(), committed.into(),
+                 claimer.into(), lease_exp.into(), now.into()]).await?;
         let sql = format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND seq=?2");
+        let row = self.d().query_opt(&sql, vec![run_id.into(), obligation_seq.into()]).await?.map(|r| obligation_of(&r));
+        if updated > 0 {
+            if let Some(rec) = &row {
+                let jseq = self.next_seq(run_id).await?;
+                self.journal(run_id, jseq, "obligation",
+                    &serde_json::json!({"obligation_seq": rec.seq, "effect_key": rec.effect_key, "kind": rec.kind, "status": "committed", "transition": "claimed", "claimer": claimer}).to_string(),
+                    now).await?;
+            }
+            Ok((true, row))
+        } else {
+            Ok((false, row))
+        }
+    }
+    async fn record_obligation_attempt(&self, run_id: &str, obligation_seq: i64,
+                                       error: &str, next_attempt_at_ms: i64)
+        -> StoreResult<Option<ObligationRecord>> {
+        let sql = format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND seq=?2");
+        let Some(row) = self.d().query_opt(&sql, vec![run_id.into(), obligation_seq.into()]).await? else { return Ok(None); };
+        let existing = obligation_of(&row);
+        let now = super::now_ms();
+        let new_attempts = existing.attempts + 1;
+        let terminal = next_attempt_at_ms <= 0 || new_attempts >= existing.max_attempts;
+        let (new_status, next_at) = if terminal {
+            (ObligationStatus::Stuck as i32, 0_i64)
+        } else {
+            (ObligationStatus::Pending as i32, next_attempt_at_ms)
+        };
+        self.d().exec(
+            "UPDATE tape_obligations \
+             SET status=?3, attempts=?4, last_error=?5, next_attempt_at_ms=?6, \
+                 claimed_by='', claim_expires_at_ms=0, ts_ms=?7 \
+             WHERE run_id=?1 AND seq=?2",
+            vec![run_id.into(), obligation_seq.into(), new_status.into(),
+                 new_attempts.into(), error.into(), next_at.into(), now.into()]).await?;
+        let transition = if terminal { "stuck" } else { "retry-scheduled" };
+        let label = if terminal { "stuck" } else { "pending" };
+        let jseq = self.next_seq(run_id).await?;
+        self.journal(run_id, jseq, "obligation",
+            &serde_json::json!({"obligation_seq": existing.seq, "effect_key": existing.effect_key, "kind": existing.kind,
+                                "status": label, "transition": transition,
+                                "attempts": new_attempts, "error": error,
+                                "next_attempt_at_ms": next_at}).to_string(),
+            now).await?;
+        Ok(self.d().query_opt(&sql, vec![run_id.into(), obligation_seq.into()]).await?.map(|r| obligation_of(&r)))
+    }
+    async fn resolve_obligation(&self, run_id: &str, obligation_seq: i64, status: i32, result_json: &str) -> StoreResult<Option<ObligationRecord>> {
+        let sql = format!("SELECT {OBLIGATION_COLS} FROM tape_obligations WHERE run_id=?1 AND seq=?2");
+        let Some(row) = self.d().query_opt(&sql, vec![run_id.into(), obligation_seq.into()]).await? else { return Ok(None); };
+        let existing = obligation_of(&row);
+        let now = super::now_ms();
+        // Terminal-only: ignore non-terminal status arguments to keep the state
+        // machine honest (use claim/record_attempt for non-terminal transitions).
+        let target = if status == ObligationStatus::Compensated as i32 || status == ObligationStatus::Stuck as i32 {
+            status
+        } else {
+            ObligationStatus::Compensated as i32
+        };
+        self.d().exec(
+            "UPDATE tape_obligations \
+             SET status=?3, result_json=?4, claimed_by='', claim_expires_at_ms=0, ts_ms=?5 \
+             WHERE run_id=?1 AND seq=?2",
+            vec![run_id.into(), obligation_seq.into(), target.into(), result_json.into(), now.into()]).await?;
+        let label = if target == ObligationStatus::Compensated as i32 { "compensated" } else { "stuck" };
+        let jseq = self.next_seq(run_id).await?;
+        self.journal(run_id, jseq, "obligation",
+            &serde_json::json!({"obligation_seq": existing.seq, "effect_key": existing.effect_key, "kind": existing.kind,
+                                "status": label, "transition": "resolved"}).to_string(),
+            now).await?;
         Ok(self.d().query_opt(&sql, vec![run_id.into(), obligation_seq.into()]).await?.map(|r| obligation_of(&r)))
     }
 

@@ -33,48 +33,51 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Tape_BeginRun_FullMethodName             = "/tape.v1.Tape/BeginRun"
-	Tape_ResumeRun_FullMethodName            = "/tape.v1.Tape/ResumeRun"
-	Tape_EndRun_FullMethodName               = "/tape.v1.Tape/EndRun"
-	Tape_GetRun_FullMethodName               = "/tape.v1.Tape/GetRun"
-	Tape_ListRunsToRecover_FullMethodName    = "/tape.v1.Tape/ListRunsToRecover"
-	Tape_SubscribeRun_FullMethodName         = "/tape.v1.Tape/SubscribeRun"
-	Tape_RecordDecision_FullMethodName       = "/tape.v1.Tape/RecordDecision"
-	Tape_GetDecision_FullMethodName          = "/tape.v1.Tape/GetDecision"
-	Tape_BeginEffect_FullMethodName          = "/tape.v1.Tape/BeginEffect"
-	Tape_CompleteEffect_FullMethodName       = "/tape.v1.Tape/CompleteEffect"
-	Tape_GetEffect_FullMethodName            = "/tape.v1.Tape/GetEffect"
-	Tape_ReconcileEffect_FullMethodName      = "/tape.v1.Tape/ReconcileEffect"
-	Tape_RegisterCompensation_FullMethodName = "/tape.v1.Tape/RegisterCompensation"
-	Tape_ListObligations_FullMethodName      = "/tape.v1.Tape/ListObligations"
-	Tape_ResolveObligation_FullMethodName    = "/tape.v1.Tape/ResolveObligation"
-	Tape_SetBudget_FullMethodName            = "/tape.v1.Tape/SetBudget"
-	Tape_AdmitBudget_FullMethodName          = "/tape.v1.Tape/AdmitBudget"
-	Tape_ChargeBudget_FullMethodName         = "/tape.v1.Tape/ChargeBudget"
-	Tape_AwaitSignal_FullMethodName          = "/tape.v1.Tape/AwaitSignal"
-	Tape_SendSignal_FullMethodName           = "/tape.v1.Tape/SendSignal"
-	Tape_ListPendingEffects_FullMethodName   = "/tape.v1.Tape/ListPendingEffects"
-	Tape_SetTimer_FullMethodName             = "/tape.v1.Tape/SetTimer"
-	Tape_CancelTimer_FullMethodName          = "/tape.v1.Tape/CancelTimer"
-	Tape_ListDueTimers_FullMethodName        = "/tape.v1.Tape/ListDueTimers"
-	Tape_SubscribeEvents_FullMethodName      = "/tape.v1.Tape/SubscribeEvents"
-	Tape_SubscribeBySubject_FullMethodName   = "/tape.v1.Tape/SubscribeBySubject"
-	Tape_RegisterReaction_FullMethodName     = "/tape.v1.Tape/RegisterReaction"
-	Tape_DeregisterReaction_FullMethodName   = "/tape.v1.Tape/DeregisterReaction"
-	Tape_ListReactions_FullMethodName        = "/tape.v1.Tape/ListReactions"
-	Tape_ClaimTasks_FullMethodName           = "/tape.v1.Tape/ClaimTasks"
-	Tape_CompleteTask_FullMethodName         = "/tape.v1.Tape/CompleteTask"
-	Tape_NackTask_FullMethodName             = "/tape.v1.Tape/NackTask"
-	Tape_ListTasks_FullMethodName            = "/tape.v1.Tape/ListTasks"
-	Tape_WriteValue_FullMethodName           = "/tape.v1.Tape/WriteValue"
-	Tape_GetValue_FullMethodName             = "/tape.v1.Tape/GetValue"
-	Tape_WatchValue_FullMethodName           = "/tape.v1.Tape/WatchValue"
-	Tape_DeleteValue_FullMethodName          = "/tape.v1.Tape/DeleteValue"
-	Tape_CreateSession_FullMethodName        = "/tape.v1.Tape/CreateSession"
-	Tape_GetSession_FullMethodName           = "/tape.v1.Tape/GetSession"
-	Tape_ListSessions_FullMethodName         = "/tape.v1.Tape/ListSessions"
-	Tape_DeleteSession_FullMethodName        = "/tape.v1.Tape/DeleteSession"
-	Tape_AppendEvent_FullMethodName          = "/tape.v1.Tape/AppendEvent"
+	Tape_BeginRun_FullMethodName                  = "/tape.v1.Tape/BeginRun"
+	Tape_ResumeRun_FullMethodName                 = "/tape.v1.Tape/ResumeRun"
+	Tape_EndRun_FullMethodName                    = "/tape.v1.Tape/EndRun"
+	Tape_GetRun_FullMethodName                    = "/tape.v1.Tape/GetRun"
+	Tape_ListRunsToRecover_FullMethodName         = "/tape.v1.Tape/ListRunsToRecover"
+	Tape_SubscribeRun_FullMethodName              = "/tape.v1.Tape/SubscribeRun"
+	Tape_RecordDecision_FullMethodName            = "/tape.v1.Tape/RecordDecision"
+	Tape_GetDecision_FullMethodName               = "/tape.v1.Tape/GetDecision"
+	Tape_BeginEffect_FullMethodName               = "/tape.v1.Tape/BeginEffect"
+	Tape_CompleteEffect_FullMethodName            = "/tape.v1.Tape/CompleteEffect"
+	Tape_GetEffect_FullMethodName                 = "/tape.v1.Tape/GetEffect"
+	Tape_ReconcileEffect_FullMethodName           = "/tape.v1.Tape/ReconcileEffect"
+	Tape_RegisterCompensation_FullMethodName      = "/tape.v1.Tape/RegisterCompensation"
+	Tape_ListObligations_FullMethodName           = "/tape.v1.Tape/ListObligations"
+	Tape_ResolveObligation_FullMethodName         = "/tape.v1.Tape/ResolveObligation"
+	Tape_ListUnresolvedObligations_FullMethodName = "/tape.v1.Tape/ListUnresolvedObligations"
+	Tape_ClaimObligation_FullMethodName           = "/tape.v1.Tape/ClaimObligation"
+	Tape_RecordObligationAttempt_FullMethodName   = "/tape.v1.Tape/RecordObligationAttempt"
+	Tape_SetBudget_FullMethodName                 = "/tape.v1.Tape/SetBudget"
+	Tape_AdmitBudget_FullMethodName               = "/tape.v1.Tape/AdmitBudget"
+	Tape_ChargeBudget_FullMethodName              = "/tape.v1.Tape/ChargeBudget"
+	Tape_AwaitSignal_FullMethodName               = "/tape.v1.Tape/AwaitSignal"
+	Tape_SendSignal_FullMethodName                = "/tape.v1.Tape/SendSignal"
+	Tape_ListPendingEffects_FullMethodName        = "/tape.v1.Tape/ListPendingEffects"
+	Tape_SetTimer_FullMethodName                  = "/tape.v1.Tape/SetTimer"
+	Tape_CancelTimer_FullMethodName               = "/tape.v1.Tape/CancelTimer"
+	Tape_ListDueTimers_FullMethodName             = "/tape.v1.Tape/ListDueTimers"
+	Tape_SubscribeEvents_FullMethodName           = "/tape.v1.Tape/SubscribeEvents"
+	Tape_SubscribeBySubject_FullMethodName        = "/tape.v1.Tape/SubscribeBySubject"
+	Tape_RegisterReaction_FullMethodName          = "/tape.v1.Tape/RegisterReaction"
+	Tape_DeregisterReaction_FullMethodName        = "/tape.v1.Tape/DeregisterReaction"
+	Tape_ListReactions_FullMethodName             = "/tape.v1.Tape/ListReactions"
+	Tape_ClaimTasks_FullMethodName                = "/tape.v1.Tape/ClaimTasks"
+	Tape_CompleteTask_FullMethodName              = "/tape.v1.Tape/CompleteTask"
+	Tape_NackTask_FullMethodName                  = "/tape.v1.Tape/NackTask"
+	Tape_ListTasks_FullMethodName                 = "/tape.v1.Tape/ListTasks"
+	Tape_WriteValue_FullMethodName                = "/tape.v1.Tape/WriteValue"
+	Tape_GetValue_FullMethodName                  = "/tape.v1.Tape/GetValue"
+	Tape_WatchValue_FullMethodName                = "/tape.v1.Tape/WatchValue"
+	Tape_DeleteValue_FullMethodName               = "/tape.v1.Tape/DeleteValue"
+	Tape_CreateSession_FullMethodName             = "/tape.v1.Tape/CreateSession"
+	Tape_GetSession_FullMethodName                = "/tape.v1.Tape/GetSession"
+	Tape_ListSessions_FullMethodName              = "/tape.v1.Tape/ListSessions"
+	Tape_DeleteSession_FullMethodName             = "/tape.v1.Tape/DeleteSession"
+	Tape_AppendEvent_FullMethodName               = "/tape.v1.Tape/AppendEvent"
 )
 
 // TapeClient is the client API for Tape service.
@@ -100,6 +103,10 @@ type TapeClient interface {
 	RegisterCompensation(ctx context.Context, in *RegisterCompensationRequest, opts ...grpc.CallOption) (*ObligationRecord, error)
 	ListObligations(ctx context.Context, in *ListObligationsRequest, opts ...grpc.CallOption) (*ListObligationsResponse, error)
 	ResolveObligation(ctx context.Context, in *ResolveObligationRequest, opts ...grpc.CallOption) (*ObligationRecord, error)
+	// The drainer surface — for the obligations reactor and operator queries.
+	ListUnresolvedObligations(ctx context.Context, in *ListUnresolvedObligationsRequest, opts ...grpc.CallOption) (*ListUnresolvedObligationsResponse, error)
+	ClaimObligation(ctx context.Context, in *ClaimObligationRequest, opts ...grpc.CallOption) (*ClaimObligationResponse, error)
+	RecordObligationAttempt(ctx context.Context, in *RecordObligationAttemptRequest, opts ...grpc.CallOption) (*ObligationRecord, error)
 	// ── budget ────────────────────────────────────────────────────────────────
 	SetBudget(ctx context.Context, in *SetBudgetRequest, opts ...grpc.CallOption) (*BudgetState, error)
 	AdmitBudget(ctx context.Context, in *AdmitBudgetRequest, opts ...grpc.CallOption) (*AdmitBudgetResponse, error)
@@ -310,6 +317,36 @@ func (c *tapeClient) ResolveObligation(ctx context.Context, in *ResolveObligatio
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ObligationRecord)
 	err := c.cc.Invoke(ctx, Tape_ResolveObligation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ListUnresolvedObligations(ctx context.Context, in *ListUnresolvedObligationsRequest, opts ...grpc.CallOption) (*ListUnresolvedObligationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListUnresolvedObligationsResponse)
+	err := c.cc.Invoke(ctx, Tape_ListUnresolvedObligations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ClaimObligation(ctx context.Context, in *ClaimObligationRequest, opts ...grpc.CallOption) (*ClaimObligationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimObligationResponse)
+	err := c.cc.Invoke(ctx, Tape_ClaimObligation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) RecordObligationAttempt(ctx context.Context, in *RecordObligationAttemptRequest, opts ...grpc.CallOption) (*ObligationRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ObligationRecord)
+	err := c.cc.Invoke(ctx, Tape_RecordObligationAttempt_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -636,6 +673,10 @@ type TapeServer interface {
 	RegisterCompensation(context.Context, *RegisterCompensationRequest) (*ObligationRecord, error)
 	ListObligations(context.Context, *ListObligationsRequest) (*ListObligationsResponse, error)
 	ResolveObligation(context.Context, *ResolveObligationRequest) (*ObligationRecord, error)
+	// The drainer surface — for the obligations reactor and operator queries.
+	ListUnresolvedObligations(context.Context, *ListUnresolvedObligationsRequest) (*ListUnresolvedObligationsResponse, error)
+	ClaimObligation(context.Context, *ClaimObligationRequest) (*ClaimObligationResponse, error)
+	RecordObligationAttempt(context.Context, *RecordObligationAttemptRequest) (*ObligationRecord, error)
 	// ── budget ────────────────────────────────────────────────────────────────
 	SetBudget(context.Context, *SetBudgetRequest) (*BudgetState, error)
 	AdmitBudget(context.Context, *AdmitBudgetRequest) (*AdmitBudgetResponse, error)
@@ -737,6 +778,15 @@ func (UnimplementedTapeServer) ListObligations(context.Context, *ListObligations
 }
 func (UnimplementedTapeServer) ResolveObligation(context.Context, *ResolveObligationRequest) (*ObligationRecord, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveObligation not implemented")
+}
+func (UnimplementedTapeServer) ListUnresolvedObligations(context.Context, *ListUnresolvedObligationsRequest) (*ListUnresolvedObligationsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListUnresolvedObligations not implemented")
+}
+func (UnimplementedTapeServer) ClaimObligation(context.Context, *ClaimObligationRequest) (*ClaimObligationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClaimObligation not implemented")
+}
+func (UnimplementedTapeServer) RecordObligationAttempt(context.Context, *RecordObligationAttemptRequest) (*ObligationRecord, error) {
+	return nil, status.Error(codes.Unimplemented, "method RecordObligationAttempt not implemented")
 }
 func (UnimplementedTapeServer) SetBudget(context.Context, *SetBudgetRequest) (*BudgetState, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetBudget not implemented")
@@ -1099,6 +1149,60 @@ func _Tape_ResolveObligation_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TapeServer).ResolveObligation(ctx, req.(*ResolveObligationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ListUnresolvedObligations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListUnresolvedObligationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ListUnresolvedObligations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ListUnresolvedObligations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ListUnresolvedObligations(ctx, req.(*ListUnresolvedObligationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ClaimObligation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimObligationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ClaimObligation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ClaimObligation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ClaimObligation(ctx, req.(*ClaimObligationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_RecordObligationAttempt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordObligationAttemptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).RecordObligationAttempt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_RecordObligationAttempt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).RecordObligationAttempt(ctx, req.(*RecordObligationAttemptRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1630,6 +1734,18 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveObligation",
 			Handler:    _Tape_ResolveObligation_Handler,
+		},
+		{
+			MethodName: "ListUnresolvedObligations",
+			Handler:    _Tape_ListUnresolvedObligations_Handler,
+		},
+		{
+			MethodName: "ClaimObligation",
+			Handler:    _Tape_ClaimObligation_Handler,
+		},
+		{
+			MethodName: "RecordObligationAttempt",
+			Handler:    _Tape_RecordObligationAttempt_Handler,
 		},
 		{
 			MethodName: "SetBudget",

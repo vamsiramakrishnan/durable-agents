@@ -47,10 +47,23 @@ def get_status_check(tool_name: str) -> Optional[Callable]:
     return _STATUS_CHECKS.get(tool_name)
 
 
+def compensator_ref_of(fn: Callable) -> str:
+    """The fully-qualified "module:attr" for a callable, suitable for a generic
+    drainer process to `importlib.import_module` + `getattr` at drain time.
+    Returns "" when the callable is anonymous, a lambda, or otherwise can't be
+    addressed by name."""
+    mod = getattr(fn, "__module__", "") or ""
+    name = getattr(fn, "__qualname__", "") or getattr(fn, "__name__", "") or ""
+    if not mod or not name or "<" in name:
+        return ""
+    return f"{mod}:{name}"
+
+
 def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Callable] = None,
            key_from: Optional[Callable] = None,
            compensation_payload: Optional[Callable] = None,
-           retry: Optional[RetryPolicy] = None) -> Callable:
+           retry: Optional[RetryPolicy] = None,
+           max_attempts: int = 0) -> Callable:
     def deco(fn: Callable) -> Callable:
         meta = {
             "compensate": compensate,
@@ -58,6 +71,12 @@ def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Call
             "key_from": key_from,
             "compensation_payload": compensation_payload,
             "retry": retry,
+            # The drainer's own retry budget (server default 5 if unset). Distinct
+            # from `retry=` above, which retries the *forward* call.
+            "max_attempts": max_attempts,
+            # The "module:attr" path so a generic drainer (one that doesn't import
+            # this agent module at boot) can resolve the inverse on demand.
+            "compensator_ref": compensator_ref_of(compensate) if compensate is not None else "",
         }
         if compensate is not None:
             register_compensator(getattr(compensate, "__name__", "compensate"), compensate)

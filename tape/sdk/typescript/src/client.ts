@@ -219,14 +219,50 @@ export class TapeClient {
   }
 
   // ── obligations ───────────────────────────────────────────────────────────
-  registerCompensation(r: { runId: string; effectKey: string; kind: string; payloadJson?: string }) {
-    return this.call('RegisterCompensation', { payloadJson: '', ...r });
+  //
+  // The state machine:
+  //   register_compensation  →  PENDING (queued; eligible immediately)
+  //   claim_obligation       →  COMMITTED with lease (CAS — one drainer wins)
+  //   resolve_obligation     →  COMPENSATED | STUCK (terminal)
+  //   record_obligation_attempt → PENDING with backoff (or STUCK if exhausted)
+  //
+  // `compensatorRef` ("module:attr") lets a generic drainer process resolve
+  // the inverse without importing the agent's module. `maxAttempts: 0` uses
+  // the server default (5).
+  registerCompensation(r: {
+    runId: string; effectKey: string; kind: string;
+    payloadJson?: string; compensatorRef?: string; maxAttempts?: number;
+  }) {
+    return this.call('RegisterCompensation', {
+      payloadJson: '', compensatorRef: '', maxAttempts: 0, ...r,
+    });
   }
-  listObligations(r: { runId: string; onlyUnresolved?: boolean }) {
-    return this.call('ListObligations', { onlyUnresolved: true, ...r });
+  listObligations(r: { runId: string; onlyUnresolved?: boolean; statusFilter?: number }) {
+    return this.call('ListObligations', { onlyUnresolved: true, statusFilter: 0, ...r });
   }
   resolveObligation(r: { runId: string; obligationSeq: number; status: number; resultJson?: string }) {
     return this.call('ResolveObligation', { resultJson: '', ...r });
+  }
+  // Cross-run drainer feed. Defaults (include_pending=true,
+  // include_committed_expired=true) match the obligations reactor's hot set.
+  listUnresolvedObligations(r: {
+    limit?: number; nowMs?: number;
+    includePending?: boolean; includeStuck?: boolean; includeCommittedExpired?: boolean;
+  } = {}) {
+    return this.call('ListUnresolvedObligations', {
+      limit: 500, nowMs: 0,
+      includePending: true, includeStuck: false, includeCommittedExpired: true, ...r,
+    });
+  }
+  // Atomic lease CAS: returns { acquired, obligation }. `acquired=false` means
+  // either someone else holds it or it's not eligible (backoff not elapsed).
+  claimObligation(r: { runId: string; obligationSeq: number; claimer: string; leaseTtlMs?: number }) {
+    return this.call('ClaimObligation', { leaseTtlMs: 60_000, ...r });
+  }
+  // Report a failed attempt; the server reschedules (PENDING + backoff) or
+  // marks STUCK (when retries are exhausted, or `nextAttemptAtMs <= 0`).
+  recordObligationAttempt(r: { runId: string; obligationSeq: number; error: string; nextAttemptAtMs: number }) {
+    return this.call('RecordObligationAttempt', r);
   }
 
   // ── budget ────────────────────────────────────────────────────────────────
