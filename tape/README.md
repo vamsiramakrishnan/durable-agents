@@ -73,16 +73,23 @@ artifacts); the *agent process* can be in any of the four languages.
 |---|---|---|---|---|
 | Wire the runtime in one call    | `tape.adk.durable_app(...)`  | `tape.NewDurableApp(ctx, cfg)`          | `durableApp({...})`                 | `DurableApp.wire(new Config().…)`          |
 | Outbox tool for non-idempotent  | `@tape.outbox_tool(...)`     | `tape.NewOutboxTool(opts)`              | `outboxTool(fn, opts)`              | `OutboxTool.builder(name, conn).…build()`  |
-| Capability connector registry   | `tape.connectors.CONNECTORS` | `connectors.Default`                    | `CONNECTORS`                        | `ConnectorRegistry.DEFAULT`                |
-| Built-in connectors             | Log / Http / PubSub / Tasks  | Log / Http / PubSub (`-tags pubsub`) / Tasks (`-tags cloudtasks`) | Log / Http / PubSub / Tasks (lazy)  | Log / Http / PubSub (reflective) / Tasks (reflective) |
+| Capability connector registry   | `tape.connectors.register(...)` | `connectors.Default`                 | `CONNECTORS`                        | `ConnectorRegistry.DEFAULT`                |
+| Built-in connectors             | HTTP / PubSub                | Log / Http / PubSub (`-tags pubsub`) / Tasks (`-tags cloudtasks`) | Log / Http / PubSub / Tasks (lazy)  | Log / Http / PubSub (reflective) / Tasks (reflective) |
 | Structured logs + OTel spans    | `tape.obs.log_json` / `span` | `tape.LogJSON` / `tape.Span`            | `logJson` / `span` / `setSpanHook`  | `Obs.logJson` / `Obs.span`                 |
 | Tenancy config + DESIGN-ONLY warn | `tape.TenancyConfig`       | `tape.TenancyConfig`                    | `tenancyFromObject` / `warnIf…`     | `Tenancy.Config`                           |
 
 All four enforce the same `non_idempotent` safety rule at decoration /
-construction time: no `business_key`, no `status_check`, no `compensate`,
-no `human_gate` ⇒ the SDK refuses to build the tool. The point is
-identical in every language: an UNKNOWN dispatch must never be blindly
-retried.
+construction time: no `business_key`, no `status_check`, no `compensate`
+⇒ the SDK refuses to build the tool. The point is identical in every
+language: an UNKNOWN dispatch must never be blindly retried. The Python
+server also enforces the contract at `BeginEffect`-time so even an older
+SDK can't slip through.
+
+Python ships only the upstream-shaped built-ins it can verify
+(`HTTPConnector`, `PubSubConnector`) — the Go / TS / Java SDKs ship the
+broader Log / Tasks set as wire-protocol-only helpers for those agent
+processes; their actual dispatch goes through the Python outbox reactor
+on the server side.
 
 ## Manual quick start (the long way)
 
@@ -230,6 +237,78 @@ a watcher sees X 70 → 90, not just "X is 90 now" — so a reactor that re-pric
 on FX moves can act on the *change*. Different from signals (point-to-point,
 single-consumer) and the WAL tail (cross-run, everything-in-order); this is
 shared state, fan-out, by-key — Tape as the connective tissue between agents.
+
+## Non-idempotent upstreams
+
+Tape does not pretend exactly-once is possible without upstream support. For
+counterparties that *do* accept idempotency keys (Stripe, most modern payment
+APIs, brokers with `clOrdID`), the v1 model — `@tape.effect(...)` + the
+counterparty dedupes on the key Tape mints — is exactly-once-effective.
+
+For counterparties that **don't** — a legacy bank wire API, a fax bridge,
+a partner system with no key support — Tape ships an explicit ambiguity
+protocol: **outbox dispatch + reconciliation**. The tool body is intent-only;
+an outbox reactor calls the counterparty exactly once via a registered
+connector; the reconciler resolves any `unknown` outcome by asking the
+counterparty (by business key).
+
+| Upstream contract             | Tape pattern                                              |
+| ----------------------------- | --------------------------------------------------------- |
+| **Idempotent API**            | `@tape.effect()`, inline; auto retry is safe              |
+| **Non-idempotent API**        | `@tape.outbox_tool(connector=…, business_key=…)`; no blind retry — outbox + reconciliation |
+| **Opaque / partially-known API** | as above, plus `@tape.gate(...)` for a human approval gate |
+
+The minimum to get this in your agent:
+
+```python
+import tape
+
+def _bk(*, account, amount, date, tool_context=None):
+    return f"{account}:{amount}:{date}"
+
+@tape.outbox_tool(
+    connector="bank.wire",
+    semantics="non_idempotent",
+    business_key=_bk,
+    compensate=reverse_wire,
+)
+def wire_money(account, amount, beneficiary, date, tool_context):
+    return {"account": account, "amount": amount,
+            "beneficiary": beneficiary, "date": date}
+```
+
+…then a connector + the outbox reactor (one Cloud Run service —
+`tape/deploy/gcp/outbox.service.yaml`):
+
+```python
+# my_app/connectors/bank.py
+import tape.connectors as connectors
+from tape.connectors.base import DispatchResult, ObservationResult
+
+class BankConnector:
+    name = "bank.wire"
+    def dispatch(self, effect):
+        wire_id = real_bank.wire(**json.loads(effect.request_json))
+        return DispatchResult(status="confirmed", external_ref=wire_id)
+    def observe(self, effect):
+        rows = real_bank.find_by_key(effect.business_key)
+        if not rows: return ObservationResult(status="absent")
+        if len(rows) > 1: return ObservationResult(status="duplicate",
+                                                    external_ref=rows[0].id)
+        return ObservationResult(status="confirmed", external_ref=rows[0].id)
+    def compensate(self, obligation): ...
+
+connectors.register(BankConnector())
+```
+
+```bash
+# alongside tape-server and tape-reactors:
+tape-outbox --url tapes://tape-server --load my_app.connectors.bank
+```
+
+The full walkthrough (with a fake non-idempotent bank, all three failure
+modes, and a runnable script) is in
+[`examples/non_idempotent_bank/`](examples/non_idempotent_bank/).
 
 ## Zero-touch mode
 

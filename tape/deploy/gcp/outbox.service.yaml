@@ -1,0 +1,65 @@
+# Tape outbox dispatcher on Cloud Run — the GCP-native hardening's central
+# safety unit. Owns the (PENDING + OUTBOX) → (CONFIRMED | FAILED | UNKNOWN)
+# transition for non-idempotent upstreams; pairs with the reconciler service
+# (the existing tape-reactors deployment) which closes UNKNOWN via observe().
+#
+# Deploy: gcloud run services replace tape/deploy/gcp/outbox.service.yaml --region=$REGION
+#
+# Key bits:
+#   * minScale: "1" — the dispatcher is the only path to non-idempotent
+#     upstreams; if it's not running, intent backs up in PENDING but nothing
+#     unsafe happens.
+#   * maxScale modest by default — concurrent dispatchers are safe (the
+#     per-effect CAS lease enforces single-winner), but a single instance is
+#     enough for most workloads and keeps blast-radius small.
+#   * ingress: internal — the service has no external API; it reads from
+#     tape-server and from the upstream(s) via its connectors.
+#   * connector-credentials secret — any per-upstream secret (HTTP token,
+#     Pub/Sub auth, etc.) belongs in Secret Manager, mounted as env vars.
+#   * --load m:a (in args) — each connector module loaded at startup
+#     registers itself with tape.connectors. List one entry per connector
+#     you ship in the image.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: tape-outbox
+  annotations:
+    run.googleapis.com/ingress: internal
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "3"
+        # Allow the dispatcher to reach internal Cloud Run / VPC services
+        # (the bank's internal API, AlloyDB if a connector reads it, etc.).
+        run.googleapis.com/vpc-access-connector: projects/PROJECT/locations/REGION/connectors/CONNECTOR
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+    spec:
+      serviceAccountName: tape-outbox@PROJECT.iam.gserviceaccount.com
+      containers:
+        - name: tape-outbox
+          image: REGION-docker.pkg.dev/PROJECT/tape/tape-outbox:0.1
+          command: ["tape-outbox"]
+          # --connector to scope this dispatcher to one connector name; omit to
+          # drive everything in the same process. --load to import the
+          # connector module(s) at startup so registration runs.
+          args:
+            - "--url=tapes://tape-server-xxxxx-uc.a.run.app"
+            - "--interval=1"
+            - "--max-attempts=5"
+            - "--load=my_app.connectors.bank"        # registers BankConnector
+            - "--load=my_app.connectors.payments"    # additional connectors
+          env:
+            - name: TAPE_URL
+              value: "tapes://tape-server-xxxxx-uc.a.run.app"
+            - name: TAPE_DISPATCH_CLAIMER
+              value: "tape-outbox-cloud-run"
+            # Per-connector secrets (mount via Secret Manager):
+            - name: BANK_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: tape-bank-api-token
+                  key: latest
+          resources:
+            limits: { cpu: "1", memory: "512Mi" }

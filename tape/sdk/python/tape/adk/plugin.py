@@ -28,7 +28,8 @@ from google.adk.plugins.base_plugin import BasePlugin
 from ..client import TapeClient, DEFAULT_URL
 from .._gen import tape_pb2 as pb
 from ..budget import Budget, budget_from_run_config
-from ..effect import effect_meta_of, tool_name_of, register_compensator
+from ..effect import (effect_meta_of, tool_name_of, register_compensator,
+                      _semantics_to_pb, _dispatch_to_pb, _resolve_business_key)
 from ..gates import AckLost
 
 def _default_lease_ms() -> int:
@@ -224,15 +225,39 @@ class TapePlugin(BasePlugin):
                     custom_key = k
             except Exception:
                 pass
+        # Outbox contract: declare the effect's semantics + dispatch mode + the
+        # business-level dedupe key. The server enforces NON_IDEMPOTENT+OUTBOX
+        # and uniqueness on (connector, business_key) — see proto.
+        semantics_str = meta.get("semantics") or "idempotent"
+        dispatch_str = meta.get("dispatch") or "inline"
+        connector = str(meta.get("connector") or "")
+        bk = _resolve_business_key(meta.get("business_key"), tool_args, tool_context)
         try:
             resp = self._client.begin_effect(
                 run_id=run_id, decision_index=dec_idx, tool_name=tname, call_index=call_idx,
-                request_json=_safe_json(tool_args), custom_key=custom_key)
-        except Exception:
+                request_json=_safe_json(tool_args), custom_key=custom_key,
+                semantics=_semantics_to_pb(semantics_str),
+                dispatch_mode=_dispatch_to_pb(dispatch_str),
+                business_key=bk, connector=connector)
+        except Exception as ex:
+            # Split the failure handling by contract so the new strictness
+            # doesn't reduce the v1 behaviour:
+            #  * For idempotent + inline (the v1 default), a transient gRPC
+            #    blip should let the body run — the counterparty's idempotency
+            #    key handling is what guarantees safety on retry; failing the
+            #    tool just because Tape is briefly unreachable is a regression
+            #    versus the prior behaviour, which returned None here.
+            #  * For non-idempotent or outbox, the body MUST NOT run without a
+            #    journaled intent (that's the safety claim of the whole
+            #    Phase 1+2 work), so surface the error to the agent.
+            if semantics_str == "non_idempotent" or dispatch_str == "outbox":
+                return {"error": f"tape: begin_effect refused: {ex}"}
             return None
         try:
             tool_context.state["temp:_tape_idempotency_key"] = resp.idempotency_key
             tool_context.state["temp:_tape_run_id"] = run_id
+            tool_context.state["temp:_tape_business_key"] = bk
+            tool_context.state["temp:_tape_effect_semantics"] = semantics_str
         except Exception:
             pass
         if resp.status == pb.EFFECT_STATUS_CONFIRMED:
@@ -240,19 +265,53 @@ class TapePlugin(BasePlugin):
                 return json.loads(resp.response_json) if resp.response_json else {}
             except Exception:
                 return {}
-        # PENDING (fresh, or a prior crash) / FAILED / UNKNOWN -> let the body run.
+        # OUTBOX dispatch: the tool body must NOT perform external IO. Record
+        # intent (which BeginEffect just did) and return a synthetic accepted
+        # marker; the outbox reactor will run the connector exactly once.
+        if dispatch_str == "outbox" and resp.status == pb.EFFECT_STATUS_PENDING:
+            try:
+                external_ref = ""
+                # On re-drive after a connector has already observed the call,
+                # external_ref may be on the stored row — make it accessible.
+                eff = self._client.get_effect(run_id=run_id, idempotency_key=resp.idempotency_key)
+                if eff.found and eff.effect.external_ref:
+                    external_ref = eff.effect.external_ref
+                    tool_context.state["temp:_tape_external_ref"] = external_ref
+            except Exception:
+                pass
+            return {
+                "tape_status": "accepted",
+                "effect_key": resp.idempotency_key,
+                "dispatch_mode": "outbox",
+                "connector": connector,
+                "business_key": bk,
+            }
+        # INLINE PENDING (fresh, or a prior crash) / FAILED / UNKNOWN -> let the body run.
         return None
 
     async def after_tool_callback(self, *, tool, tool_args, tool_context, result):
         run_id, key = self._tool_keys(tool_context)
         if not run_id or not key:
             return None
+        meta = effect_meta_of(tool) or {}
+        # Outbox: the synthetic "accepted" marker we returned in before_tool
+        # surfaces here. The body did NOT run; the effect is still PENDING and
+        # belongs to the outbox reactor + reconciler. Do NOT mark CONFIRMED, do
+        # NOT register the compensation eagerly (that happens when the reactor
+        # observes a real confirmed dispatch, or when the reconciler maps a
+        # DUPLICATE observation to compensation). Just thread through.
+        is_outbox_accepted = (
+            (meta.get("dispatch") == "outbox")
+            and isinstance(result, dict)
+            and result.get("tape_status") == "accepted"
+        )
+        if is_outbox_accepted:
+            return None
         try:
             self._client.complete_effect(run_id=run_id, idempotency_key=key,
                                          status=pb.EFFECT_STATUS_CONFIRMED, response_json=_safe_json(result))
         except Exception:
             pass
-        meta = effect_meta_of(tool) or {}
         comp = meta.get("compensate")
         if comp is not None:
             kind = getattr(comp, "__name__", "compensate")

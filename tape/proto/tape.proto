@@ -41,6 +41,15 @@ service Tape {
   rpc GetEffect       (GetEffectRequest)       returns (GetEffectResponse);      // re-drive short-circuit
   rpc ReconcileEffect (ReconcileEffectRequest) returns (EffectRecord);
 
+  // ── outbox dispatch (the GCP-native hardening: for non-idempotent upstreams,
+  //    intent and dispatch live in separate processes; the tool body records
+  //    intent, the outbox reactor dispatches via a connector, the reconciler
+  //    resolves UNKNOWN ambiguity by asking the counterparty) ────────────────
+  rpc ListEffectsToDispatch    (ListEffectsToDispatchRequest)    returns (ListEffectsToDispatchResponse);
+  rpc ClaimEffectDispatch      (ClaimEffectDispatchRequest)      returns (ClaimEffectDispatchResponse);   // CAS lease
+  rpc RecordDispatchAttempt    (RecordDispatchAttemptRequest)    returns (EffectRecord);                  // backoff or → UNKNOWN
+  rpc RecordExternalObservation(RecordExternalObservationRequest) returns (EffectRecord);                 // reconciler asks counterparty
+
   // ── obligations / compensation ────────────────────────────────────────────
   rpc RegisterCompensation     (RegisterCompensationRequest)     returns (ObligationRecord);
   rpc ListObligations          (ListObligationsRequest)          returns (ListObligationsResponse); // LIFO, per-run
@@ -237,6 +246,40 @@ enum EffectStatus {
   EFFECT_STATUS_UNKNOWN = 4;     // the act may have happened; the ack was lost — the reconciler will resolve it
 }
 
+// What an effect looks like from the counterparty's side. Tape does not pretend
+// that exactly-once is achievable without upstream support; for non-idempotent
+// upstreams the contract is: every effect has a durable intent, a controlled
+// dispatch, an explicit ambiguity status (UNKNOWN), an observation protocol,
+// and a compensation handle. EffectSemantics declares which contract applies.
+enum EffectSemantics {
+  EFFECT_SEMANTICS_UNSPECIFIED = 0;
+  EFFECT_SEMANTICS_IDEMPOTENT = 1;       // the counterparty dedupes on our key → blind retry is safe
+  EFFECT_SEMANTICS_NON_IDEMPOTENT = 2;   // a second call would land twice → outbox + reconciliation only
+  EFFECT_SEMANTICS_OBSERVE_ONLY = 3;     // read-only effect (no side effects on the counterparty)
+}
+
+// How an effect's external IO is performed. INLINE = the tool body calls the
+// counterparty itself (the default; idempotent upstreams). OUTBOX = the tool
+// body only records intent; an outbox reactor picks it up and a registered
+// connector performs the call once, with explicit ambiguity handling.
+enum EffectDispatchMode {
+  EFFECT_DISPATCH_MODE_UNSPECIFIED = 0;
+  EFFECT_DISPATCH_MODE_INLINE = 1;
+  EFFECT_DISPATCH_MODE_OUTBOX = 2;
+}
+
+// What the reconciler / connector observed at the counterparty for a given
+// idempotency key (or business key). Drives the server-side transition into
+// EffectStatus and obligation creation (DUPLICATE → register compensation).
+enum EffectResolution {
+  EFFECT_RESOLUTION_UNSPECIFIED = 0;
+  EFFECT_RESOLUTION_CONFIRMED = 1;   // exactly one matching operation found
+  EFFECT_RESOLUTION_FAILED = 2;      // the counterparty says it definitively did not happen
+  EFFECT_RESOLUTION_ABSENT = 3;      // not found — for idempotent, safe to re-issue; for non-idempotent, needs approval
+  EFFECT_RESOLUTION_DUPLICATE = 4;   // more than one matching operation — compensation required
+  EFFECT_RESOLUTION_STUCK = 5;       // unresolvable — operator triage
+}
+
 message BeginEffectRequest {
   string run_id = 1;
   int64  decision_index = 2;       // which decision authorized this effect (-1 if none)
@@ -244,6 +287,17 @@ message BeginEffectRequest {
   int32  call_index = 4;           // distinguish multiple calls of the same tool under one decision
   string request_json = 5;
   string custom_key = 6;           // if set, used verbatim instead of the decision-derived key
+  // ── outbox / non-idempotent contract ───────────────────────────────────
+  EffectSemantics      semantics     = 7;   // default: IDEMPOTENT
+  EffectDispatchMode   dispatch_mode = 8;   // default: INLINE
+  // The business-level key the counterparty would use to dedupe / observe a
+  // *logical* operation (e.g. "acct123:1000:2026-05-17"). Distinct from the
+  // run-derived idempotency_key; uniqueness across (connector, business_key)
+  // is enforced when non-empty (no two effects can share a business key).
+  string business_key = 9;
+  // Free-form connector name (e.g. "bank.wire") for the outbox dispatcher to
+  // route on. Required when dispatch_mode == OUTBOX.
+  string connector    = 10;
 }
 message BeginEffectResponse {
   int64  seq = 1;
@@ -286,6 +340,74 @@ message EffectRecord {
   string response_json = 8;
   string error_json = 9;
   int64  ts_ms = 10;
+  // ── outbox / non-idempotent contract ───────────────────────────────────
+  EffectSemantics      semantics          = 11;
+  EffectDispatchMode   dispatch_mode      = 12;
+  string business_key                     = 13;
+  string connector                        = 14;
+  int32  dispatch_attempts                = 15;  // bumped by RecordDispatchAttempt
+  int64  next_dispatch_at_ms              = 16;  // backoff: outbox is eligible only when this <= now
+  // The counterparty's identifier for the operation, captured on first observe
+  // (e.g. a wire_id, a payment_intent_id). Empty until known.
+  string external_ref                     = 17;
+  // Outbox dispatch lease — set by ClaimEffectDispatch, cleared on success/failure.
+  string dispatch_claimed_by              = 18;
+  int64  dispatch_claim_expires_at_ms     = 19;
+  string last_dispatch_error              = 20;
+}
+
+// ── outbox dispatch requests/responses ─────────────────────────────────────
+
+message ListEffectsToDispatchRequest {
+  int64 now_ms = 1;             // 0 => server time
+  int64 limit = 2;              // 0 => 200
+  string connector = 3;         // "" => any connector
+}
+message ListEffectsToDispatchResponse {
+  repeated EffectRecord effects = 1;
+}
+
+message ClaimEffectDispatchRequest {
+  // Atomic CAS: status==PENDING && dispatch_mode==OUTBOX && next_dispatch_at_ms<=now
+  // && (dispatch_claimed_by=='' OR dispatch_claim_expires_at_ms<=now)
+  //   →  set dispatch_claimed_by=claimer, dispatch_claim_expires_at_ms=now+ttl.
+  string run_id = 1;
+  string idempotency_key = 2;
+  string claimer = 3;
+  int64  lease_ttl_ms = 4;       // 0 => server default (60_000)
+}
+message ClaimEffectDispatchResponse {
+  bool acquired = 1;
+  EffectRecord effect = 2;
+}
+
+message RecordDispatchAttemptRequest {
+  // Reports a *failed* dispatch. The server bumps dispatch_attempts, sets
+  // last_dispatch_error, clears the lease, and either reschedules (status
+  // stays PENDING, next_dispatch_at_ms updated) or transitions to UNKNOWN
+  // (when next_dispatch_at_ms == 0, meaning "the ack was lost — the
+  // reconciler must resolve this; do not blindly re-dispatch").
+  string run_id = 1;
+  string idempotency_key = 2;
+  string error = 3;
+  // 0 => move to UNKNOWN (terminal for the outbox loop; the reconciler takes over).
+  int64  next_dispatch_at_ms = 4;
+}
+
+message RecordExternalObservationRequest {
+  // Called by the reconciler (or a connector's observe() path) to record what
+  // the counterparty said about a (run_id, idempotency_key). The server maps
+  // EffectResolution → EffectStatus and, on DUPLICATE, registers a
+  // compensation obligation if `compensate_on_duplicate_kind` is set.
+  string run_id = 1;
+  string idempotency_key = 2;
+  EffectResolution resolution = 3;
+  string external_ref = 4;
+  string response_json = 5;
+  string error_json = 6;
+  // If resolution == DUPLICATE and this is non-empty, register a compensation
+  // obligation with this kind so the obligations reactor can unwind the dup.
+  string compensate_on_duplicate_kind = 7;
 }
 
 // ── obligations / compensation ──────────────────────────────────────────────

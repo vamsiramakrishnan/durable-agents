@@ -42,11 +42,9 @@ body **returns an intent payload only**; the outbox reactor performs the dispatc
 ```python
 @tape.outbox_tool(
     connector="bank.wire",
-    semantics="non_idempotent",
     business_key=lambda account, amount, date, **_: f"{account}:{amount}:{date}",
     status_check=find_wire,
     compensate=reverse_wire,
-    wait_for_result=True,
 )
 def wire_money(account: str, amount: int, beneficiary: str, date: str):
     return {"account": account, "amount": amount,
@@ -54,9 +52,10 @@ def wire_money(account: str, amount: int, beneficiary: str, date: str):
 ```
 
 The decorator **rejects** at decoration time any non-idempotent tool that lacks
-`business_key`, `status_check`, `compensate`, or `human_gate=True`. The whole
-point is that an UNKNOWN outcome can be resolved — without one of those, there
-is no safe path forward.
+`business_key`, `status_check`, or `compensate` (override with
+`allow_unsafe=True` after explicit review). The whole point is that an UNKNOWN
+outcome can be resolved — without one of those, there is no safe path forward.
+The server enforces the same contract at `BeginEffect`-time.
 
 ## Capability connectors
 
@@ -64,21 +63,21 @@ The outbox reactor dispatches via a named **connector**. Register them at
 project import time — the scaffold's `app/connectors.py` shows the pattern:
 
 ```python
-from tape.connectors import CONNECTORS, HttpConnector, PubSubConnector
+from tape import connectors
+from tape.connectors.http import HTTPConnector
 
-CONNECTORS.register(
-    "bank.wire",
-    HttpConnector(
-        url="https://bank.example/wires",
-        observe_url="https://bank.example/wires/lookup",
-        compensate_url="https://bank.example/wires/reverse",
-    ),
-)
+connectors.register(HTTPConnector(
+    name="bank.wire",
+    endpoint="https://bank.example/wires",
+    observe_endpoint="https://bank.example/wires/lookup",
+    compensate_endpoint="https://bank.example/wires/reverse",
+))
 ```
 
-Built-ins: `LogConnector` (tests/demos), `HttpConnector`, `PubSubConnector`,
-`CloudTasksConnector`. Implement your own by implementing the `Connector`
-protocol — `dispatch`, `observe`, `compensate`.
+Built-ins: `HTTPConnector` (POST + `X-Tape-*` headers; `urllib`-based, no extra
+deps), `PubSubConnector` (publish to a topic + the matching subscriber helper).
+Implement your own by implementing the `EffectConnector` protocol — `dispatch`,
+`observe`, `compensate`.
 
 ## Running the reactor
 

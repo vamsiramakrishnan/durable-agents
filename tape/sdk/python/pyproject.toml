@@ -17,10 +17,21 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["grpcio-tools>=1.60", "pytest>=7"]
+# Pub/Sub connector (used by tape.connectors.pubsub.PubSubConnector); the
+# import is lazy, so most users don't need it. Install with `pip install
+# tape-py[gcp-pubsub]` to publish effects via Pub/Sub from the outbox reactor.
+gcp-pubsub = ["google-cloud-pubsub>=2.21"]
 
 [project.scripts]
 tape = "tape._launcher:main"
 tape-reactors = "tape.reactors:_main"
+# The outbox dispatcher — runs in its own process, loads connectors at startup
+# via --load module:attr, and drives PENDING + OUTBOX effects to confirmed /
+# failed / unknown via those connectors.
+tape-outbox = "tape.reactors.outbox:_main"
+# Pull-subscriber for the Pub/Sub side of the outbox. Use --handler module:attr
+# to supply your worker (a (payload, attrs) -> DispatchResult callable).
+tape-pubsub-sub = "tape.connectors.pubsub:_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

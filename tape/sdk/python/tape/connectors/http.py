@@ -1,127 +1,188 @@
-"""HTTP connector — POST the intent payload to an HTTPS endpoint.
+"""HTTPConnector — POST the effect's request payload to a configured endpoint,
+attaching idempotency / tape headers so the receiver can dedupe.
 
-Headers:
-  X-Tape-Idempotency-Key  the run/decision-derived key the counterparty must use
-                          to dedup.
-  X-Tape-Business-Key     when supplied by `@tape.outbox_tool(business_key=...)`.
-  X-Tape-Run-Id           for traceability.
-  X-Tape-Attempt          the dispatch attempt number.
+Intended for upstreams that *do* support idempotency keys (Stripe, most modern
+payment APIs, S3 multipart uploads, …). For upstreams that *don't*, use the
+PubSub connector + a downstream worker that records a business-key lock — or
+write a custom connector that wraps the API's own dedupe pattern.
 
-A 2xx response is `CONFIRMED`. A 4xx is `FAILED` (won't retry — the counterparty
-rejected it). A 5xx or network error is `UNKNOWN` (the dispatch may or may not
-have landed; the reactor will call `observe()`).
+This connector uses `urllib.request` so it has no third-party dep. For
+production, drop in `httpx` or `requests` via a subclass — the protocol is the
+only thing the outbox reactor cares about.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+import socket
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional
 
-from .base import (
-    Connector,
-    DispatchResult,
-    DispatchOutcome,
-    ObservationResult,
-    ObservationOutcome,
-    CompensationResult,
-    CompensationOutcome,
-    EffectRecord,
-    ObligationRecord,
-)
+from .base import DispatchResult, ObservationResult, CompensationResult
 
 
-class HttpConnector:
-    def __init__(
-        self,
-        *,
-        url: str,
-        name: Optional[str] = None,
-        observe_url: Optional[str] = None,
-        compensate_url: Optional[str] = None,
-        timeout_s: float = 30.0,
-        headers: Optional[dict] = None,
-    ):
-        self.name = name or "http"
-        self.url = url
-        self.observe_url = observe_url
-        self.compensate_url = compensate_url
-        self.timeout_s = timeout_s
-        self.headers = headers or {}
+@dataclass
+class HTTPConnector:
+    """Generic HTTP outbox connector.
 
-    async def _post(self, url: str, body: Any, effect_or_ob: Any) -> tuple[int, Any, str]:
+      * `name`           — match key for `@tape.effect(connector=…)`.
+      * `endpoint`       — full URL to POST to.
+      * `headers`        — extra static headers (auth, content-type, …).
+      * `timeout_s`      — request timeout.
+      * `observe_endpoint` — optional URL for `GET ?key=…`; the response JSON
+        guides the observation result (`status` field expected: confirmed |
+        absent | duplicate | failed | stuck).
+      * `compensate_endpoint` — optional URL for `POST` to run the inverse.
+      * `success_codes`  — HTTP codes that count as confirmed (default 2xx).
+      * `duplicate_code` — HTTP code that maps to ObservationResult.duplicate
+        (default 409). 409 + a JSON body with `external_ref` is the common
+        idempotency-conflict pattern.
+    """
+    name: str
+    endpoint: str
+    headers: Dict[str, str] = None  # type: ignore[assignment]
+    timeout_s: float = 10.0
+    observe_endpoint: str = ""
+    compensate_endpoint: str = ""
+    success_codes: tuple = (200, 201, 202, 204)
+    duplicate_code: int = 409
+
+    def __post_init__(self) -> None:
+        if self.headers is None:
+            self.headers = {}
+
+    # ── dispatch ────────────────────────────────────────────────────────────
+    def dispatch(self, effect) -> DispatchResult:
+        """POST `effect.request_json` to `endpoint`. Adds:
+          * `Idempotency-Key: <effect.idempotency_key>` — the standard header
+            most providers dedupe on
+          * `X-Tape-Run-Id`, `X-Tape-Effect-Key`, `X-Tape-Business-Key`
+        Returns confirmed on 2xx, unknown on timeout / network error (the
+        ack was lost — the reconciler must resolve), failed on a definitive
+        4xx/5xx that isn't a timeout."""
         try:
-            import httpx
-        except ImportError as ex:  # pragma: no cover
-            raise RuntimeError(
-                "HttpConnector requires the `httpx` package — `pip install httpx`."
-            ) from ex
-        hdrs = dict(self.headers)
-        hdrs["Content-Type"] = "application/json"
-        hdrs["X-Tape-Idempotency-Key"] = getattr(effect_or_ob, "idempotency_key",
-                                                  getattr(effect_or_ob, "effect_key", ""))
-        hdrs["X-Tape-Run-Id"] = getattr(effect_or_ob, "run_id", "")
-        bk = getattr(effect_or_ob, "business_key", "")
-        if bk:
-            hdrs["X-Tape-Business-Key"] = bk
-        attempt = getattr(effect_or_ob, "attempt", 1)
-        hdrs["X-Tape-Attempt"] = str(attempt)
-        async with httpx.AsyncClient(timeout=self.timeout_s) as cli:
-            resp = await cli.post(url, content=json.dumps(body), headers=hdrs)
+            body = effect.request_json.encode("utf-8") if effect.request_json else b"{}"
+            req = urllib.request.Request(self.endpoint, data=body, method="POST",
+                                          headers=self._build_headers(effect))
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                code = resp.getcode()
+                body_text = resp.read().decode("utf-8", errors="replace")
+                try:
+                    body_json = json.loads(body_text) if body_text else {}
+                except Exception:
+                    body_json = {"_raw": body_text}
+                if code == self.duplicate_code:
+                    # Idempotency conflict — the upstream knows about the key,
+                    # so it's effectively confirmed (this is the dedupe path).
+                    return DispatchResult(
+                        status="confirmed",
+                        external_ref=str(body_json.get("external_ref") or body_json.get("id") or ""),
+                        response={"http_code": code, **body_json})
+                if code in self.success_codes:
+                    return DispatchResult(
+                        status="confirmed",
+                        external_ref=str(body_json.get("external_ref") or body_json.get("id") or ""),
+                        response={"http_code": code, **body_json})
+                return DispatchResult(
+                    status="failed",
+                    response={"http_code": code, **body_json},
+                    error={"http_code": code, "body": body_text})
+        except (socket.timeout, TimeoutError) as ex:
+            # Lost-ack window: the call MAY have landed. Surface as UNKNOWN.
+            return DispatchResult(status="unknown",
+                                  error={"type": type(ex).__name__, "message": str(ex)})
+        except urllib.error.HTTPError as ex:
+            code = ex.code
             try:
-                payload = resp.json()
+                body_text = ex.read().decode("utf-8", errors="replace")
+                body_json = json.loads(body_text) if body_text else {}
             except Exception:
-                payload = resp.text
-            return resp.status_code, payload, ""
+                body_text, body_json = "", {}
+            if code == self.duplicate_code:
+                return DispatchResult(
+                    status="confirmed",
+                    external_ref=str(body_json.get("external_ref") or body_json.get("id") or ""),
+                    response={"http_code": code, **body_json})
+            # 4xx (auth, malformed) is deterministic FAILED; 5xx is also FAILED
+            # for this attempt (the outbox loop's backoff will retry until the
+            # connector explicitly gives up).
+            return DispatchResult(
+                status="failed",
+                response={"http_code": code, **body_json},
+                error={"http_code": code, "body": body_text})
+        except (urllib.error.URLError, OSError) as ex:
+            # Network-level failure before the request reached the upstream.
+            # Almost always safe to retry — but the call MAY have crossed the
+            # wire and the ack was lost on the way back. The safe choice for a
+            # non-idempotent upstream is UNKNOWN; the dispatcher uses the
+            # connector's hint to decide whether to retry (effect.semantics).
+            return DispatchResult(status="unknown",
+                                  error={"type": type(ex).__name__, "message": str(ex)})
 
-    async def dispatch(self, effect: EffectRecord) -> DispatchResult:
-        try:
-            status, body, _ = await self._post(self.url, effect.payload, effect)
-        except Exception as ex:
-            return DispatchResult(outcome=DispatchOutcome.UNKNOWN, error=str(ex))
-        if 200 <= status < 300:
-            return DispatchResult(outcome=DispatchOutcome.CONFIRMED, response=body)
-        if 400 <= status < 500:
-            return DispatchResult(outcome=DispatchOutcome.FAILED, response=body,
-                                  error=f"http {status}")
-        return DispatchResult(outcome=DispatchOutcome.UNKNOWN, response=body,
-                              error=f"http {status}")
+    # ── observe ─────────────────────────────────────────────────────────────
+    def observe(self, effect) -> ObservationResult:
+        """Ask the upstream: "did the operation with this key happen?". The
+        observation endpoint is expected to return JSON like:
 
-    async def observe(self, effect: EffectRecord) -> ObservationResult:
-        if not self.observe_url:
-            return ObservationResult(outcome=ObservationOutcome.UNKNOWN,
-                                     error="no observe_url configured")
-        try:
-            status, body, _ = await self._post(
-                self.observe_url,
-                {"idempotency_key": effect.idempotency_key,
-                 "business_key": effect.business_key,
-                 "payload": effect.payload},
-                effect,
-            )
-        except Exception as ex:
-            return ObservationResult(outcome=ObservationOutcome.UNKNOWN, error=str(ex))
-        if status == 200 and isinstance(body, dict):
-            count = int(body.get("count", 0))
-            if count == 0:
-                return ObservationResult(outcome=ObservationOutcome.ABSENT, response=body, count=0)
-            if count == 1:
-                return ObservationResult(outcome=ObservationOutcome.CONFIRMED, response=body, count=1)
-            return ObservationResult(outcome=ObservationOutcome.DUPLICATE, response=body, count=count)
-        return ObservationResult(outcome=ObservationOutcome.UNKNOWN, response=body,
-                                 error=f"http {status}")
+            {"status": "confirmed" | "absent" | "duplicate" | "failed" | "stuck",
+             "external_ref": "<optional>", "...": "..."}
 
-    async def compensate(self, obligation: ObligationRecord) -> CompensationResult:
-        if not self.compensate_url:
-            return CompensationResult(outcome=CompensationOutcome.STUCK,
-                                      error="no compensate_url configured")
+        If no observe_endpoint is set, returns `absent` (the reconciler will
+        treat that per-semantics — see record_external_observation)."""
+        if not self.observe_endpoint:
+            return ObservationResult(status="absent")
+        key = effect.idempotency_key
+        # Some APIs key on the business key; the connector decides what to ask.
+        bk = effect.business_key
+        url = f"{self.observe_endpoint}?key={urllib.parse.quote(key)}&business_key={urllib.parse.quote(bk)}"
         try:
-            status, body, _ = await self._post(self.compensate_url, obligation.payload, obligation)
+            req = urllib.request.Request(url, method="GET",
+                                          headers=self._build_headers(effect))
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                body_text = resp.read().decode("utf-8", errors="replace")
+                body_json = json.loads(body_text) if body_text else {}
+                status = str(body_json.get("status") or "absent")
+                if status not in ("confirmed", "absent", "duplicate", "failed", "stuck"):
+                    status = "stuck"
+                return ObservationResult(
+                    status=status,   # type: ignore[arg-type]
+                    external_ref=str(body_json.get("external_ref") or ""),
+                    response=body_json)
         except Exception as ex:
-            return CompensationResult(outcome=CompensationOutcome.PENDING, error=str(ex))
-        if 200 <= status < 300:
-            return CompensationResult(outcome=CompensationOutcome.COMPENSATED, response=body)
-        if 400 <= status < 500:
-            return CompensationResult(outcome=CompensationOutcome.FAILED, response=body,
-                                      error=f"http {status}")
-        return CompensationResult(outcome=CompensationOutcome.PENDING, response=body,
-                                  error=f"http {status}")
+            return ObservationResult(status="stuck", response={"error": str(ex)})
+
+    # ── compensate ──────────────────────────────────────────────────────────
+    def compensate(self, obligation) -> CompensationResult:
+        if not self.compensate_endpoint:
+            return CompensationResult(status="failed",
+                                      error={"reason": "no compensate_endpoint configured"})
+        try:
+            body = obligation.payload_json.encode("utf-8") if obligation.payload_json else b"{}"
+            req = urllib.request.Request(self.compensate_endpoint, data=body, method="POST",
+                                          headers={**self.headers,
+                                                   "Content-Type": "application/json",
+                                                   "Idempotency-Key": obligation.effect_key})
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                code = resp.getcode()
+                if code in self.success_codes:
+                    return CompensationResult(status="compensated",
+                                              response={"http_code": code})
+                return CompensationResult(status="failed",
+                                          error={"http_code": code})
+        except Exception as ex:
+            return CompensationResult(status="failed",
+                                      error={"type": type(ex).__name__, "message": str(ex)})
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+    def _build_headers(self, effect) -> Dict[str, str]:
+        h = {
+            "Content-Type": "application/json",
+            "Idempotency-Key": effect.idempotency_key,
+            "X-Tape-Run-Id": effect.run_id,
+            "X-Tape-Effect-Key": effect.idempotency_key,
+            "X-Tape-Business-Key": effect.business_key,
+        }
+        h.update(self.headers)
+        return h

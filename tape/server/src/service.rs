@@ -101,7 +101,11 @@ impl Tape for TapeService {
     // ── effects ─────────────────────────────────────────────────────────────
     async fn begin_effect(&self, req: Request<BeginEffectRequest>) -> Result<Response<BeginEffectResponse>, Status> {
         let r = req.into_inner();
-        let e = self.store.begin_effect(&r.run_id, r.decision_index, &r.tool_name, r.call_index, &r.request_json, &r.custom_key).await.map_err(db)?;
+        let e = self.store.begin_effect(
+            &r.run_id, r.decision_index, &r.tool_name, r.call_index,
+            &r.request_json, &r.custom_key,
+            r.semantics, r.dispatch_mode, &r.business_key, &r.connector,
+        ).await.map_err(db)?;
         Ok(Response::new(BeginEffectResponse {
             seq: e.seq, idempotency_key: e.idempotency_key, status: e.status,
             response_json: e.response_json, error_json: e.error_json,
@@ -120,6 +124,42 @@ impl Tape for TapeService {
     async fn reconcile_effect(&self, req: Request<ReconcileEffectRequest>) -> Result<Response<EffectRecord>, Status> {
         let r = req.into_inner();
         Ok(Response::new(self.store.reconcile_effect(&r.run_id, &r.idempotency_key, r.resolved_status, &r.response_json, &r.error_json).await.map_err(db)?
+            .ok_or_else(|| Status::not_found("no such effect"))?))
+    }
+
+    // ── outbox dispatch ─────────────────────────────────────────────────────
+    async fn list_effects_to_dispatch(&self, req: Request<ListEffectsToDispatchRequest>)
+        -> Result<Response<ListEffectsToDispatchResponse>, Status> {
+        let r = req.into_inner();
+        let now = if r.now_ms > 0 { r.now_ms } else { now_ms() };
+        let limit = if r.limit > 0 { r.limit } else { 200 };
+        Ok(Response::new(ListEffectsToDispatchResponse {
+            effects: self.store.list_effects_to_dispatch(now, &r.connector, limit).await.map_err(db)?,
+        }))
+    }
+    async fn claim_effect_dispatch(&self, req: Request<ClaimEffectDispatchRequest>)
+        -> Result<Response<ClaimEffectDispatchResponse>, Status> {
+        let r = req.into_inner();
+        let (acquired, eff) = self.store
+            .claim_effect_dispatch(&r.run_id, &r.idempotency_key, &r.claimer, r.lease_ttl_ms, now_ms())
+            .await.map_err(db)?;
+        Ok(Response::new(ClaimEffectDispatchResponse { acquired, effect: eff }))
+    }
+    async fn record_dispatch_attempt(&self, req: Request<RecordDispatchAttemptRequest>)
+        -> Result<Response<EffectRecord>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(self.store
+            .record_dispatch_attempt(&r.run_id, &r.idempotency_key, &r.error, r.next_dispatch_at_ms)
+            .await.map_err(db)?
+            .ok_or_else(|| Status::not_found("no such effect"))?))
+    }
+    async fn record_external_observation(&self, req: Request<RecordExternalObservationRequest>)
+        -> Result<Response<EffectRecord>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(self.store
+            .record_external_observation(&r.run_id, &r.idempotency_key, r.resolution,
+                &r.external_ref, &r.response_json, &r.error_json, &r.compensate_on_duplicate_kind)
+            .await.map_err(db)?
             .ok_or_else(|| Status::not_found("no such effect"))?))
     }
 
@@ -459,12 +499,14 @@ mod tests {
         let be = svc.begin_effect(Request::new(BeginEffectRequest {
             run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
             call_index: 0, request_json: "{}".into(), custom_key: "".into(),
+            semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
         })).await.unwrap().into_inner();
         assert_eq!(be.status, EffectStatus::Pending as i32);
         assert_eq!(be.idempotency_key, format!("{rid}/decision-0/execute_sweep/0"));
         let be2 = svc.begin_effect(Request::new(BeginEffectRequest {
             run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
             call_index: 0, request_json: "{}".into(), custom_key: "".into(),
+            semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
         })).await.unwrap().into_inner();
         assert_eq!(be2.status, EffectStatus::Pending as i32);
         svc.complete_effect(Request::new(CompleteEffectRequest {

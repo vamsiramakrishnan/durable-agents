@@ -30,6 +30,25 @@ EFFECT_STATUS_CONFIRMED = pb.EFFECT_STATUS_CONFIRMED
 EFFECT_STATUS_FAILED = pb.EFFECT_STATUS_FAILED
 EFFECT_STATUS_UNKNOWN = pb.EFFECT_STATUS_UNKNOWN
 
+# Outbox / non-idempotent contract (see proto: EffectSemantics, EffectDispatchMode,
+# EffectResolution). Idempotent + inline is the default and unchanged from v1; the
+# new values opt into the outbox dispatch + reconciliation path.
+EFFECT_SEMANTICS_UNSPECIFIED = pb.EFFECT_SEMANTICS_UNSPECIFIED
+EFFECT_SEMANTICS_IDEMPOTENT = pb.EFFECT_SEMANTICS_IDEMPOTENT
+EFFECT_SEMANTICS_NON_IDEMPOTENT = pb.EFFECT_SEMANTICS_NON_IDEMPOTENT
+EFFECT_SEMANTICS_OBSERVE_ONLY = pb.EFFECT_SEMANTICS_OBSERVE_ONLY
+
+EFFECT_DISPATCH_MODE_UNSPECIFIED = pb.EFFECT_DISPATCH_MODE_UNSPECIFIED
+EFFECT_DISPATCH_MODE_INLINE = pb.EFFECT_DISPATCH_MODE_INLINE
+EFFECT_DISPATCH_MODE_OUTBOX = pb.EFFECT_DISPATCH_MODE_OUTBOX
+
+EFFECT_RESOLUTION_UNSPECIFIED = pb.EFFECT_RESOLUTION_UNSPECIFIED
+EFFECT_RESOLUTION_CONFIRMED = pb.EFFECT_RESOLUTION_CONFIRMED
+EFFECT_RESOLUTION_FAILED = pb.EFFECT_RESOLUTION_FAILED
+EFFECT_RESOLUTION_ABSENT = pb.EFFECT_RESOLUTION_ABSENT
+EFFECT_RESOLUTION_DUPLICATE = pb.EFFECT_RESOLUTION_DUPLICATE
+EFFECT_RESOLUTION_STUCK = pb.EFFECT_RESOLUTION_STUCK
+
 OBLIGATION_STATUS_PENDING = pb.OBLIGATION_STATUS_PENDING
 OBLIGATION_STATUS_COMMITTED = pb.OBLIGATION_STATUS_COMMITTED
 OBLIGATION_STATUS_COMPENSATED = pb.OBLIGATION_STATUS_COMPENSATED
@@ -194,10 +213,18 @@ class TapeClient:
     # ── effect ledger ───────────────────────────────────────────────────────
 
     def begin_effect(self, *, run_id, decision_index, tool_name, call_index=0,
-                     request_json="", custom_key=""):
+                     request_json="", custom_key="",
+                     semantics=0, dispatch_mode=0, business_key="", connector=""):
+        """Begin (or short-circuit) an effect. Defaults preserve the v1 contract
+        (idempotent + inline). Pass `semantics=EFFECT_SEMANTICS_NON_IDEMPOTENT`
+        and `dispatch_mode=EFFECT_DISPATCH_MODE_OUTBOX` to opt into the outbox
+        path; `business_key` + `connector` declare the cross-run dedupe key the
+        counterparty would use."""
         return self.stub.BeginEffect(pb.BeginEffectRequest(
             run_id=run_id, decision_index=decision_index, tool_name=tool_name,
-            call_index=call_index, request_json=request_json, custom_key=custom_key))
+            call_index=call_index, request_json=request_json, custom_key=custom_key,
+            semantics=semantics, dispatch_mode=dispatch_mode,
+            business_key=business_key, connector=connector))
 
     def complete_effect(self, *, run_id, idempotency_key, status, response_json="", error_json=""):
         return self.stub.CompleteEffect(pb.CompleteEffectRequest(
@@ -211,6 +238,41 @@ class TapeClient:
         return self.stub.ReconcileEffect(pb.ReconcileEffectRequest(
             run_id=run_id, idempotency_key=idempotency_key, resolved_status=resolved_status,
             response_json=response_json, error_json=error_json))
+
+    # ── outbox dispatch ──────────────────────────────────────────────────────
+
+    def list_effects_to_dispatch(self, *, now_ms=0, connector="", limit=200):
+        """PENDING + OUTBOX effects whose `next_dispatch_at_ms <= now` (and whose
+        dispatch lease is empty or expired). Pass `connector` to scope the result."""
+        return self.stub.ListEffectsToDispatch(pb.ListEffectsToDispatchRequest(
+            now_ms=now_ms, connector=connector, limit=limit))
+
+    def claim_effect_dispatch(self, *, run_id, idempotency_key, claimer, lease_ttl_ms=60_000):
+        """Atomic CAS lease on the dispatch slot. Returns a
+        `ClaimEffectDispatchResponse` with `acquired` and the current `effect` row."""
+        return self.stub.ClaimEffectDispatch(pb.ClaimEffectDispatchRequest(
+            run_id=run_id, idempotency_key=idempotency_key, claimer=claimer,
+            lease_ttl_ms=lease_ttl_ms))
+
+    def record_dispatch_attempt(self, *, run_id, idempotency_key, error, next_dispatch_at_ms):
+        """Report a *failed* dispatch attempt. `next_dispatch_at_ms <= 0` →
+        the server transitions the effect to UNKNOWN (the reconciler resolves);
+        a positive value schedules a retry."""
+        return self.stub.RecordDispatchAttempt(pb.RecordDispatchAttemptRequest(
+            run_id=run_id, idempotency_key=idempotency_key, error=error,
+            next_dispatch_at_ms=next_dispatch_at_ms))
+
+    def record_external_observation(self, *, run_id, idempotency_key, resolution,
+                                    external_ref="", response_json="", error_json="",
+                                    compensate_on_duplicate_kind=""):
+        """Record what the counterparty said about an effect — the reconciler's
+        write path. `resolution` is one of EFFECT_RESOLUTION_*. When DUPLICATE
+        + `compensate_on_duplicate_kind` is set, the server registers a
+        compensation obligation atomically."""
+        return self.stub.RecordExternalObservation(pb.RecordExternalObservationRequest(
+            run_id=run_id, idempotency_key=idempotency_key, resolution=resolution,
+            external_ref=external_ref, response_json=response_json, error_json=error_json,
+            compensate_on_duplicate_kind=compensate_on_duplicate_kind))
 
     # ── obligations / compensation ──────────────────────────────────────────
 

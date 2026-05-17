@@ -309,7 +309,8 @@ mod tests {
         call_index: i32,
     ) {
         store
-            .begin_effect(run_id, 0, tool, call_index, "{}", "")
+            .begin_effect(run_id, 0, tool, call_index, "{}", "",
+                          0, 0, "", "")
             .await
             .unwrap();
     }

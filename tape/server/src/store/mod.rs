@@ -75,13 +75,59 @@ pub trait RunStore: Send + Sync {
     // ── effect ledger ───────────────────────────────────────────────────────
     /// Returns the effect row. If it didn't exist, it was created with status
     /// PENDING (and committed) before this returns — that's the outbox move.
+    ///
+    /// `semantics` / `dispatch_mode` / `business_key` / `connector` declare the
+    /// effect's contract with the counterparty:
+    ///   * `semantics == IDEMPOTENT` + `dispatch_mode == INLINE` (the defaults)
+    ///     is the original model: the tool body runs, the counterparty dedupes
+    ///     on the idempotency key, a retry is safe;
+    ///   * `semantics == NON_IDEMPOTENT` requires `dispatch_mode == OUTBOX`:
+    ///     the tool body only records intent, the outbox reactor dispatches
+    ///     via a registered connector exactly once, the reconciler resolves
+    ///     ambiguity by asking the counterparty. **The server refuses
+    ///     NON_IDEMPOTENT + INLINE.**
+    ///
+    /// When `business_key` is non-empty, uniqueness on `(connector,
+    /// business_key)` is enforced — a second begin_effect with the same
+    /// business key returns the existing row instead of inserting a duplicate.
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
-                          request_json: &str, custom_key: &str) -> StoreResult<EffectRecord>;
+                          request_json: &str, custom_key: &str,
+                          semantics: i32, dispatch_mode: i32,
+                          business_key: &str, connector: &str) -> StoreResult<EffectRecord>;
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str,
                              error_json: &str) -> StoreResult<Option<EffectRecord>>;
     async fn get_effect(&self, run_id: &str, key: &str) -> StoreResult<Option<EffectRecord>>;
     async fn reconcile_effect(&self, run_id: &str, key: &str, resolved_status: i32,
                               response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>>;
+
+    // ── outbox dispatch (for non-idempotent upstreams) ──────────────────────
+    /// PENDING + OUTBOX effects whose `next_dispatch_at_ms <= now`. If
+    /// `connector` is non-empty, restrict to that connector.
+    async fn list_effects_to_dispatch(&self, now_ms: i64, connector: &str, limit: i64)
+        -> StoreResult<Vec<EffectRecord>>;
+    /// Atomic CAS lease on the dispatch slot. Returns `(true, row)` if claimed,
+    /// `(false, current_row)` on contention. Eligible iff PENDING + OUTBOX +
+    /// due + (no live lease).
+    async fn claim_effect_dispatch(&self, run_id: &str, key: &str, claimer: &str,
+                                   lease_ttl_ms: i64, now_ms: i64)
+        -> StoreResult<(bool, Option<EffectRecord>)>;
+    /// Reports a *failed* dispatch attempt. Bumps `dispatch_attempts`, sets
+    /// `last_dispatch_error`, clears the lease, and either reschedules (status
+    /// stays PENDING with `next_dispatch_at_ms` set) or transitions to UNKNOWN
+    /// (`next_dispatch_at_ms <= 0` → ambiguity — the reconciler resolves).
+    async fn record_dispatch_attempt(&self, run_id: &str, key: &str,
+                                     error: &str, next_dispatch_at_ms: i64)
+        -> StoreResult<Option<EffectRecord>>;
+    /// Records what the counterparty said about an effect (via the connector's
+    /// observe() or a registered status_check). Maps EffectResolution →
+    /// EffectStatus, captures `external_ref`, and registers a compensation
+    /// obligation when `compensate_on_duplicate_kind` is set + resolution is
+    /// DUPLICATE. Returns the post-transition row.
+    async fn record_external_observation(&self, run_id: &str, key: &str,
+                                         resolution: i32, external_ref: &str,
+                                         response_json: &str, error_json: &str,
+                                         compensate_on_duplicate_kind: &str)
+        -> StoreResult<Option<EffectRecord>>;
 
     // ── obligations / compensation ──────────────────────────────────────────
     /// Register an obligation in PENDING with `next_attempt_at_ms = now` (immediately
