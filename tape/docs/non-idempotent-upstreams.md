@@ -9,8 +9,13 @@ that these are honest about it — and that means three things must be true
      it does NOT perform IO.
   2. A **reactor** owns the dispatch. The reactor is the only thing that
      actually calls the upstream.
-  3. The intent declares **how to resolve UNKNOWN** — at least one of:
-     `business_key=`, `status_check=`, or `compensate=`.
+  3. The intent declares **how to resolve [UNKNOWN](concepts/unknown.md)** —
+     at least one of: `business_key=`, `status_check=`, or `compensate=`.
+
+!!! info "Before you start"
+    If you haven't met `UNKNOWN` as a first-class outcome yet, read
+    [**UNKNOWN — the third outcome**](concepts/unknown.md) first. It's
+    one page and it'll make this one make sense.
 
 `@tape.outbox_tool(...)` (sugar for `@tape.effect(dispatch="outbox", ...)`)
 enforces this at decoration time. A non-idempotent outbox tool without any of
@@ -92,3 +97,16 @@ connectors.register(HTTPConnector(
     compensate_endpoint="https://bank.example/wires/reverse",
 ))
 ```
+
+## See also
+
+- [**Concepts: UNKNOWN**](concepts/unknown.md) — the third outcome,
+  resolved.
+- [**Concepts: compensation & sagas**](concepts/compensation.md) — what
+  happens after `DUPLICATE`.
+- [**Write a custom connector**](how-to/custom-connector.md) — when
+  `HTTPConnector` doesn't fit.
+- [**Reactors**](reactors.md) — the outbox / reconciler / compensation
+  reactors that make this pattern work.
+- [**Cheat sheet**](reference/cheatsheet.md) — the full incantation on
+  one page.

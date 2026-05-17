@@ -29,3 +29,11 @@ today — the warning text is intentionally blunt:
 > be enforced at the runtime; this mode is DESIGN-ONLY today.
 
 Use `single` or `trusted_multi_app` until the proto change ships.
+
+## See also
+
+- [**Tenancy (Python reference)**](reference/python/tenancy.md) — the
+  `tape.TenancyConfig` API.
+- [**IAM cheat sheet**](deploy/iam.md) — how authn relates to tenancy.
+- [**FAQ: project status**](help/faq.md#project-status) — when hard
+  multi-tenancy is expected.

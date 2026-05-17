@@ -63,3 +63,11 @@ The IAM module sets the universal ones; the Cloud Run modules grant
 The Python SDK opens TLS to a `tapes://` host and attaches an OIDC ID token
 from Application Default Credentials, audience-bound to the Cloud Run service
 URL. Your caller's service account needs `roles/run.invoker`. That's it.
+
+## See also
+
+- [**Deploy overview**](deploy/index.md) — topology + when to pick this.
+- [**IAM cheat sheet**](deploy/iam.md) — the full role list per SA.
+- [**GKE Autopilot**](gcp-gke.md) — the alternative topology.
+- [**Stores**](stores.md) — what the AlloyDB Auth Proxy sidecar does.
+- [**Observability**](observability.md) — the dashboard + log-based metrics.

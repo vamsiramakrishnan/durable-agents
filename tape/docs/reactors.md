@@ -1,4 +1,7 @@
-# Reactors
+# Reactors — operational guide
+
+The how-to. For the *what* and *why* of reactors as a concept, read
+[**Concepts: reactors**](concepts/reactors.md) first.
 
 Five reactors ship in the box. Each is **idempotent** (the per-run lease + the
 fact that every server RPC is idempotent makes a double-run harmless), so
@@ -44,3 +47,11 @@ event-driven mode:
 
 Same protocol; the reactor's implementation just changes from a loop to event
 handlers.
+
+## See also
+
+- [**Concepts: reactors**](concepts/reactors.md) — the conceptual model.
+- [**Reactors (Python reference)**](reference/python/reactors.md) — the
+  `run_reactors`, `run_event_fanout`, and `run_outbox_relay` API.
+- [**Observability**](observability.md) — what the reactors log + the
+  `tape/reactor/lag_ms` metric to alert on.
