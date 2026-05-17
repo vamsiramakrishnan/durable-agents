@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="660" viewBox="0 0 1200 660" role="img" aria-labelledby="title desc">
+  <title>The Effect Lifecycle</title>
+  <desc>The Effect Lifecycle — BeginEffect writes a pending row and commits, then the tool body runs, then CompleteEffect records confirmed, failed, or unknown; a confirmed effect registers a compensation; on re-drive a confirmed effect is short-circuited.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#4E745B"/></marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 33px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 16px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 12.5px ui-sans-serif, system-ui, sans-serif; fill: #686868; }
+      .mono { font: 600 13px ui-monospace, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.2; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .line-green { stroke: #4E745B; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+      .dash { stroke: #686868; stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="660"/>
+  <text x="60" y="62" class="title">The Effect Lifecycle</text>
+  <text x="60" y="92" class="subtitle">Intent before act. One window of doubt. The result is recorded, not just returned.</text>
+
+  <!-- before_tool -->
+  <rect x="60" y="140" width="210" height="84" rx="12" class="blue"/>
+  <text x="165" y="170" class="label" text-anchor="middle">before_tool</text>
+  <text x="165" y="194" class="tiny" text-anchor="middle">GetEffect(decision_seq)?</text>
+  <text x="165" y="212" class="tiny" text-anchor="middle">AdmitBudget</text>
+
+  <!-- confirmed? short-circuit -->
+  <rect x="60" y="280" width="210" height="84" rx="12" class="green"/>
+  <text x="165" y="310" class="label" text-anchor="middle">confirmed already?</text>
+  <text x="165" y="334" class="tiny" text-anchor="middle">return recorded result</text>
+  <text x="165" y="352" class="tiny" text-anchor="middle">→ ADK skips the body</text>
+
+  <!-- BeginEffect -->
+  <rect x="330" y="140" width="220" height="84" rx="12" class="amber"/>
+  <text x="440" y="166" class="label" text-anchor="middle">BeginEffect</text>
+  <text x="440" y="190" class="tiny" text-anchor="middle">write tape_effects: status = pending</text>
+  <text x="440" y="208" class="mono" text-anchor="middle">COMMIT</text>
+
+  <!-- the act -->
+  <rect x="610" y="140" width="220" height="84" rx="12" class="box"/>
+  <text x="720" y="166" class="label" text-anchor="middle">the tool body runs</text>
+  <text x="720" y="190" class="tiny" text-anchor="middle">bank.wire(..., idempotency_key=key)</text>
+  <text x="720" y="208" class="tiny" text-anchor="middle">key = run/decision-N/&lt;tool&gt;</text>
+
+  <!-- three outcomes -->
+  <rect x="890" y="100" width="250" height="64" rx="12" class="green"/>
+  <text x="1015" y="128" class="label" text-anchor="middle">CompleteEffect: confirmed</text>
+  <text x="1015" y="150" class="tiny" text-anchor="middle">+ RegisterCompensation · ChargeBudget</text>
+
+  <rect x="890" y="178" width="250" height="44" rx="12" class="red"/>
+  <text x="1015" y="206" class="label" text-anchor="middle">CompleteEffect: failed</text>
+
+  <rect x="890" y="236" width="250" height="64" rx="12" class="amber"/>
+  <text x="1015" y="262" class="label" text-anchor="middle">CompleteEffect: unknown</text>
+  <text x="1015" y="284" class="tiny" text-anchor="middle">the ack was lost — run not failed</text>
+
+  <!-- compensation row -->
+  <rect x="890" y="330" width="250" height="64" rx="12" class="red"/>
+  <text x="1015" y="356" class="label" text-anchor="middle">tape_obligations row</text>
+  <text x="1015" y="378" class="tiny" text-anchor="middle">a later failure → Compensate, LIFO</text>
+
+  <!-- reconciler -->
+  <rect x="610" y="330" width="220" height="84" rx="12" class="amber"/>
+  <text x="720" y="356" class="label" text-anchor="middle">reconciler</text>
+  <text x="720" y="380" class="tiny" text-anchor="middle">call the registered status_check</text>
+  <text x="720" y="398" class="tiny" text-anchor="middle">→ confirmed, or re-issue (same key)</text>
+
+  <!-- crash window -->
+  <rect x="330" y="280" width="500" height="44" rx="10" class="soft"/>
+  <text x="580" y="308" class="small" text-anchor="middle">crash anywhere between COMMIT(pending) and CompleteEffect → a pending row survives</text>
+
+  <path d="M165,224 L165,280" class="line"/>
+  <path d="M270,182 L330,182" class="line"/>
+  <path d="M550,182 L610,182" class="line"/>
+  <path d="M830,176 L890,140" class="line-green"/>
+  <path d="M830,196 L890,198" class="line-red"/>
+  <path d="M830,212 L890,250" class="line"/>
+  <path d="M1015,164 L1015,178" class="dash"/>
+  <path d="M1015,300 L1015,330" class="line-green"/>
+  <path d="M720,300 L720,330" class="dash"/>
+  <path d="M830,372 L890,362" class="line-green"/>
+  <path d="M720,330 C 720,260 850,250 890,262" class="dash"/>
+
+  <text x="290" y="172" class="tiny" text-anchor="middle">no</text>
+  <text x="165" y="262" class="tiny" text-anchor="middle">yes ↓</text>
+
+  <rect x="230" y="450" width="740" height="44" rx="10" class="soft"/>
+  <text x="600" y="478" class="label" text-anchor="middle">On re-drive: a confirmed effect is returned from the ledger. The body never runs twice.</text>
+</svg>

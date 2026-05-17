@@ -1,0 +1,30 @@
+# Rust
+tape/server/target/
+**/*.rs.bk
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Tape dev artifacts
+*.db
+*.db-wal
+*.db-shm
+/tmp/tape-*
+
+# Node / TS
+node_modules/
+tape/sdk/typescript/dist/
+
+# Go
+tape/sdk/go/bin/
+
+# Java / Maven
+tape/sdk/java/target/
+tape/sdk/java/.mvn/
+*.class

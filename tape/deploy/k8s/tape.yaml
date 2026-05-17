@@ -1,0 +1,109 @@
+# Tape — a horizontally scalable deployment.
+#
+# The "wiring" is one env var: TAPE_STORE picks the backend (here, Postgres).
+# Run N replicas behind the Service; the server holds no state between requests,
+# "one driver per run at a time" is the per-run lease in tape_runs, and every
+# mutating RPC is idempotent, so a double-drive (two recovery workers racing) is
+# harmless — the loser short-circuits. Scale with `kubectl scale deploy/tape
+# --replicas=N` or an HPA.
+#
+#   kubectl apply -f tape.yaml
+#
+# Build the image first:  docker build -f server/Dockerfile -t <registry>/tape-server:0.1 . && docker push ...
+# (and point a managed Postgres at TAPE_STORE, or run the bundled StatefulSet below.)
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tape-store
+type: Opaque
+stringData:
+  # postgres://USER:PASSWORD@HOST:5432/DB  — point this at your (managed) Postgres.
+  url: "postgres://tape:tape@tape-postgres:5432/tape"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tape
+  labels: { app: tape }
+spec:
+  selector: { app: tape }
+  ports:
+    - name: grpc
+      port: 7878
+      targetPort: 7878
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tape
+  labels: { app: tape }
+spec:
+  replicas: 3                       # <-- horizontal scale; bump freely, or use an HPA
+  selector:
+    matchLabels: { app: tape }
+  template:
+    metadata:
+      labels: { app: tape }
+    spec:
+      containers:
+        - name: tape-server
+          image: tape-server:0.1     # <-- your built image (server/Dockerfile)
+          args: ["tape-server"]
+          env:
+            - name: TAPE_LISTEN
+              value: "0.0.0.0:7878"
+            - name: TAPE_STORE
+              valueFrom:
+                secretKeyRef: { name: tape-store, key: url }
+            - name: RUST_LOG
+              value: "tape_server=info"
+          ports:
+            - containerPort: 7878
+          readinessProbe:
+            tcpSocket: { port: 7878 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "64Mi" }
+            limits:   { cpu: "1",    memory: "256Mi" }
+---
+# Optional: a single-instance Postgres for kicking the tyres. In production use a
+# managed Postgres (Cloud SQL / RDS / etc.) and just set the tape-store Secret.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tape-postgres
+spec:
+  serviceName: tape-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: tape-postgres }
+  template:
+    metadata:
+      labels: { app: tape-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - { name: POSTGRES_USER, value: tape }
+            - { name: POSTGRES_PASSWORD, value: tape }
+            - { name: POSTGRES_DB, value: tape }
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tape-postgres
+spec:
+  selector: { app: tape-postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]

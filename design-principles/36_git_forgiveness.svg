@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="780" viewBox="0 0 1200 780" role="img" aria-labelledby="title desc">
+  <title>Where Git Carries It — and Where It Doesn't</title>
+  <desc>Local optimistic rewind is enough when the world is small and reversible; it breaks for concurrency, uncommitted work, merge interplay, effects outside git, .git surgery, and untracked state.</desc>
+  <defs>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .colh{font:700 18px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .item{font:700 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .note{font:400 12.5px ui-sans-serif,system-ui,sans-serif;fill:#555}
+      .mono{font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#404040}
+      .green{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.6;rx:12}
+      .red{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.6;rx:12}
+      .gband{fill:#E5EFE8;fill-opacity:0.5;stroke:#4E745B;stroke-width:1.6;rx:14}
+      .rband{fill:#F2DEDE;fill-opacity:0.5;stroke:#8A3C3C;stroke-width:1.6;rx:14}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="780"/>
+  <text x="60" y="54" class="title">Where Git Carries It — and Where It Doesn't</text>
+  <text x="60" y="82" class="subtitle">Local optimistic rewind works because the world is usually small and reversible. Until it isn't.</text>
+
+  <!-- FORGIVING column -->
+  <rect x="50" y="104" width="540" height="320" class="gband"/>
+  <text x="320" y="130" class="colh" text-anchor="middle" fill="#4E745B">FORGIVING — the common case</text>
+  <rect x="66" y="146" width="508" height="58" class="green"/><text x="80" y="166" class="item">you committed</text><text x="80" y="184" class="note"><tspan class="mono">git reflog</tspan> recovers from any <tspan class="mono">reset --hard</tspan>; the harness's snapshot is just a faster path</text>
+  <rect x="66" y="212" width="508" height="58" class="green"/><text x="80" y="232" class="item">one agent, one checkout</text><text x="80" y="250" class="note">its private store + git is more than enough</text>
+  <rect x="66" y="278" width="508" height="62" class="green"/><text x="80" y="298" class="item">each agent gets its own <tspan class="mono">git worktree</tspan></text><text x="80" y="316" class="note">different working trees, no index races, merge at the end like two branches</text><text x="80" y="332" class="note" font-weight="700">— this is the multi-agent answer</text>
+  <rect x="66" y="348" width="508" height="58" class="green"/><text x="80" y="368" class="item">the thing changed is just code</text><text x="80" y="386" class="note">almost any local mistake is recoverable</text>
+
+  <!-- NOT FORGIVING column -->
+  <rect x="610" y="104" width="540" height="552" class="rband"/>
+  <text x="880" y="130" class="colh" text-anchor="middle" fill="#8A3C3C">NOT FORGIVING — the local journal is useless here</text>
+  <rect x="626" y="146" width="508" height="64" class="red"/><text x="640" y="166" class="item">uncommitted changes + a destructive git command</text><text x="640" y="184" class="note"><tspan class="mono">reset --hard</tspan> / <tspan class="mono">stash drop</tspan> → gone, and <tspan font-style="italic">not in the reflog</tspan> (which tracks committed</text><text x="640" y="200" class="note">refs, not working-tree state) — only the snapshot, if it has it</text>
+  <rect x="626" y="218" width="508" height="64" class="red"/><text x="640" y="238" class="item">merge conflicts — the interplay itself</text><text x="640" y="256" class="note">the conflict lives in the *relationship between two histories* — rewinding one</text><text x="640" y="272" class="note">agent can't un-conflict it with another; resolve by hand, or with a 3rd run</text>
+  <rect x="626" y="290" width="508" height="62" class="red"/><text x="640" y="310" class="item">concurrent ops on one <tspan class="mono">.git</tspan></text><text x="640" y="328" class="note"><tspan class="mono">.git/index.lock</tspan> races; A's restore clobbers B — needs worktrees or a lease</text><text x="640" y="344" class="note">on the checkout (coordination through journaled state — no harness does it)</text>
+  <rect x="626" y="360" width="508" height="62" class="red"/><text x="640" y="380" class="item">effects outside git</text><text x="640" y="398" class="note"><tspan class="mono">push</tspan> (it's on the remote), <tspan class="mono">npm publish</tspan>, PR comments, CI runs, deploys, a charge</text><text x="640" y="414" class="note">from running the test suite — rewind touches only the local tree</text>
+  <rect x="626" y="430" width="508" height="58" class="red"/><text x="640" y="450" class="item"><tspan class="mono">.git</tspan> surgery</text><text x="640" y="468" class="note"><tspan class="mono">gc --prune</tspan>, <tspan class="mono">filter-repo</tspan>, force-push prune the reflog itself — even "git is your net" collapses</text>
+  <rect x="626" y="496" width="508" height="58" class="red"/><text x="640" y="516" class="item">untracked / ignored state</text><text x="640" y="534" class="note"><tspan class="mono">node_modules</tspan> · <tspan class="mono">.env</tspan> · <tspan class="mono">dist/</tspan> · a local DB — git-based snapshots skip them; restore = code at T, deps at T+5</text>
+
+  <!-- the boundary band -->
+  <rect x="120" y="676" width="960" height="56" class="soft"/><text x="600" y="698" class="colh" text-anchor="middle">The boundary: one actor + local edits = forgiving.</text><text x="600" y="722" class="note" text-anchor="middle">A second actor / a remote / CI / a publish / a deploy = the durable-execution machinery, for real. "The merchant's idempotency layer was already there" → "git's object store and reflog were already there." It's a floor, not a ceiling.</text>
+</svg>
