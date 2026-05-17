@@ -1,0 +1,100 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tape/docs/**"
+      - "tape/sdk/**"
+      - "tape/cli/**"
+      - "design-principles/**"
+      - "scripts/docs/**"
+      - "mkdocs.yml"
+      - "docs/requirements.txt"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish under (`mike deploy <version>`). Use `latest` for the rolling tip."
+        required: false
+        default: "latest"
+
+permissions:
+  contents: write   # mike pushes to gh-pages
+  pages: write
+  id-token: write
+
+concurrency:
+  group: docs
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # mike needs full history to compare versions
+
+      - name: Configure git for mike
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # ── Toolchain ────────────────────────────────────────────────────────
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: "pip", cache-dependency-path: "docs/requirements.txt" }
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.25" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: "npm", cache-dependency-path: "tape/sdk/typescript/package-lock.json" }
+      - uses: actions/setup-java@v4
+        with: { distribution: "temurin", java-version: "21", cache: "maven" }
+
+      # ── Install docs build deps + the SDKs the generators introspect ─────
+      - name: Install docs deps
+        run: |
+          python -m pip install -U pip
+          pip install -r docs/requirements.txt
+          pip install -e tape/sdk/python
+          pip install -e tape/cli
+
+      - name: Install gomarkdoc
+        run: go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@latest
+
+      - name: Install TypeScript deps
+        working-directory: tape/sdk/typescript
+        run: npm ci
+
+      # ── Generate (Python is generated inline by mkdocstrings) ───────────
+      - name: Generate design / go / typescript / java / cli
+        run: |
+          bash scripts/docs/gen_design.sh
+          bash scripts/docs/gen_go.sh
+          bash scripts/docs/gen_typescript.sh
+          bash scripts/docs/gen_java.sh
+          python scripts/docs/gen_cli.py
+
+      # ── Build + publish via mike ────────────────────────────────────────
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: mike deploy
+        run: |
+          # First-time setup: create the gh-pages branch if it doesn't exist.
+          if ! git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git checkout --orphan gh-pages
+            git rm -rf . >/dev/null 2>&1 || true
+            git commit --allow-empty -m "init gh-pages"
+            git push origin gh-pages
+            git checkout -
+          fi
+          # Deploy this version + repoint `latest`.
+          mike deploy --push --update-aliases "${{ steps.ver.outputs.version }}" latest
+          mike set-default --push latest

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title>Before and After</title>
+  <desc>Before and After — the treatise's hand-rolled seven-point ADK ceremony versus the Tape version: a plain tool body and one decorator.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 33px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 12.5px ui-sans-serif, system-ui, sans-serif; fill: #686868; }
+      .code { font: 500 13px ui-monospace, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .codedim { font: 500 13px ui-monospace, Menlo, Consolas, monospace; fill: #8A3C3C; }
+      .codeok { font: 500 13px ui-monospace, Menlo, Consolas, monospace; fill: #4E745B; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; }
+      .red { fill: #F7EEEE; stroke: #8A3C3C; stroke-width: 1.7; }
+      .green { fill: #EEF4EF; stroke: #4E745B; stroke-width: 1.7; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.2; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="640"/>
+  <text x="60" y="62" class="title">Before and After</text>
+  <text x="60" y="92" class="subtitle">The seven-point ceremony, hand-rolled — versus a plain body and one decorator.</text>
+
+  <!-- before -->
+  <rect x="50" y="120" width="560" height="430" rx="14" class="red"/>
+  <text x="70" y="148" class="label" fill="#8A3C3C">Before — treatise §II "#### ADK"</text>
+  <text x="74" y="178" class="codedim">def execute_sweep(account_id, currency, amount_minor,</text>
+  <text x="74" y="196" class="codedim">                  target_mmf, run_date, rationale, tool_context):</text>
+  <text x="74" y="218" class="codedim">  key = sha256(f"{run_date}:{account_id}:..").hex()   # ① wrong key</text>
+  <text x="74" y="236" class="codedim">  with side_journal() as j:                            # ② check</text>
+  <text x="74" y="254" class="codedim">    if j.exists(key, "confirmed"): return {"wire_id": j.wire_id(key)}</text>
+  <text x="74" y="272" class="codedim">    j.write(key, "pending", account_id=…, rationale=…)  # ③ intent</text>
+  <text x="74" y="290" class="codedim">  try:                                                  # ④ the act</text>
+  <text x="74" y="308" class="codedim">    wire_id = bank.wire(account_id, amount_minor, …, key)</text>
+  <text x="74" y="326" class="codedim">  except UnknownAck:  j.write(key, "unknown");  raise</text>
+  <text x="74" y="344" class="codedim">  except Exception:   j.write(key, "failed");   raise</text>
+  <text x="74" y="362" class="codedim">  tool_context.state[f"sweep:{account_id}:{run_date}"] = wire_id # ⑤</text>
+  <text x="74" y="380" class="codedim">  with side_journal() as j: j.write(key, "confirmed", wire_id) # ⑥</text>
+  <text x="74" y="398" class="codedim">  with comp_journal() as c: c.register(key, "reverse_wire", …) # ⑦</text>
+  <text x="74" y="416" class="codedim">  return {"wire_id": wire_id}</text>
+  <text x="74" y="440" class="codedim">def before_tool_callback(tool, args, tool_context):</text>
+  <text x="74" y="458" class="codedim">  audit.write({"invocation": …, "tool": tool.name, "args": redact(args),</text>
+  <text x="74" y="476" class="codedim">               "policy_version": tool_context.state.get(…)})</text>
+  <text x="74" y="510" class="tiny">Ceremony across a tool body, a callback, and session.state — kept in step by hand.</text>
+  <text x="74" y="530" class="tiny">Two ledgers, one process, one team paying for the gap.</text>
+
+  <!-- after -->
+  <rect x="640" y="120" width="510" height="430" rx="14" class="green"/>
+  <text x="660" y="148" class="label" fill="#4E745B">After — with Tape</text>
+  <text x="664" y="186" class="code">import tape</text>
+  <text x="664" y="220" class="codeok">@tape.effect(compensate=reverse_wire,</text>
+  <text x="664" y="238" class="codeok">             status_check=bank.wire_status)</text>
+  <text x="664" y="262" class="code">def execute_sweep(account_id, amount_minor,</text>
+  <text x="664" y="280" class="code">                  target_mmf, rationale, tool_context):</text>
+  <text x="664" y="298" class="code">    key = tape.idempotency_key(tool_context)</text>
+  <text x="664" y="316" class="code">    return {"wire_id": bank.wire(account_id,</text>
+  <text x="664" y="334" class="code">              amount_minor, target_mmf, idempotency_key=key)}</text>
+  <text x="664" y="380" class="code"># wiring — once, for the whole agent:</text>
+  <text x="664" y="404" class="codeok">runner = Runner(agent=agent, app_name="treasury",</text>
+  <text x="664" y="422" class="codeok">    session_service=TapeSessionService("tape://…"),</text>
+  <text x="664" y="440" class="codeok">    plugins=[TapePlugin()])</text>
+  <text x="660" y="490" class="tiny">① the key names the decision — tape.idempotency_key gives run/decision-N/&lt;tool&gt;</text>
+  <text x="660" y="508" class="tiny">②③④⑤⑥ — the plugin: journal, intent-first, three-way outcome, state, ledger</text>
+  <text x="660" y="526" class="tiny">⑦ — compensate= declares the inverse; provenance is captured at the model boundary</text>
+
+  <rect x="230" y="568" width="740" height="44" rx="10" class="soft"/>
+  <text x="600" y="596" class="label" text-anchor="middle">The tool body is just the act. The runtime keeps the rest in step.</text>
+</svg>

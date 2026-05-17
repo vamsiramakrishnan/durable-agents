@@ -15,17 +15,83 @@ directory is the implementation.
 
 ```
 tape/
-  proto/tape.proto            the contract
-  server/                     the Rust server  (Tokio · Tonic · sqlx-less SQLite store)
-  sdk/python/                 tape-py — the reference SDK + ADK adapter (TapePlugin, TapeSessionService)
-  sdk/{typescript,go,java}/   generated clients + ADK-adapter scaffolds (the protocol is the contract)
-  examples/treasury/          the treatise's treasury agent, Tape-backed
-  tests/                      the kill-and-resume integration test
-  docker-compose.yml          Postgres + the Tape server, for local runs
-  justfile                    build · test · demo
+  proto/tape.proto              the contract
+  server/                       the Rust server  (Tokio · Tonic · sqlx-less SQLite store)
+  sdk/python/                   tape-py — the reference SDK + ADK adapter (TapePlugin, TapeSessionService, durable_app)
+  sdk/{typescript,go,java}/     generated clients + ADK-adapter scaffolds (the protocol is the contract)
+  cli/                          tape-cli — the standalone DX (`tape init|dev|doctor|provision|deploy`)
+  deploy/gcp/terraform/         reusable Terraform/OpenTofu modules for GCP
+  deploy/gcp/k8s/chart/         Helm chart for GKE Autopilot
+  docs/                         journey-shaped docs (quickstart, adk, local-dev, gcp-cloud-run, ...)
+  examples/standalone/          self-contained scaffolds: hello-durable-adk, non-idempotent-bank-outbox, ...
+  examples/treasury/            the treatise's treasury agent, Tape-backed
+  tests/                        the kill-and-resume integration test
+  docker-compose.yml            Postgres + the Tape server, for local runs
+  justfile                      build · test · demo
 ```
 
-## Quick start
+## The standalone DX
+
+Start here for new projects. See [`docs/quickstart.md`](docs/quickstart.md).
+
+```bash
+pip install -e tape/sdk/python      # tape-py: the SDK + ADK adapter
+pip install -e tape/cli             # tape: the CLI
+
+tape init treasury                  # scaffold a new project
+cd treasury
+tape dev                            # server + reactors + agent (sqlite)
+tape doctor                         # tick/cross diagnostic
+
+tape provision gcp --apply          # render & apply Terraform
+tape deploy gcp --target cloud-run  # render Cloud Run service specs
+```
+
+A durable ADK agent is now 15 lines:
+
+```python
+import tape
+from tape.adk import durable_app
+
+app, runner = durable_app(
+    name="treasury",
+    agent=root_agent,
+    budget=tape.Budget(usd_cap=50, token_cap=2_000_000),
+)
+```
+
+See [`docs/adk.md`](docs/adk.md), [`docs/non-idempotent-upstreams.md`](docs/non-idempotent-upstreams.md),
+and [`docs/gcp-cloud-run.md`](docs/gcp-cloud-run.md) for the full story.
+
+### Same DX in Go, TypeScript, and Java
+
+The standalone DX is mirrored in every SDK. The CLI stays Python-only (it
+provisions cloud infrastructure and scaffolds projects — language-agnostic
+artifacts); the *agent process* can be in any of the four languages.
+
+| Concern                         | Python                       | Go                                      | TypeScript                          | Java                                       |
+|---|---|---|---|---|
+| Wire the runtime in one call    | `tape.adk.durable_app(...)`  | `tape.NewDurableApp(ctx, cfg)`          | `durableApp({...})`                 | `DurableApp.wire(new Config().…)`          |
+| Outbox tool for non-idempotent  | `@tape.outbox_tool(...)`     | `tape.NewOutboxTool(opts)`              | `outboxTool(fn, opts)`              | `OutboxTool.builder(name, conn).…build()`  |
+| Capability connector registry   | `tape.connectors.register(...)` | `connectors.Default`                 | `CONNECTORS`                        | `ConnectorRegistry.DEFAULT`                |
+| Built-in connectors             | HTTP / PubSub                | Log / Http / PubSub (`-tags pubsub`) / Tasks (`-tags cloudtasks`) | Log / Http / PubSub / Tasks (lazy)  | Log / Http / PubSub (reflective) / Tasks (reflective) |
+| Structured logs + OTel spans    | `tape.obs.log_json` / `span` | `tape.LogJSON` / `tape.Span`            | `logJson` / `span` / `setSpanHook`  | `Obs.logJson` / `Obs.span`                 |
+| Tenancy config + DESIGN-ONLY warn | `tape.TenancyConfig`       | `tape.TenancyConfig`                    | `tenancyFromObject` / `warnIf…`     | `Tenancy.Config`                           |
+
+All four enforce the same `non_idempotent` safety rule at decoration /
+construction time: no `business_key`, no `status_check`, no `compensate`
+⇒ the SDK refuses to build the tool. The point is identical in every
+language: an UNKNOWN dispatch must never be blindly retried. The Python
+server also enforces the contract at `BeginEffect`-time so even an older
+SDK can't slip through.
+
+Python ships only the upstream-shaped built-ins it can verify
+(`HTTPConnector`, `PubSubConnector`) — the Go / TS / Java SDKs ship the
+broader Log / Tasks set as wire-protocol-only helpers for those agent
+processes; their actual dispatch goes through the Python outbox reactor
+on the server side.
+
+## Manual quick start (the long way)
 
 ```bash
 # 1. build & start the server (the store is chosen by URL — that's the whole "wiring")

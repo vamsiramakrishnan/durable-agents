@@ -133,7 +133,105 @@ go get cloud.google.com/go/pubsub
 go build -tags pubsub ./...
 ```
 
-### What's a scaffold
+### Standalone DX — parity with `tape-py`
 
-A `TapePlugin` / `TapeSessionService` for the Go port of ADK — mechanical work
-once that port settles; the Python adapter is the reference.
+The Go SDK ships the same standalone-DX surface as Python's
+`tape.adk.durable_app` / `@tape.outbox_tool` / `tape.connectors` /
+`tape.obs` / `tape.tenancy`.
+
+#### `NewDurableApp(...)` — the wiring entrypoint
+
+```go
+import (
+    "context"
+    tape "github.com/vamsiramakrishnan/durable-agents/tape/sdk/go"
+)
+
+func main() {
+    ctx := context.Background()
+    d, err := tape.NewDurableApp(ctx, tape.DurableConfig{
+        Name:    "treasury",
+        Budget:  tape.Budget{USDCap: 50, TokenCap: 2_000_000},
+    })
+    if err != nil { panic(err) }
+    defer d.Close()
+
+    run, _ := d.Client.BeginRun(ctx, tape.BeginRunOpts{
+        AppName: d.Cfg.Name, UserID: "cfo", SessionID: "s1",
+        InvocationID: "inv-1", LeaseOwner: d.LeaseOwner,
+    })
+    _ = run
+}
+```
+
+`DurableConfig` honours `$TAPE_URL`, `$TAPE_LEASE_MS`, and a pluggable
+`*Options` for the underlying gRPC channel. When a Go ADK port lands, its
+`Runner` constructor will accept the `*DurableApp` directly.
+
+#### `NewOutboxTool(...)` — non-idempotent upstreams, enforced
+
+```go
+wire, err := tape.NewOutboxTool(tape.OutboxToolOpts{
+    Name:      "wire_money",
+    Connector: "bank.wire",
+    Semantics: tape.OutboxNonIdempotent,
+    BusinessKey: func(p map[string]any) (string, error) {
+        return fmt.Sprintf("%s:%v:%s", p["account"], p["amount"], p["date"]), nil
+    },
+    WaitForResult: true,
+    StatusCheck:   findWire,    // registered with tape.RegisterStatusCheck("wire_money", …)
+    Compensate:    reverseWire, // registered with tape.RegisterCompensator("wire_money", …)
+})
+// `non_idempotent` without BusinessKey / StatusCheck / Compensate / HumanGate
+// returns `*tape.OutboxConfigError` at construction time. Use `tape.MustOutboxTool`
+// in init() blocks where misconfiguration should crash early.
+
+// Inside a tool body, `wire.Envelope(...)` returns the JSON intent the outbox
+// reactor will dispatch.
+env, _ := wire.Envelope(map[string]any{
+    "account": "ACME-1", "amount": 100_000, "beneficiary": "MMF-A", "date": "2026-05-17",
+})
+```
+
+#### Capability connectors
+
+```go
+import "github.com/vamsiramakrishnan/durable-agents/tape/sdk/go/connectors"
+
+connectors.Default.Register("bank.wire", connectors.NewHttpConnector(connectors.HttpOpts{
+    URL:           "https://bank.example/wires",
+    ObserveURL:    "https://bank.example/wires/lookup",
+    CompensateURL: "https://bank.example/wires/reverse",
+}))
+// Built-ins: LogConnector (tests/demos), HttpConnector,
+// PubSubConnector (build with -tags pubsub), CloudTasksConnector
+// (build with -tags cloudtasks). Implement the `Connector` interface
+// to add your own.
+```
+
+#### Observability + tenancy
+
+```go
+tape.LogJSON("effect.dispatched", map[string]any{
+    "run_id":   run.RunId,
+    "tool":     "wire_money",
+    "reactor":  "outbox",
+})
+
+// Span constants for tracing adapters (no OTel dep in the core).
+tape.SetSpanHook(func(name string, attrs map[string]any) func(error) {
+    // open a span via your tracer
+    return func(err error) { /* close it */ }
+})
+
+// Tenancy
+t := tape.TenancyConfig{Mode: tape.TenancyHardMultiTenant, TenantID: "x"}
+for _, w := range t.WarnIfHardButUnenforced() { fmt.Println("warn:", w) }
+```
+
+### Still a scaffold
+
+The full `TapePlugin` / `TapeSessionService` for the Go port of ADK —
+mechanical work once that port settles; the Python adapter
+[`tape/sdk/python/tape/adk/`](../python/tape/adk/) is the reference, and the
+values returned by `NewDurableApp(...)` are what its constructor will read.

@@ -1,0 +1,17 @@
+# Kustomize overlay: AlloyDB-backed Tape.
+#
+# Apply via `kustomize build` against a base built from `helm template` of the
+# bundled chart, or alongside any base manifests you maintain yourself.
+resources:
+  - ../../../k8s/tape.yaml          # the simple per-namespace manifest
+
+patches:
+  - target: { kind: Secret, name: tape-store }
+    patch: |
+      - op: replace
+        path: /stringData/url
+        value: postgres://tape:CHANGE_ME@127.0.0.1:5432/tape
+
+# AlloyDB Auth Proxy sidecar — patched into the tape deployment.
+patchesStrategicMerge:
+  - alloydb-proxy.yaml

@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tape
+spec:
+  template:
+    spec:
+      containers:
+        - name: alloydb-proxy
+          image: gcr.io/alloydb-connectors/alloydb-auth-proxy:latest
+          args:
+            - "--port=5432"
+            - "projects/PROJECT/locations/REGION/clusters/CLUSTER/instances/INSTANCE"
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }

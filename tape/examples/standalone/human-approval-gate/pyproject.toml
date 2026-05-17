@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "human-approval-gate"
+version = "0.0.1"
+requires-python = ">=3.10"
+dependencies = ["tape-py>=0.1.0", "google-adk>=1.30"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

@@ -1,0 +1,16 @@
+# Local Tape overlay. Run alongside your existing app:
+#   docker compose -f docker-compose.yaml -f docker-compose.tape.yaml up
+
+services:
+  tape-server:
+    image: ghcr.io/vamsiramakrishnan/tape-server:latest
+    environment:
+      TAPE_LISTEN: "0.0.0.0:7878"
+      TAPE_STORE:  "sqlite:/data/tape.db"
+      RUST_LOG:    "tape_server=info"
+    ports: ["7878:7878"]
+    volumes:
+      - tape-data:/data
+
+volumes:
+  tape-data:

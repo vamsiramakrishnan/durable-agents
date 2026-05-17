@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>The Three Ledgers</title>
+  <desc>The Three Ledgers — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">The Three Ledgers</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">A serious agent runtime remembers why, what, and what is owed.</text>
+<rect x="435" y="165" width="330" height="115" class="box"/>
+<text x="600" y="205" class="label" text-anchor="middle">Agent workflow</text>
+<text x="600" y="235" class="small" text-anchor="middle">
+  <tspan x="600" dy="0">model decisions · tool calls · waits</tspan>
+  <tspan x="600" dy="20">one durable identity</tspan>
+</text>
+<rect x="80" y="350" width="295" height="170" fill="#E8EEF5" stroke="#486A8F" stroke-width="1.8" rx="18"/>
+<text x="102" y="388" class="label" text-anchor="start">Decision ledger</text>
+<text x="102" y="422" class="small" text-anchor="start">
+  <tspan x="102" dy="0">why the model acted</tspan>
+  <tspan x="102" dy="22">prompt · policy · context</tspan>
+  <tspan x="102" dy="22">plan · choice · alternatives</tspan>
+</text>
+<text x="102" y="497" class="tiny" text-anchor="start">miss it → cannot explain</text>
+<rect x="425" y="350" width="295" height="170" fill="#E5EFE8" stroke="#4E745B" stroke-width="1.8" rx="18"/>
+<text x="447" y="388" class="label" text-anchor="start">Effect ledger</text>
+<text x="447" y="422" class="small" text-anchor="start">
+  <tspan x="447" dy="0">what touched the world</tspan>
+  <tspan x="447" dy="22">request · response · key</tspan>
+  <tspan x="447" dy="22">order · trade · email</tspan>
+</text>
+<text x="447" y="497" class="tiny" text-anchor="start">miss it → repeats itself</text>
+<rect x="770" y="350" width="295" height="170" fill="#F4E7D8" stroke="#A36A28" stroke-width="1.8" rx="18"/>
+<text x="792" y="388" class="label" text-anchor="start">Obligation ledger</text>
+<text x="792" y="422" class="small" text-anchor="start">
+  <tspan x="792" dy="0">what is now owed</tspan>
+  <tspan x="792" dy="22">approval · expiry · promise</tspan>
+  <tspan x="792" dy="22">lock · follow-up · rollback</tspan>
+</text>
+<text x="792" y="497" class="tiny" text-anchor="start">miss it → breaks promises</text>
+<path d="M520,280 C430,315 280,315 230,350" class="line-blue"/>
+<path d="M600,280 L572,350" class="line-blue"/>
+<path d="M680,280 C760,315 880,315 918,350" class="line-blue"/>
+<rect x="190" y="570" width="820" height="55" class="soft"/>
+<text x="600" y="604" class="label" text-anchor="middle">State is not enough. Effects are not enough. An acting system must also remember obligations.</text>
+</svg>

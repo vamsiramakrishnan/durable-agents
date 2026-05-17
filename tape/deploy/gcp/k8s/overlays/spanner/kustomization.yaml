@@ -1,0 +1,17 @@
+# Kustomize overlay: Spanner-backed Tape (EXPERIMENTAL).
+resources:
+  - ../../../k8s/tape.yaml
+
+patches:
+  - target: { kind: Secret, name: tape-store }
+    patch: |
+      - op: replace
+        path: /stringData/url
+        value: spanner://PROJECT/INSTANCE/DATABASE
+  - target: { kind: Deployment, name: tape }
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: TAPE_SPANNER_EXPERIMENTAL
+          value: "1"

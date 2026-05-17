@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title>The User Steps Out of the Loop</title>
+  <desc>A chatbot returns text to a user who decides whether to act; an agent removes the user from that loop and inherits the role of the end-to-end check.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-grey" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#8a8a8a"/></marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .h{font:700 18px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .label{font:700 16px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .small{font:400 14px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12.5px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .box{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.6;rx:14}
+      .blue{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.7;rx:14}
+      .green{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.7;rx:14}
+      .grey{fill:#EFEDE7;stroke:#b9b3a6;stroke-width:1.4;rx:14}
+      .red{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.6;rx:14}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:12}
+      .line{stroke:#1f1f1f;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#8a8a8a;stroke-width:1.6;fill:none;stroke-dasharray:6 5;marker-end:url(#arrow-grey)}
+      .rl{stroke:#8A3C3C;stroke-width:2;fill:none;marker-end:url(#arrow-red);stroke-dasharray:6 5}
+      .div{stroke:#d8d3c8;stroke-width:1.4}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="640"/>
+  <text x="60" y="56" class="title">The User Steps Out of the Loop</text>
+  <text x="60" y="84" class="subtitle">A chatbot returns text to a user who decides whether to act on it. An agent removes the user from that loop.</text>
+
+  <!-- chatbot row -->
+  <text x="60" y="150" class="h">CHATBOT</text>
+  <rect x="180" y="125" width="150" height="60" class="box"/><text x="255" y="152" class="label" text-anchor="middle">model</text><text x="255" y="171" class="tiny" text-anchor="middle">produces words</text>
+  <path d="M330,155 L420,155" class="line"/><text x="375" y="146" class="tiny" text-anchor="middle">text</text>
+  <rect x="420" y="115" width="320" height="80" class="blue"/><text x="580" y="141" class="label" text-anchor="middle">USER</text><text x="580" y="161" class="tiny" text-anchor="middle">reads · sanity-checks · reconciles ·</text><text x="580" y="177" class="tiny" text-anchor="middle">decides whether to act</text>
+  <text x="580" y="103" class="small" text-anchor="middle">the end-to-end check</text>
+  <path d="M740,155 L830,155" class="line"/>
+  <rect x="830" y="125" width="150" height="60" class="box"/><text x="905" y="159" class="label" text-anchor="middle">world</text>
+  <text x="1010" y="150" class="tiny">failure stays</text><text x="1010" y="165" class="tiny">in the conversation</text>
+
+  <line x1="60" y1="245" x2="1140" y2="245" class="div"/>
+
+  <!-- agent row -->
+  <text x="60" y="320" class="h">AGENT</text>
+  <rect x="180" y="295" width="150" height="60" class="box"/><text x="255" y="322" class="label" text-anchor="middle">model</text><text x="255" y="341" class="tiny" text-anchor="middle">chooses an act</text>
+  <path d="M330,325 L640,325" class="line"/><text x="485" y="316" class="tiny" text-anchor="middle">act — order, trade, message, file</text>
+  <rect x="640" y="295" width="180" height="60" class="green"/><text x="730" y="329" class="label" text-anchor="middle">world</text>
+  <text x="900" y="318" class="tiny">failure leaks</text><text x="900" y="333" class="tiny">into systems that do not</text><text x="900" y="348" class="tiny">know they are in a conversation</text>
+  <!-- user off to the side, asleep -->
+  <rect x="640" y="400" width="320" height="64" class="grey"/><text x="800" y="426" class="label" text-anchor="middle" fill="#8a8a8a">USER — asleep</text><text x="800" y="446" class="tiny" text-anchor="middle">delegated the role of being the end-to-end check</text>
+  <path d="M730,400 L730,357" class="dash"/>
+  <path d="M780,355 C780,390 760,430 660,432" class="rl"/><text x="700" y="478" class="tiny" text-anchor="middle">finds out at 9 a.m.</text>
+
+  <!-- footer -->
+  <rect x="200" y="560" width="800" height="56" class="soft"/>
+  <text x="600" y="585" class="label" text-anchor="middle">Reliability is verified at the endpoints (Saltzer, Reed, Clark, 1984).</text>
+  <text x="600" y="606" class="small" text-anchor="middle">The agent is now the endpoint — catching errors, reconciling, confirming. Nobody else is.</text>
+</svg>

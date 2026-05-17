@@ -1,0 +1,45 @@
+# Local dev stack for {{ name }}.
+#
+#   docker compose up --build
+#
+# Brings up:
+#   * tape-server (SQLite-backed by default)
+#   * tape-reactors (recovery + reconciler + outbox + timers + compensation)
+#   * the agent itself, ready to receive `runner.run_async(...)` calls
+{% if events == "pubsub" %}#   * pubsub-emulator
+{% endif %}
+services:
+  tape-server:
+    image: ghcr.io/vamsiramakrishnan/tape-server:latest
+    command: ["tape-server"]
+    environment:
+      TAPE_LISTEN: "0.0.0.0:7878"
+      TAPE_STORE:  "sqlite:/data/tape.db"
+      RUST_LOG:    "tape_server=info"
+    ports: ["7878:7878"]
+    volumes:
+      - tape-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 7878 || exit 1"]
+      interval: 2s
+      timeout:  2s
+      retries:  20
+
+  tape-reactors:
+    build: { context: ., dockerfile: Dockerfile }
+    command: ["python", "-m", "tape.reactors",
+              "--runner-from", "app.agent:build_runner",
+              "--url", "tape://tape-server:7878"]
+    environment:
+      TAPE_URL: "tape://tape-server:7878"
+    depends_on:
+      tape-server:
+        condition: service_healthy
+
+{% if events == "pubsub" %}  pubsub-emulator:
+    image: google/cloud-sdk:slim
+    command: ["gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085"]
+    ports: ["8085:8085"]
+{% endif %}
+volumes:
+  tape-data:

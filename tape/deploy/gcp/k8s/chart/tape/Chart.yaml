@@ -1,0 +1,13 @@
+apiVersion: v2
+name: tape
+description: Tape — a durable-execution substrate for ADK agents on GKE.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - tape
+  - adk
+  - agents
+  - durable
+maintainers:
+  - name: durable-agents

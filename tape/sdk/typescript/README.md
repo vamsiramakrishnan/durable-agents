@@ -86,6 +86,91 @@ For low-level access, `TapeClient` exposes every new RPC directly
 helper bridges PUBLISH-kind tasks to Pub/Sub (lazy-imports
 `@google-cloud/pubsub`).
 
+### Standalone DX — parity with `tape-py`
+
+The TS SDK ships the same standalone-DX surface as Python's
+`tape.adk.durable_app` / `@tape.outbox_tool` / `tape.connectors` /
+`tape.obs` / `tape.tenancy`.
+
+#### `durableApp(...)` — the wiring entrypoint
+
+```ts
+import { durableApp } from 'tape-ts';
+
+const app = durableApp({
+  name: 'treasury',
+  budget: { usdCap: 50, tokenCap: 2_000_000 },
+});
+try {
+  const run = await app.client.beginRun({
+    appName: app.name, userId: 'cfo', sessionId: 's1',
+    invocationId: 'inv-1', leaseOwner: app.leaseOwner,
+  });
+} finally {
+  await app.close();
+}
+```
+
+`durableApp` honours `$TAPE_URL` and `$TAPE_LEASE_MS`. When a TS ADK port
+lands, its `Runner` constructor will accept the `DurableApp` directly.
+
+#### `outboxTool(...)` — non-idempotent upstreams, enforced
+
+```ts
+import { outboxTool, isOutboxEnvelope } from 'tape-ts';
+
+const wire = outboxTool(
+  ({ account, amount, beneficiary, date }: {
+    account: string; amount: number; beneficiary: string; date: string;
+  }) => ({ account, amount, beneficiary, date }),
+  {
+    name: 'wire_money',
+    connector: 'bank.wire',
+    semantics: 'non_idempotent',
+    businessKey: (p) => `${p.account}:${p.amount}:${p.date}`,
+    waitForResult: true,
+  },
+);
+// `semantics: 'non_idempotent'` without businessKey / statusCheck /
+// compensate / humanGate throws OutboxConfigError at decoration time.
+
+const env = wire({ account: 'ACME-1', amount: 100_000,
+                   beneficiary: 'MMF-A', date: '2026-05-17' });
+isOutboxEnvelope(env);  // true
+```
+
+#### Capability connectors
+
+```ts
+import { CONNECTORS, HttpConnector, PubSubConnector } from 'tape-ts';
+
+CONNECTORS.register('bank.wire', new HttpConnector({
+  url: 'https://bank.example/wires',
+  observeUrl: 'https://bank.example/wires/lookup',
+  compensateUrl: 'https://bank.example/wires/reverse',
+}));
+// Built-ins: LogConnector, HttpConnector, PubSubConnector
+// (`@google-cloud/pubsub` is lazy-imported), CloudTasksConnector
+// (`@google-cloud/tasks` is lazy-imported).
+```
+
+#### Observability + tenancy
+
+```ts
+import { logJson, setSpanHook, SPAN_DISPATCH_EFFECT,
+         tenancyFromObject, warnIfHardButUnenforced } from 'tape-ts';
+
+logJson('effect.dispatched', { run_id: 'r-1', tool: 'wire_money', reactor: 'outbox' });
+
+setSpanHook((name, attrs) => {
+  // open a span via your tracer; return its end callback
+  return () => { /* close it */ };
+});
+
+const t = tenancyFromObject({ mode: 'hard_multi_tenant', tenantId: 'x' });
+for (const w of warnIfHardButUnenforced(t)) console.warn(w);
+```
+
 ### Re-syncing the proto
 
 ```bash

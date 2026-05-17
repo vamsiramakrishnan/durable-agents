@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>Travel Saga: Partial Commit</title>
+  <desc>Travel Saga: Partial Commit — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">Travel Saga: Partial Commit</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">The hard part is not booking. It is choosing what to do after half a trip exists.</text>
+<rect x="70" y="180" width="150" height="70" class="box"/>
+<text x="145.0" y="211" class="small" text-anchor="middle">Search</text>
+<text x="145.0" y="233" class="tiny" text-anchor="middle">snapshot</text>
+<rect x="260" y="180" width="150" height="70" class="box"/>
+<text x="335.0" y="211" class="small" text-anchor="middle">Hold quote</text>
+<text x="335.0" y="233" class="tiny" text-anchor="middle">expires</text>
+<rect x="450" y="180" width="150" height="70" class="amber"/>
+<text x="525.0" y="211" class="small" text-anchor="middle">Human approval</text>
+<text x="525.0" y="233" class="tiny" text-anchor="middle">durable wait</text>
+<rect x="640" y="180" width="150" height="70" class="box"/>
+<text x="715.0" y="211" class="small" text-anchor="middle">Re-quote</text>
+<text x="715.0" y="233" class="tiny" text-anchor="middle">fresh price</text>
+<rect x="830" y="180" width="150" height="70" class="green"/>
+<text x="905.0" y="211" class="small" text-anchor="middle">Book outbound</text>
+<text x="905.0" y="233" class="tiny" text-anchor="middle">committed</text>
+<path d="M220,215.0 L260,215.0" class="line"/>
+<path d="M410,215.0 L450,215.0" class="line"/>
+<path d="M600,215.0 L640,215.0" class="line"/>
+<path d="M790,215.0 L830,215.0" class="line"/>
+<rect x="1010" y="180" width="150" height="70" class="red"/>
+<text x="1085" y="208" class="small" text-anchor="middle">Book return</text>
+<text x="1085" y="231" class="tiny" text-anchor="middle">fare vanished</text>
+<path d="M980,215 L1010,215" class="line-red"/>
+<circle cx="335" cy="315" r="42" fill="#fffefa" stroke="#A36A28" stroke-width="2"/>
+<text x="335" y="310" class="label" text-anchor="middle">TTL</text>
+<text x="335" y="333" class="tiny" text-anchor="middle">15 min</text>
+<path d="M335,250 L335,273" class="line-red"/>
+<path d="M525,250 C520,300 425,320 377,315" class="line-red"/>
+<text x="505" y="315" class="tiny" text-anchor="start">approval took 2 hours</text>
+<rect x="120" y="410" width="330" height="140" class="soft"/>
+<text x="145" y="445" class="label" text-anchor="start">Partial state now exists</text>
+<text x="145" y="477" class="mono" text-anchor="start">
+  <tspan x="145" dy="0">✓ outbound booked</tspan>
+  <tspan x="145" dy="22">✗ return rejected</tspan>
+  <tspan x="145" dy="22">○ hotel held</tspan>
+  <tspan x="145" dy="22">○ payment pre-authorized</tspan>
+</text>
+<rect x="570" y="390" width="195" height="75" class="box"/>
+<text x="667.5" y="420" class="label" text-anchor="middle">Compensate</text>
+<text x="667.5" y="445" class="tiny" text-anchor="middle">cancel outbound</text>
+<rect x="570" y="495" width="195" height="75" class="box"/>
+<text x="667.5" y="525" class="label" text-anchor="middle">Forward recover</text>
+<text x="667.5" y="550" class="tiny" text-anchor="middle">re-quote return</text>
+<rect x="845" y="442" width="195" height="75" class="box"/>
+<text x="942.5" y="472" class="label" text-anchor="middle">Escalate</text>
+<text x="942.5" y="497" class="tiny" text-anchor="middle">ask user / policy</text>
+<path d="M450,480 C500,430 530,420 570,428" class="line"/>
+<path d="M450,500 C505,520 530,533 570,533" class="line"/>
+<path d="M450,480 C620,455 750,465 845,478" class="line"/>
+<text x="120" y="610" class="label" text-anchor="start">A saga diagram says “compensate.” An agent runtime must preserve enough committed state to decide how.</text>
+</svg>

@@ -49,6 +49,7 @@ from .effect import (effect, outbox_tool, idempotency_key, run_id_of,
                      business_key, external_ref, effect_semantics,
                      get_compensator, get_status_check, get_tool_compensator)
 from .retry import RetryPolicy
+from .tenancy import TenancyConfig, TenancyMode
 from .gates import AckLost, gate, gate_tool
 from .budget import Budget, with_budget
 from .det import sample, now, uuid, random
@@ -75,6 +76,7 @@ __all__ = [
     "effect", "outbox_tool", "idempotency_key", "run_id_of",
     "business_key", "external_ref", "effect_semantics",
     "RetryPolicy",
+    "TenancyConfig", "TenancyMode",
     "AckLost", "gate", "gate_tool",
     "Budget", "with_budget",
     "sample", "now", "uuid", "random",

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>Layered Architecture for Agents That Act</title>
+  <desc>Layered Architecture for Agents That Act — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">Layered Architecture for Agents That Act</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">Composition belongs above. Consequence belongs below.</text>
+<rect x="130" y="150" width="940" height="70" class="box"/>
+<text x="162" y="182" class="label" text-anchor="start">Product</text>
+<text x="162" y="205" class="small" text-anchor="start">user intention · UX · business policy</text>
+<rect x="130" y="235" width="940" height="70" class="amber"/>
+<text x="162" y="267" class="label" text-anchor="start">Agent framework</text>
+<text x="162" y="290" class="small" text-anchor="start">graphs · prompts · tools · roles · routing · memory</text>
+<rect x="130" y="320" width="940" height="70" class="blue"/>
+<text x="162" y="352" class="label" text-anchor="start">Agent runtime</text>
+<text x="162" y="375" class="small" text-anchor="start">decision journal · action gates · budgets · authority · provenance · coordination</text>
+<rect x="130" y="405" width="940" height="70" class="green"/>
+<text x="162" y="437" class="label" text-anchor="start">Durable execution</text>
+<text x="162" y="460" class="small" text-anchor="start">workflow identity · journal · timers · signals · retries · effect boundaries · recovery</text>
+<rect x="130" y="490" width="940" height="70" class="soft"/>
+<text x="162" y="522" class="label" text-anchor="start">Systems of record</text>
+<text x="162" y="545" class="small" text-anchor="start">databases · payments · brokers · CRMs · email · browsers · cloud APIs · warehouses</text>
+<path d="M600,220 L600,235" class="line"/>
+<path d="M600,305 L600,320" class="line"/>
+<path d="M600,390 L600,405" class="line"/>
+<path d="M600,475 L600,490" class="line"/>
+<rect x="230" y="590" width="740" height="45" class="soft"/>
+<text x="600" y="619" class="label" text-anchor="middle">The agent framework composes behavior. The durable runtime preserves consequence.</text>
+</svg>

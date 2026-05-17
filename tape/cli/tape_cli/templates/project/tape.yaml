@@ -1,0 +1,56 @@
+apiVersion: tape.dev/v1
+kind: TapeProject
+
+project:
+  name: {{ name }}
+  environment: dev
+
+agent:
+  framework: adk
+  app_name: {{ name }}
+  entrypoint: app.agent:root_agent
+  runner_factory: app.agent:build_runner
+  # local | cloud_run | gke | agent_runtime
+  deployment_target: cloud_run
+
+tape:
+  url: ${TAPE_URL:-tape://localhost:7878}
+  server:
+    image: ghcr.io/vamsiramakrishnan/tape-server:latest
+    target: cloud_run
+    min_instances: 0
+    max_instances: 10
+    cpu: "1"
+    memory: "512Mi"
+    ingress: internal
+  store:
+    # sqlite | postgres | alloydb | spanner | bigtable
+    kind: {{ store }}
+{% if store != "sqlite" %}    url_secret: TAPE_STORE_URL
+{% else %}    url: sqlite:./.tape/dev.db
+{% endif %}  events:
+    # none | pubsub
+    kind: {{ events }}
+{% if events == "pubsub" %}    topic: tape-events
+    outbox_topic: tape-outbox
+    dlq_topic: tape-dlq
+{% endif %}  reactors:
+    recovery:     {enabled: true}
+    reconciler:   {enabled: true}
+    outbox:       {enabled: true}
+    timers:       {enabled: true}
+    compensation: {enabled: true}
+
+gcp:
+  project_id: ${GOOGLE_CLOUD_PROJECT}
+  region: {{ region }}
+  artifact_registry_repository: tape
+  service_account_prefix: tape
+  network:
+    vpc_connector: ""
+    private_ip: true
+
+tenancy:
+  # single | trusted_multi_app | hard_multi_tenant
+  mode: single
+  tenant_id: default

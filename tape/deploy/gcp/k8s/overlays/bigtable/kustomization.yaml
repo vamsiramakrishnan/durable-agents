@@ -1,0 +1,17 @@
+# Kustomize overlay: Bigtable-backed Tape.
+resources:
+  - ../../../k8s/tape.yaml
+
+patches:
+  - target: { kind: Secret, name: tape-store }
+    patch: |
+      - op: replace
+        path: /stringData/url
+        value: bigtable://PROJECT/INSTANCE/tape
+  # Bigtable doesn't need the Postgres StatefulSet — drop it.
+  - target: { kind: StatefulSet, name: tape-postgres }
+    patch: |
+      $patch: delete
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata: { name: tape-postgres }

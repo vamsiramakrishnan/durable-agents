@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>X-Ray of One Turn</title>
+  <desc>What a coding harness records when you ask it to make an edit — the transcript, the pre-edit file snapshots — and what it does not record: shell side effects, commits, pushes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-g" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#4E745B"/></marker>
+    <marker id="arrow-r" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#8A3C3C"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .label{font:700 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .small{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .mono{font:600 12.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#1f1f1f}
+      .step{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:10}
+      .keep{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.6;rx:10}
+      .partial{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.6;rx:10}
+      .lost{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.6;rx:10}
+      .tr{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.7;rx:10}
+      .line{stroke:#1f1f1f;stroke-width:1.8;fill:none;marker-end:url(#arrow)}
+      .g{stroke:#4E745B;stroke-width:1.8;fill:none;marker-end:url(#arrow-g)}
+      .r{stroke:#8A3C3C;stroke-width:1.8;fill:none;marker-end:url(#arrow-r);stroke-dasharray:5 4}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="54" class="title">X-Ray of One Turn</text>
+  <text x="60" y="82" class="subtitle">You said "add input validation." Here is everything the harness wrote — and everything it didn't.</text>
+
+  <!-- the turn, as a vertical column on the left -->
+  <rect x="60" y="120" width="300" height="44" class="tr"/><text x="210" y="148" class="label" text-anchor="middle">USER PROMPT — "add input validation"</text>
+  <path d="M210,164 L210,184" class="line"/>
+  <rect x="60" y="184" width="300" height="36" class="step"/><text x="210" y="207" class="mono" text-anchor="middle">model decides: a 4-step plan</text>
+  <path d="M210,220 L210,238" class="line"/>
+  <rect x="60" y="238" width="300" height="36" class="step"/><text x="210" y="261" class="mono" text-anchor="middle">edit src/api.ts</text>
+  <path d="M210,274 L210,292" class="line"/>
+  <rect x="60" y="292" width="300" height="36" class="step"/><text x="210" y="315" class="mono" text-anchor="middle">edit src/api.test.ts</text>
+  <path d="M210,328 L210,346" class="line"/>
+  <rect x="60" y="346" width="300" height="36" class="step"/><text x="210" y="369" class="mono" text-anchor="middle">run `npm test`</text>
+  <path d="M210,382 L210,400" class="line"/>
+  <rect x="60" y="400" width="300" height="36" class="step"/><text x="210" y="423" class="mono" text-anchor="middle">run `git add -A &amp;&amp; git commit`</text>
+  <path d="M210,436 L210,454" class="line"/>
+  <rect x="60" y="454" width="300" height="36" class="step" stroke-dasharray="5 4"/><text x="210" y="477" class="mono" text-anchor="middle">(if it had run `git push` / `npm publish`)</text>
+  <path d="M210,490 L210,508" class="line"/>
+  <rect x="60" y="508" width="300" height="32" class="step"/><text x="210" y="529" class="mono" text-anchor="middle">done</text>
+
+  <!-- what gets recorded, on the right -->
+  <!-- the transcript captures the whole thing -->
+  <rect x="700" y="120" width="440" height="92" class="tr"/><text x="920" y="146" class="label" text-anchor="middle">THE TRANSCRIPT — append-only JSONL</text><text x="920" y="166" class="small" text-anchor="middle">the prompt · the plan · every tool call &amp; result · tokens</text><text x="920" y="184" class="small" text-anchor="middle" font-weight="700" fill="#486A8F">✓ the decision ledger — strong</text><text x="920" y="202" class="tiny" text-anchor="middle">replayed as memory on resume — not re-run verbatim</text>
+  <path d="M360,150 C500,150 580,160 698,165" class="g"/>
+  <path d="M360,200 C520,180 600,170 698,175" class="line"/>
+
+  <!-- pre-edit snapshots -->
+  <rect x="700" y="232" width="440" height="76" class="keep"/><text x="920" y="258" class="label" text-anchor="middle">PRE-EDIT SNAPSHOTS — the snapshot store</text><text x="920" y="278" class="small" text-anchor="middle">src/api.ts (before) · src/api.test.ts (before)</text><text x="920" y="296" class="small" text-anchor="middle" font-weight="700" fill="#4E745B">✓ the effect ledger — thin, file-scoped</text>
+  <path d="M360,256 L698,256" class="g"/>
+  <path d="M360,310 C520,300 600,290 698,288" class="g"/>
+
+  <!-- npm test: nothing -->
+  <rect x="700" y="328" width="440" height="56" class="lost"/><text x="920" y="352" class="label" text-anchor="middle">`npm test` — nothing snapshotted</text><text x="920" y="372" class="small" text-anchor="middle">it touched a coverage file, the test cache — not in the store</text>
+  <path d="M360,364 L698,356" class="r"/>
+
+  <!-- git commit: partial -->
+  <rect x="700" y="396" width="440" height="56" class="partial"/><text x="920" y="420" class="label" text-anchor="middle">`git commit` — partial</text><text x="920" y="440" class="small" text-anchor="middle">the SHA may be in the transcript text; the store doesn't model it</text>
+  <path d="M360,418 L698,420" class="r"/>
+
+  <!-- push/publish: lost -->
+  <rect x="700" y="464" width="440" height="56" class="lost"/><text x="920" y="488" class="label" text-anchor="middle">push / publish / a PR comment</text><text x="920" y="508" class="small" text-anchor="middle" font-weight="700" fill="#8A3C3C">✗ not captured · not reversible · no compensation handle</text>
+  <path d="M360,472 L698,490" class="r"/>
+
+  <rect x="120" y="556" width="960" height="40" class="soft"/><text x="600" y="582" class="label" text-anchor="middle">The harness can undo the two file edits. It cannot undo the commit (only partly), the test side effects, or anything pushed / published / posted.</text>
+</svg>

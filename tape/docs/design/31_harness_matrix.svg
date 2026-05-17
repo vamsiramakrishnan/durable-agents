@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+  <title>Four Harnesses, Four Proto-Journals</title>
+  <desc>A comparison matrix of Codex CLI, Codex cloud, Claude Code, and Gemini CLI on what their "undo" is made of.</desc>
+  <defs>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 32px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .colh{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .rowh{font:700 13px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .cell{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .mono{font:500 11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#555}
+      .colA{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:12}
+      .colB{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:12}
+      .colC{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.6;rx:12}
+      .colD{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.6;rx:12}
+      .rb{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1;rx:8}
+      .rstripe{fill:#f3f1ea}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="820"/>
+  <text x="60" y="54" class="title">Four Harnesses, Four Proto-Journals</text>
+  <text x="60" y="82" class="subtitle">What "undo" is made of in the coding agents you already use.</text>
+
+  <!-- column headers -->
+  <rect x="60"  y="100" width="190" height="40" class="rb"/><text x="155" y="125" class="rowh" text-anchor="middle">—</text>
+  <rect x="256" y="100" width="222" height="40" class="colA"/><text x="367" y="125" class="colh" text-anchor="middle">Codex CLI</text>
+  <rect x="484" y="100" width="222" height="40" class="colB"/><text x="595" y="125" class="colh" text-anchor="middle">Codex cloud</text>
+  <rect x="712" y="100" width="222" height="40" class="colC"/><text x="823" y="125" class="colh" text-anchor="middle">Claude Code</text>
+  <rect x="940" y="100" width="200" height="40" class="colD"/><text x="1040" y="125" class="colh" text-anchor="middle">Gemini CLI</text>
+
+  <!-- helper macro: each row at given y, height 84 -->
+  <!-- ROW 1: decision ledger -->
+  <rect x="60" y="146" width="1080" height="80" class="rstripe"/>
+  <rect x="60" y="146" width="190" height="80" class="rb"/><text x="70" y="172" class="rowh">decision ledger</text><text x="70" y="190" class="cell">(the transcript)</text>
+  <text x="262" y="170" class="cell">rollout JSONL —</text><text x="262" y="186" class="mono">~/.codex/sessions/…/rollout-*.jsonl</text><text x="262" y="204" class="cell">full: msgs · tool calls · tokens</text>
+  <text x="490" y="170" class="cell">the task thread (in ChatGPT)</text><text x="490" y="186" class="cell">+ the diff it produced</text><text x="490" y="204" class="cell">— not exportable as a log</text>
+  <text x="718" y="170" class="cell">session JSONL —</text><text x="718" y="186" class="mono">~/.claude/projects/…/&lt;id&gt;.jsonl</text><text x="718" y="204" class="cell">full · forkable</text>
+  <text x="946" y="170" class="cell">conversation history</text><text x="946" y="186" class="cell">+ /chat save tags</text>
+
+  <!-- ROW 2: file rollback built in? -->
+  <rect x="60" y="230" width="190" height="80" class="rb"/><text x="70" y="256" class="rowh">file rollback</text><text x="70" y="274" class="cell">built in?</text>
+  <text x="262" y="262" class="cell" fill="#8A3C3C">✗ no — use your git</text><text x="262" y="282" class="cell">(.git/ forced read-only under</text><text x="262" y="298" class="cell">the workspace sandbox)</text>
+  <text x="490" y="262" class="cell" fill="#8A3C3C">✗ no — don't merge the PR /</text><text x="490" y="282" class="cell">close it / revert the merge</text>
+  <text x="718" y="262" class="cell" fill="#4E745B">✓ private snapshot store —</text><text x="718" y="282" class="mono">~/.claude/file-history/&lt;id&gt;/</text><text x="718" y="298" class="cell">(not git)</text>
+  <text x="946" y="262" class="cell" fill="#4E745B">✓ shadow git repo —</text><text x="946" y="282" class="mono">~/.gemini/history/&lt;hash&gt;</text>
+
+  <!-- ROW 3: backward -->
+  <rect x="60" y="314" width="1080" height="80" class="rstripe"/>
+  <rect x="60" y="314" width="190" height="80" class="rb"/><text x="70" y="340" class="rowh">backward</text><text x="70" y="358" class="cell">(restore state)</text>
+  <text x="262" y="346" class="mono">git checkout / reset</text><text x="262" y="362" class="cell">(yours — the harness</text><text x="262" y="378" class="cell">doesn't do it)</text>
+  <text x="490" y="346" class="cell">close the PR; or</text><text x="490" y="362" class="cell">revert the merge commit</text>
+  <text x="718" y="346" class="mono">/rewind</text><text x="718" y="362" class="cell">code &amp;/or convo;</text><text x="718" y="378" class="cell">per user prompt</text>
+  <text x="946" y="346" class="mono">/restore</text><text x="946" y="362" class="cell">code + convo;</text><text x="946" y="378" class="cell">per file-modifying tool call</text>
+
+  <!-- ROW 4: forward / fork -->
+  <rect x="60" y="398" width="190" height="80" class="rb"/><text x="70" y="424" class="rowh">forward / fork</text>
+  <text x="262" y="430" class="mono">codex fork</text><text x="262" y="446" class="cell">Esc-rewind → branch</text><text x="262" y="462" class="cell">a new thread</text>
+  <text x="490" y="430" class="cell">parallel tasks;</text><text x="490" y="446" class="mono">--attempts 1–4</text><text x="490" y="462" class="cell">(best-of-N forks)</text>
+  <text x="718" y="430" class="mono">--fork-session</text><text x="718" y="446" class="mono">/branch</text>
+  <text x="946" y="430" class="mono">/restore</text><text x="946" y="446" class="cell">re-prompts the tool;</text><text x="946" y="462" class="mono">/chat</text><text x="946" y="462" class="cell" dx="48">tags</text>
+
+  <!-- ROW 5: resume -->
+  <rect x="60" y="482" width="1080" height="80" class="rstripe"/>
+  <rect x="60" y="482" width="190" height="80" class="rb"/><text x="70" y="508" class="rowh">resume</text>
+  <text x="262" y="514" class="mono">codex resume [--last]</text><text x="262" y="530" class="cell">replays the rollout</text><text x="262" y="546" class="cell">(conversation only)</text>
+  <text x="490" y="514" class="cell">follow-ups in the</text><text x="490" y="530" class="cell">same task; container</text><text x="490" y="546" class="cell">cached ≤ ~12h</text>
+  <text x="718" y="514" class="mono">--continue / --resume</text><text x="718" y="530" class="cell">picks a prior session</text>
+  <text x="946" y="514" class="mono">gemini -r</text><text x="946" y="530" class="cell">+ --session-summary</text>
+
+  <!-- ROW 6: can't undo -->
+  <rect x="60" y="566" width="190" height="80" class="rb"/><text x="70" y="592" class="rowh">can't undo</text>
+  <text x="262" y="598" class="cell">file edits · shell</text><text x="262" y="614" class="cell">commands · pushes ·</text><text x="262" y="630" class="cell">network</text>
+  <text x="490" y="598" class="cell">a merged PR · setup-</text><text x="490" y="614" class="cell">script side effects ·</text><text x="490" y="630" class="cell">external effects</text>
+  <text x="718" y="598" class="cell">bash effects · pushes ·</text><text x="718" y="614" class="cell">your own hand-edits ·</text><text x="718" y="630" class="cell">protected paths</text>
+  <text x="946" y="598" class="cell">shell commands ·</text><text x="946" y="614" class="cell">pushes; needs a git</text><text x="946" y="630" class="cell">repo; .gitignored files</text>
+
+  <!-- ROW 7: concurrency -->
+  <rect x="60" y="650" width="1080" height="80" class="rstripe"/>
+  <rect x="60" y="650" width="190" height="80" class="rb"/><text x="70" y="676" class="rowh">concurrent actors</text>
+  <text x="262" y="682" class="cell">none — sole owner</text><text x="262" y="698" class="cell">of the checkout</text><text x="262" y="714" class="cell">assumed</text>
+  <text x="490" y="682" class="cell">parallel branches →</text><text x="490" y="698" class="cell">you merge them</text>
+  <text x="718" y="682" class="cell">none — sole owner</text><text x="718" y="698" class="cell">assumed</text>
+  <text x="946" y="682" class="cell">none — /restore</text><text x="946" y="698" class="cell">clobbers concurrent</text><text x="946" y="714" class="cell">edits (git clean -fd)</text>
+
+  <rect x="280" y="746" width="640" height="40" class="soft"/><text x="600" y="772" class="rowh" text-anchor="middle">Strong on the decision ledger. Thin on the effect ledger. Blank on the obligation ledger.</text>
+</svg>

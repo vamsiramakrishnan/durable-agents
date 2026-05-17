@@ -1,0 +1,42 @@
+apiVersion: tape.dev/v1
+kind: TapeProject
+
+project:
+  name: {{ name }}
+  environment: dev
+
+agent:
+  framework: adk
+  app_name: {{ name }}
+  # Point this at the module:attr that builds your existing root agent.
+  entrypoint: app.agent:root_agent
+  runner_factory: app.tape_runtime:build_durable_runner
+  deployment_target: cloud_run
+
+tape:
+  url: ${TAPE_URL:-tape://localhost:7878}
+  server:
+    image: ghcr.io/vamsiramakrishnan/tape-server:latest
+    target: cloud_run
+  store:
+    kind: {{ store }}
+{% if store != "sqlite" %}    url_secret: TAPE_STORE_URL
+{% else %}    url: sqlite:./.tape/dev.db
+{% endif %}  events:
+    kind: {{ events }}
+  reactors:
+    recovery:     {enabled: true}
+    reconciler:   {enabled: true}
+    outbox:       {enabled: true}
+    timers:       {enabled: true}
+    compensation: {enabled: true}
+
+gcp:
+  project_id: ${GOOGLE_CLOUD_PROJECT}
+  region: {{ region }}
+  artifact_registry_repository: tape
+  service_account_prefix: tape
+
+tenancy:
+  mode: single
+  tenant_id: default

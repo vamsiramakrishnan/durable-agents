@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>The Landscape</title>
+  <desc>Durable execution tools plotted by operational footprint and scope; agent frameworks with bolted-on durability shown as a separate row to put a durable engine underneath.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .axis{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .axissub{font:400 12.5px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .name{font:700 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .small{font:400 12.5px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .axisline{stroke:#1f1f1f;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .grid{stroke:#e0dccf;stroke-width:1}
+      .node{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.7;rx:12}
+      .nodec{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:12}
+      .fw{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.7;rx:12}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="54" class="title">The Landscape</text>
+  <text x="60" y="82" class="subtitle">Same architectural pattern, different deployment models — and one row to put a durable engine underneath, not the row that replaces it.</text>
+
+  <!-- plot: x 240..1140, y 540..150 -->
+  <line x1="450" y1="150" x2="450" y2="540" class="grid"/><line x1="660" y1="150" x2="660" y2="540" class="grid"/><line x1="870" y1="150" x2="870" y2="540" class="grid"/>
+  <line x1="240" y1="370" x2="1140" y2="370" class="grid"/>
+  <path d="M240,540 L1160,540" class="axisline"/><text x="690" y="572" class="axis" text-anchor="middle">OPERATIONAL FOOTPRINT  →</text>
+  <text x="330" y="592" class="axissub" text-anchor="middle">in-process library</text><text x="555" y="592" class="axissub" text-anchor="middle">single binary</text><text x="765" y="592" class="axissub" text-anchor="middle">clustered service</text><text x="1010" y="592" class="axissub" text-anchor="middle">cloud-managed</text>
+  <path d="M240,540 L240,140" class="axisline"/><text x="120" y="345" class="axis" transform="rotate(-90 120 345)" text-anchor="middle">SCOPE  ↑</text>
+  <text x="205" y="540" class="axissub" text-anchor="end">lightweight</text><text x="205" y="556" class="axissub" text-anchor="end">workflow runtime</text>
+  <text x="205" y="180" class="axissub" text-anchor="end">long-running · sagas ·</text><text x="205" y="196" class="axissub" text-anchor="end">multi-day · full</text>
+
+  <!-- nodes -->
+  <rect x="270" y="430" width="140" height="46" class="nodec"/><text x="340" y="450" class="name" text-anchor="middle">DBOS</text><text x="340" y="468" class="tiny" text-anchor="middle">in-process · Postgres</text>
+  <rect x="430" y="450" width="170" height="46" class="nodec"/><text x="515" y="470" class="name" text-anchor="middle">Inngest · Hatchet</text><text x="515" y="488" class="tiny" text-anchor="middle">hosted · lightweight</text>
+  <rect x="560" y="280" width="150" height="46" class="node"/><text x="635" y="300" class="name" text-anchor="middle">Restate</text><text x="635" y="318" class="tiny" text-anchor="middle">single binary · Rust</text>
+  <rect x="760" y="180" width="160" height="46" class="node"/><text x="840" y="200" class="name" text-anchor="middle">Temporal</text><text x="840" y="218" class="tiny" text-anchor="middle">clustered · full scope</text>
+  <rect x="960" y="240" width="200" height="68" class="nodec"/><text x="1060" y="260" class="name" text-anchor="middle">cloud-native</text><text x="1060" y="278" class="tiny" text-anchor="middle">Step Functions · Azure</text><text x="1060" y="294" class="tiny" text-anchor="middle">Durable Functions · CF Workflows</text>
+
+  <!-- agent framework band -->
+  <rect x="240" y="608" width="920" height="60" class="fw"/>
+  <text x="700" y="630" class="name" text-anchor="middle">Agent frameworks with bolted-on durability — LangGraph · CrewAI · ADK</text>
+  <text x="700" y="650" class="small" text-anchor="middle">checkpoints at node boundaries · patterns as user discipline  →  put a durable engine *underneath*, don't rely on this layer's own durability</text>
+</svg>
