@@ -1326,6 +1326,11 @@ impl RunStore for BigtableRunStore {
         Ok(task_from(&tid, &m))
     }
     async fn claim_tasks(&self, reaction_id: &str, shard: i32, owner: &str, lease_ms: i64, max: i32, now_ms: i64) -> StoreResult<Vec<Task>> {
+        if owner.is_empty() {
+            // See the SQL backend: a claim with `lease_owner=''` would alias
+            // unclaimed PENDING rows in subsequent complete/nack predicates.
+            return Err(StoreError::msg("claim_tasks: owner is required"));
+        }
         let lease_ms = if lease_ms > 0 { lease_ms } else { 60_000 };
         let max = if max > 0 { max } else { 16 };
         let now = if now_ms > 0 { now_ms } else { super::now_ms() };
@@ -1373,7 +1378,18 @@ impl RunStore for BigtableRunStore {
         Ok(out)
     }
     async fn complete_task(&self, task_id: &str, owner: &str) -> StoreResult<Option<Task>> {
+        if owner.is_empty() {
+            // Bigtable's CheckAndMutateRow only enforces lease_owner==owner;
+            // owner="" would match unleased PENDING rows. Reject up front so
+            // the CAS predicate can't accidentally fire on unclaimed work.
+            return Err(StoreError::msg("complete_task: owner is required"));
+        }
         // CAS on lease_owner: predicate matches only if lease_owner == owner.
+        // The lease_owner invariant (only set non-empty by claim_tasks, which
+        // simultaneously sets status=CLAIMED; only reset to '' by complete_
+        // task / nack_task, which simultaneously clear the claimed state)
+        // means matching lease_owner==owner implies status==CLAIMED on this
+        // backend without a second predicate hop.
         let predicate = predicate_qualifier_equals("lease_owner", owner.as_bytes());
         let ok = check_and_mutate(self, &rk_task(task_id), predicate, vec![
             set("status", iv(TaskStatus::Done as i64)),
@@ -1393,9 +1409,16 @@ impl RunStore for BigtableRunStore {
         }
     }
     async fn nack_task(&self, task_id: &str, owner: &str, error: &str, permanent: bool, now_ms: i64) -> StoreResult<Option<Task>> {
+        if owner.is_empty() {
+            return Err(StoreError::msg("nack_task: owner is required"));
+        }
         let now = if now_ms > 0 { now_ms } else { super::now_ms() };
         let Some(m) = self.read_row(&rk_task(task_id)).await? else { return Ok(None); };
+        // Defensive — the CAS below is the atomic boundary; this in-memory
+        // check just skips the work of computing the next attempt when the
+        // lease clearly isn't ours.
         if m.gs("lease_owner") != owner { return Ok(None); }
+        if m.gi("status") as i32 != TaskStatus::Claimed as i32 { return Ok(None); }
         let attempts = m.gi("attempts") as i32;
         let reaction_id = m.gs("reaction_id");
         let shard = m.gi("shard") as i32;

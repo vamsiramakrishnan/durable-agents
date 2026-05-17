@@ -1238,6 +1238,13 @@ impl RunStore for SqlRunStore {
     }
     async fn claim_tasks(&self, reaction_id: &str, shard: i32, owner: &str, lease_ms: i64,
                          max: i32, now_ms: i64) -> StoreResult<Vec<Task>> {
+        if owner.is_empty() {
+            // A claim with an empty owner would set `lease_owner=''` on the task,
+            // which is the same sentinel new (un-leased) rows carry — that
+            // breaks `complete_task` / `nack_task` lease checks (they'd then
+            // match unclaimed PENDING tasks). Reject up front.
+            return Err(StoreError::msg("claim_tasks: owner is required"));
+        }
         let lease_ms = if lease_ms > 0 { lease_ms } else { 60_000 };
         let max = if max > 0 { max } else { 16 };
         let now = if now_ms > 0 { now_ms } else { super::now_ms() };
@@ -1309,11 +1316,23 @@ impl RunStore for SqlRunStore {
         Ok(out)
     }
     async fn complete_task(&self, task_id: &str, owner: &str) -> StoreResult<Option<Task>> {
+        if owner.is_empty() {
+            // owner="" would match unleased PENDING rows (lease_owner='' is the
+            // default), letting a caller mark not-yet-claimed work as DONE and
+            // silently drop it. The contract is: claim → complete (with the
+            // same owner). Reject empty owner unambiguously.
+            return Err(StoreError::msg("complete_task: owner is required"));
+        }
         let now = now_ms();
+        // Conditional UPDATE includes both `lease_owner = owner` AND
+        // `status = CLAIMED`. This (a) prevents a stale caller from clobbering
+        // a row another dispatcher has reclaimed after lease expiry, and (b)
+        // refuses to complete a task that was never claimed in the first place.
         let n = self.d().exec(
             "UPDATE tape_tasks SET status=?2, completed_at_ms=?3, lease_owner='', lease_expires_at_ms=0 \
-             WHERE task_id=?1 AND lease_owner=?4",
-            vec![task_id.into(), (TaskStatus::Done as i32).into(), now.into(), owner.into()],
+             WHERE task_id=?1 AND lease_owner=?4 AND status=?5",
+            vec![task_id.into(), (TaskStatus::Done as i32).into(), now.into(), owner.into(),
+                 (TaskStatus::Claimed as i32).into()],
         ).await?;
         if n == 0 { return Ok(None); }
         let row = self.d().query_opt(
@@ -1327,25 +1346,41 @@ impl RunStore for SqlRunStore {
     }
     async fn nack_task(&self, task_id: &str, owner: &str, error: &str, permanent: bool, now_ms: i64)
         -> StoreResult<Option<Task>> {
+        if owner.is_empty() {
+            // owner="" would match new PENDING rows (lease_owner='' default),
+            // letting a caller "nack" tasks they never claimed and silently
+            // bump them toward the DLQ. Same reasoning as complete_task.
+            return Err(StoreError::msg("nack_task: owner is required"));
+        }
         let now = if now_ms > 0 { now_ms } else { super::now_ms() };
-        // Read the task; decide between retry and DLQ.
+        // Read attempts / backoff / dlq_after to decide retry vs DLQ. The
+        // SELECT is gated on lease_owner so it returns None if the caller
+        // never had the lease — but the SELECT itself is not the safety
+        // boundary: the UPDATE below re-checks the predicate atomically so
+        // a TOCTOU with `claim_tasks` after this SELECT cannot win.
         let cur = self.d().query_opt(
             "SELECT attempts, COALESCE((SELECT retry_backoff_ms FROM tape_reactions WHERE reaction_id=t.reaction_id),1000), \
                     COALESCE((SELECT dlq_after_n FROM tape_reactions WHERE reaction_id=t.reaction_id),5) \
-             FROM tape_tasks t WHERE task_id=?1 AND lease_owner=?2",
-            vec![task_id.into(), owner.into()],
+             FROM tape_tasks t WHERE task_id=?1 AND lease_owner=?2 AND status=?3",
+            vec![task_id.into(), owner.into(), (TaskStatus::Claimed as i32).into()],
         ).await?;
         let Some(row) = cur else { return Ok(None); };
         let attempts = row.i32(0);
         let backoff = row.i64(1).max(0);
         let dlq_after = row.i32(2);
         let to_dlq = permanent || attempts >= dlq_after;
-        if to_dlq {
+        // CRITICALLY: the UPDATE re-checks `lease_owner = owner AND
+        // status = CLAIMED`. If the lease has expired and another dispatcher
+        // reclaimed the row between the SELECT and this UPDATE, the predicate
+        // fails (lease_owner has been overwritten with the new owner) and we
+        // return None — we do NOT clobber the new claim.
+        let claimed = TaskStatus::Claimed as i32;
+        let updated = if to_dlq {
             self.d().exec(
                 "UPDATE tape_tasks SET status=?2, last_error=?3, lease_owner='', lease_expires_at_ms=0 \
-                 WHERE task_id=?1",
-                vec![task_id.into(), (TaskStatus::Dlq as i32).into(), error.into()],
-            ).await?;
+                 WHERE task_id=?1 AND lease_owner=?4 AND status=?5",
+                vec![task_id.into(), (TaskStatus::Dlq as i32).into(), error.into(), owner.into(), claimed.into()],
+            ).await?
         } else {
             // exponential backoff: backoff * 2^(attempts-1), capped at 1h.
             let shift = (attempts.max(1) - 1).min(20) as u32;
@@ -1354,10 +1389,12 @@ impl RunStore for SqlRunStore {
             self.d().exec(
                 "UPDATE tape_tasks SET status=?2, next_attempt_at_ms=?3, last_error=?4, \
                                        lease_owner='', lease_expires_at_ms=0 \
-                 WHERE task_id=?1",
-                vec![task_id.into(), (TaskStatus::Pending as i32).into(), (now + delay).into(), error.into()],
-            ).await?;
-        }
+                 WHERE task_id=?1 AND lease_owner=?5 AND status=?6",
+                vec![task_id.into(), (TaskStatus::Pending as i32).into(), (now + delay).into(), error.into(),
+                     owner.into(), claimed.into()],
+            ).await?
+        };
+        if updated == 0 { return Ok(None); }
         let row = self.d().query_opt(
             "SELECT task_id, reaction_id, shard, source_run_id, source_global_seq, subject, payload_json, \
                     status, attempts, next_attempt_at_ms, lease_owner, lease_expires_at_ms, last_error, \

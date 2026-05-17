@@ -584,4 +584,164 @@ mod tests {
             "coalesce_task against a CLAIMED task must be a no-op"
         );
     }
+
+    // ── Lease-safety regression tests (Codex review on the PR) ───────────────
+    //
+    // Pre-fix bugs:
+    //   1. complete_task only checked lease_owner == owner, not status =
+    //      CLAIMED. Callers passing owner="" could match unleased PENDING
+    //      rows (lease_owner='' default) and silently drop work.
+    //   2. nack_task SELECTed (task_id, lease_owner) but then UPDATEd only
+    //      by task_id — a TOCTOU race: if the lease expired between the
+    //      SELECT and the UPDATE and another dispatcher reclaimed the row,
+    //      the stale caller's nack would clobber the new claim.
+    //
+    // The fixes (sql.rs / bigtable.rs):
+    //   * reject empty owner at the API boundary;
+    //   * include `lease_owner=? AND status=CLAIMED` in the conditional
+    //     UPDATE itself (atomic predicate, no TOCTOU window).
+
+    async fn helper_register_and_make_pending_task(
+        store: &Arc<dyn RunStore>,
+        rid: &str,
+    ) -> String {
+        let r = Reaction {
+            reaction_id: "r-lease".into(),
+            name: "lease".into(),
+            subject_pattern: "/tape/effect/pending/**".into(),
+            predicate_cel: String::new(),
+            handler_kind: HandlerKind::Task as i32,
+            agent_app: String::new(),
+            publish_target: String::new(),
+            max_concurrency: 1,
+            rate_limit_per_s: 0,
+            debounce_ms: 0,
+            retry_max: 5,
+            retry_backoff_ms: 1,        // tiny so the test doesn't sit on backoff
+            dlq_after_n: 5,
+            num_shards: 1,
+            created_at_ms: 0,
+            deleted: false,
+            bootstrap_from_head: false,
+        };
+        store.register_reaction(&r).await.unwrap();
+        pending_effect(store, rid, "sweep", 0).await;
+        tick(store).await.unwrap();
+        let tasks = store.list_tasks("r-lease", 0, 10).await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        tasks[0].task_id.clone()
+    }
+
+    #[tokio::test]
+    async fn complete_task_rejects_empty_owner() {
+        let store = open(":memory:").await.unwrap();
+        let rid = begin_test_run(&store, "inv-empty-complete").await;
+        let task_id = helper_register_and_make_pending_task(&store, &rid).await;
+        // Owner="" must NOT match the unleased row.
+        let err = store.complete_task(&task_id, "").await.unwrap_err();
+        assert!(
+            err.to_string().contains("owner is required"),
+            "expected 'owner is required', got {err}"
+        );
+        // Task must remain PENDING.
+        let after = store.list_tasks("r-lease", 0, 10).await.unwrap();
+        assert_eq!(after[0].status, TaskStatus::Pending as i32);
+    }
+
+    #[tokio::test]
+    async fn complete_task_refuses_unleased_pending_row() {
+        // Even with a non-empty owner, completing a row that was never
+        // claimed must fail (status != CLAIMED).
+        let store = open(":memory:").await.unwrap();
+        let rid = begin_test_run(&store, "inv-unleased").await;
+        let task_id = helper_register_and_make_pending_task(&store, &rid).await;
+        let res = store.complete_task(&task_id, "did-not-claim").await.unwrap();
+        assert!(res.is_none(), "complete_task on a PENDING row must be a no-op");
+        let after = store.list_tasks("r-lease", 0, 10).await.unwrap();
+        assert_eq!(after[0].status, TaskStatus::Pending as i32);
+    }
+
+    #[tokio::test]
+    async fn nack_task_rejects_empty_owner() {
+        let store = open(":memory:").await.unwrap();
+        let rid = begin_test_run(&store, "inv-empty-nack").await;
+        let task_id = helper_register_and_make_pending_task(&store, &rid).await;
+        let err = store.nack_task(&task_id, "", "boom", false, 0).await.unwrap_err();
+        assert!(
+            err.to_string().contains("owner is required"),
+            "expected 'owner is required', got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn nack_task_does_not_clobber_a_reclaimed_lease() {
+        // The TOCTOU bug: owner A claims, A's lease expires, owner B reclaims,
+        // then A's stale nack arrives. The UPDATE must reject A's nack because
+        // lease_owner is now B (and the predicate also requires status=CLAIMED,
+        // which is true post-reclaim — so the lease_owner predicate is the
+        // active safety boundary here).
+        let store = open(":memory:").await.unwrap();
+        let rid = begin_test_run(&store, "inv-toctou").await;
+        let task_id = helper_register_and_make_pending_task(&store, &rid).await;
+
+        // A claims with a 1-ms lease so we can expire it immediately.
+        let now_a = now_ms();
+        let claimed_a = store
+            .claim_tasks("r-lease", -1, "owner-A", 1, 10, now_a)
+            .await
+            .unwrap();
+        assert_eq!(claimed_a.len(), 1);
+        assert_eq!(claimed_a[0].lease_owner, "owner-A");
+
+        // Time passes; A's 1-ms lease has expired.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let now_b = now_ms();
+        let claimed_b = store
+            .claim_tasks("r-lease", -1, "owner-B", 60_000, 10, now_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            claimed_b.len(), 1,
+            "B should be able to steal A's expired lease"
+        );
+        assert_eq!(claimed_b[0].lease_owner, "owner-B");
+        let attempts_after_b_claim = claimed_b[0].attempts;
+
+        // A's stale nack must NOT mutate the row — B's claim stands.
+        let stale_result = store
+            .nack_task(&task_id, "owner-A", "i thought i still had it", false, 0)
+            .await
+            .unwrap();
+        assert!(
+            stale_result.is_none(),
+            "stale nack from A must be a no-op now that B has the lease"
+        );
+        let after = store.list_tasks("r-lease", 0, 10).await.unwrap();
+        assert_eq!(after[0].lease_owner, "owner-B",
+            "owner-B's lease must survive owner-A's stale nack");
+        assert_eq!(after[0].status, TaskStatus::Claimed as i32,
+            "status must remain CLAIMED — A's nack did not reset it");
+        assert_eq!(after[0].attempts, attempts_after_b_claim,
+            "attempts must NOT have been incremented by A's nack");
+
+        // B can still complete the task it actually owns.
+        let done = store.complete_task(&task_id, "owner-B").await.unwrap();
+        assert!(done.is_some());
+        assert_eq!(done.unwrap().status, TaskStatus::Done as i32);
+    }
+
+    #[tokio::test]
+    async fn claim_tasks_rejects_empty_owner() {
+        let store = open(":memory:").await.unwrap();
+        let rid = begin_test_run(&store, "inv-empty-claim").await;
+        let _ = helper_register_and_make_pending_task(&store, &rid).await;
+        let err = store
+            .claim_tasks("r-lease", -1, "", 1000, 10, now_ms())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("owner is required"),
+            "expected 'owner is required', got {err}"
+        );
+    }
 }
