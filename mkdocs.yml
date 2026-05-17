@@ -1,5 +1,5 @@
-site_name: Tape — durable agents
-site_description: A durable-execution substrate for ADK agents.
+site_name: Tape
+site_description: A durable-execution substrate for ADK agents — journal, recover, dispatch exactly-once.
 site_url: https://vamsiramakrishnan.github.io/durable-agents/
 repo_url: https://github.com/vamsiramakrishnan/durable-agents
 repo_name: vamsiramakrishnan/durable-agents
@@ -18,39 +18,51 @@ theme:
     text: Inter
     code: JetBrains Mono
   features:
+    # Header / chrome
     - announce.dismiss
-    - content.action.edit
-    - content.code.annotate
-    - content.code.copy
-    - content.tabs.link
-    - content.tooltips
+    - header.autohide
+    # Navigation
     - navigation.footer
     - navigation.indexes
     - navigation.instant
     - navigation.instant.progress
+    - navigation.path
+    - navigation.prune
     - navigation.sections
     - navigation.tabs
     - navigation.tabs.sticky
     - navigation.top
     - navigation.tracking
+    # Search
     - search.highlight
     - search.share
     - search.suggest
+    # Table of contents
     - toc.follow
+    # Content actions
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate
+    - content.code.copy
+    - content.code.select
+    - content.tabs.link
+    - content.tooltips
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: black
       accent: indigo
-      toggle: { icon: material/weather-night, name: Switch to dark }
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: black
       accent: indigo
-      toggle: { icon: material/weather-sunny, name: Switch to light }
+      toggle: { icon: material/weather-sunny, name: Switch to light mode }
   icon:
     repo: fontawesome/brands/github
     edit: material/file-edit-outline
+    view: material/eye-outline
+    annotation: material/arrow-right-circle
 
 markdown_extensions:
   - abbr
@@ -62,10 +74,12 @@ markdown_extensions:
   - meta
   - tables
   - toc:
-      permalink: true
+      permalink: ⌗
       title: On this page
+      toc_depth: 3
   - pymdownx.betterem
   - pymdownx.caret
+  - pymdownx.critic
   - pymdownx.details
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
@@ -93,6 +107,8 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds: { case: lower }
   - pymdownx.tasklist:
       custom_checkbox: true
       clickable_checkbox: true
@@ -127,33 +143,68 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/vamsiramakrishnan/durable-agents
+      name: durable-agents on GitHub
   version:
     provider: mike
     default: latest
+  status:
+    new: New page
+    deprecated: Deprecated
   generator: false
 
 extra_css:
   - assets/extra.css
 
-# Navigation — keep this hand-curated; the tree is the table of contents.
+# ─────────────────────────────────────────────────────────────────────────────
+# Navigation
+#
+# The tree IS the table of contents. Keep it hand-curated. The progression is
+# deliberate: land → orient → learn the model → do the thing → look it up →
+# read the why.
+# ─────────────────────────────────────────────────────────────────────────────
 nav:
   - Home: index.md
-  - Get started:
-      - Quickstart: quickstart.md
-      - Local dev: local-dev.md
+
+  - Start here:
+      - start/index.md
+      - Install: start/install.md
+      - Quickstart (10 min): quickstart.md
       - ADK on Tape: adk.md
-  - Guides:
-      - Non-idempotent upstreams: non-idempotent-upstreams.md
-      - Reactors: reactors.md
-      - Stores: stores.md
-      - Observability: observability.md
-      - Tenancy: tenancy.md
-  - Deploy on GCP:
-      - Cloud Run: gcp-cloud-run.md
+      - Local development: local-dev.md
+      - First crash-survival: start/first-crash-survival.md
+
+  - Concepts:
+      - concepts/index.md
+      - Why Tape exists: concepts/why-tape.md
+      - The journal: concepts/journal.md
+      - Effects & idempotency: concepts/effects.md
+      - UNKNOWN — the third outcome: concepts/unknown.md
+      - Reactors: concepts/reactors.md
+      - Compensation & sagas: concepts/compensation.md
+      - Replay & resume: concepts/replay.md
+      - Reactive shared state: concepts/reactive-state.md
+      - Tape vs. alternatives: concepts/alternatives.md
+
+  - How-to guides:
+      - how-to/index.md
+      - Wire a non-idempotent upstream: non-idempotent-upstreams.md
+      - Configure reactors: reactors.md
+      - Pick a storage backend: stores.md
+      - Add observability: observability.md
+      - Configure tenancy: tenancy.md
+      - Cancel & timeout patterns: how-to/cancel-timeout.md
+      - Write a custom connector: how-to/custom-connector.md
+
+  - Deploy:
+      - deploy/index.md
+      - Cloud Run (recommended): gcp-cloud-run.md
       - GKE Autopilot: gcp-gke.md
-  - SDK Reference:
+      - IAM cheat sheet: deploy/iam.md
+
+  - Reference:
       - reference/index.md
-      - Python:
+      - Cheat sheet: reference/cheatsheet.md
+      - Python SDK:
           - reference/python/index.md
           - durable_app: reference/python/durable.md
           - effect & outbox_tool: reference/python/effect.md
@@ -162,20 +213,28 @@ nav:
           - Observability: reference/python/obs.md
           - Tenancy: reference/python/tenancy.md
           - Client: reference/python/client.md
-      - Go:
+      - Go SDK:
           - reference/go/index.md
           - Package reference: reference/go/api.md
-      - TypeScript:
+      - TypeScript SDK:
           - reference/typescript/index.md
           - Package reference: reference/typescript/api.md
-      - Java:
+      - Java SDK:
           - reference/java/index.md
           - Javadoc: reference/java/javadoc.md
-  - CLI Reference:
-      - reference/cli/index.md
+      - CLI:
+          - reference/cli/index.md
+
   - Design:
       - design/index.md
-      - Treatise: design/agents-that-act-treatise.md
+      - Treatise (long-form): design/agents-that-act-treatise.md
+      - Rhythmic treatise: design/agents-that-act-rhythmic.md
       - Tape spec: design/tape.md
       - Event bus: design/tape-event-bus.md
       - Parity matrix: design/parity.md
+
+  - Help:
+      - help/index.md
+      - FAQ: help/faq.md
+      - Troubleshooting: help/troubleshooting.md
+      - Glossary: help/glossary.md

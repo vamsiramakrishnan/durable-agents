@@ -1,34 +1,385 @@
-/* Tape — small Material overrides. Keep this short. */
+/* ============================================================================
+ * Tape — design system layered on top of MkDocs Material.
+ *
+ * Three goals:
+ *   1. Make the page feel calm and dense — like a good README, not a brochure.
+ *   2. Make navigation obvious — sections, breadcrumbs, "you are here" cues.
+ *   3. Make code, tables, and admonitions a pleasure to read.
+ *
+ * Keep it short, keep it boring. No animations beyond hover/focus cues.
+ * ========================================================================== */
 
 :root {
-  --md-text-font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --md-code-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --md-text-font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Helvetica Neue", sans-serif;
+  --md-code-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular,
+    "Cascadia Mono", "Liberation Mono", Menlo, Consolas, monospace;
+
+  /* Tape accents — match the dark/indigo Material palette without fighting it. */
+  --tape-accent: #4f46e5;       /* indigo-600 */
+  --tape-accent-soft: rgba(79, 70, 229, 0.10);
+  --tape-good: #16a34a;         /* green-600 */
+  --tape-warn: #d97706;         /* amber-600 */
+  --tape-bad:  #dc2626;         /* red-600 */
+  --tape-rule: rgba(0, 0, 0, 0.06);
+
+  --tape-radius: 6px;
+  --tape-radius-lg: 10px;
 }
 
-/* Tighter hero on the landing page. */
-.md-typeset h1 { font-weight: 600; letter-spacing: -0.01em; }
-.md-typeset h2 { font-weight: 600; letter-spacing: -0.005em; }
+[data-md-color-scheme="slate"] {
+  --tape-accent: #818cf8;       /* indigo-400 in dark */
+  --tape-accent-soft: rgba(129, 140, 248, 0.14);
+  --tape-good: #4ade80;
+  --tape-warn: #fbbf24;
+  --tape-bad:  #f87171;
+  --tape-rule: rgba(255, 255, 255, 0.08);
+}
 
-/* Parity-table flavour: render `✓` / `✗` more prominently. */
+/* ── Typography ────────────────────────────────────────────────────────── */
+
+.md-typeset {
+  font-feature-settings: "ss01", "cv11", "kern";
+  line-height: 1.65;
+}
+
+.md-typeset h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin-bottom: 0.6em;
+}
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  border-top: 1px solid var(--tape-rule);
+  padding-top: 1.4em;
+  margin-top: 1.8em;
+}
+.md-typeset h3 {
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  margin-top: 1.6em;
+}
+.md-typeset h4 { font-weight: 600; }
+
+.md-typeset h2:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 1.2em;
+}
+
+/* The first H2 right after the H1 doesn't need the rule. */
+.md-typeset > h1 + h2 {
+  border-top: none;
+  padding-top: 0.4em;
+}
+
+/* Permalink anchors — subtler. */
+.md-typeset .headerlink {
+  color: var(--md-default-fg-color--lightest);
+  font-weight: 400;
+}
+.md-typeset h2:hover .headerlink,
+.md-typeset h3:hover .headerlink,
+.md-typeset h4:hover .headerlink { color: var(--tape-accent); }
+
+/* ── Hero (landing page) ───────────────────────────────────────────────── */
+
+.tape-hero-title {
+  font-size: 2.6rem !important;
+  line-height: 1.1 !important;
+  background: linear-gradient(135deg,
+    var(--md-default-fg-color) 0%,
+    var(--md-default-fg-color--light) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-top: 1.2rem !important;
+  margin-bottom: 0.6rem !important;
+}
+
+.tape-hero-sub {
+  font-size: 1.1rem;
+  color: var(--md-default-fg-color--light);
+  max-width: 60ch;
+  margin-bottom: 1.6rem !important;
+}
+
+.tape-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1.2rem 0 2rem;
+}
+.tape-hero-actions .md-button { margin: 0; }
+
+.tape-section-h {
+  font-size: 1.45rem !important;
+  margin-top: 2.6em !important;
+}
+
+/* Status-icon flecks in tables. */
+.tape-good { color: var(--tape-good); }
+.tape-warn { color: var(--tape-warn); }
+.tape-bad  { color: var(--tape-bad);  }
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+
+.md-typeset .grid.cards.tape-card-grid > ul,
+.md-typeset .grid.cards.tape-card-grid {
+  gap: 1rem;
+}
+
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid.cards.tape-card-grid > ul > li {
+  border: 1px solid var(--tape-rule);
+  border-radius: var(--tape-radius-lg);
+  padding: 1.1rem 1.2rem;
+  background: var(--md-default-bg-color);
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid.cards.tape-card-grid > ul > li:hover {
+  border-color: var(--tape-accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 18px -8px var(--tape-accent-soft);
+}
+
+.md-typeset .grid.cards > ul > li > hr {
+  margin: 0.5em 0 0.7em;
+  border: 0;
+  border-top: 1px solid var(--tape-rule);
+}
+
+.md-typeset .grid.cards > ul > li > p:first-child > strong {
+  font-size: 1.02rem;
+  letter-spacing: -0.005em;
+}
+
+.md-typeset .grid.cards .twemoji.lg svg,
+.md-typeset .grid.cards .twemoji.middle svg {
+  width: 1.4rem;
+  height: 1.4rem;
+  vertical-align: middle;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.md-typeset .md-button {
+  border-radius: var(--tape-radius);
+  border-width: 1px;
+  transition: transform 120ms ease, box-shadow 120ms ease,
+              background-color 120ms ease, color 120ms ease;
+}
+.md-typeset .md-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px -6px var(--tape-accent-soft);
+}
+
+/* ── Code blocks ───────────────────────────────────────────────────────── */
+
+.md-typeset pre > code {
+  border-radius: var(--tape-radius);
+  line-height: 1.55;
+}
+
+.md-typeset code {
+  font-feature-settings: "calt", "kern";
+  border-radius: 3px;
+  padding: 0.08em 0.32em;
+  font-size: 0.86em;
+}
+
+/* Inline-code inside headings: don't dwarf the heading. */
+.md-typeset h1 code,
+.md-typeset h2 code,
+.md-typeset h3 code { font-size: 0.92em; }
+
+/* Snippets pulled into a "what's a placeholder" admonition flavour for SDK refs. */
+.md-typeset .admonition.scaffold,
+.md-typeset details.scaffold {
+  border-color: var(--tape-accent);
+  background-color: var(--tape-accent-soft);
+}
+.md-typeset .admonition.scaffold > .admonition-title,
+.md-typeset details.scaffold > summary {
+  background-color: var(--tape-accent-soft);
+  border-color: var(--tape-accent);
+}
+
+/* ── Admonitions: a touch more separation. */
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: var(--tape-radius);
+  border-left-width: 3px;
+}
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+
+.md-typeset table:not([class]) {
+  font-size: 0.86rem;
+  border-radius: var(--tape-radius);
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--tape-rule);
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--md-default-fg-color--lightest);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+.md-typeset table:not([class]) td,
+.md-typeset table:not([class]) th { padding: 0.55rem 0.8rem; }
+
+.md-typeset table:not([class]) tr:hover td {
+  background: var(--tape-accent-soft);
+}
+
+/* Parity-style ticks. */
 .md-typeset td:has(> code:only-child) { font-variant-numeric: tabular-nums; }
 
-/* Mermaid: respect the chosen theme. */
-[data-md-color-scheme="slate"] .mermaid { filter: invert(0.9) hue-rotate(180deg); }
+/* ── Reference page polish ─────────────────────────────────────────────── */
 
-/* Subtle section dividers on long pages. */
-.md-typeset hr { border-bottom: 1px solid var(--md-default-fg-color--lightest); }
-
-/* Reference pages: lift the signature block. */
 .doc-signature {
   background: var(--md-code-bg-color);
   padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-  border-left: 3px solid var(--md-primary-fg-color);
+  border-radius: var(--tape-radius);
+  border-left: 3px solid var(--tape-accent);
   margin-bottom: 1rem;
+  overflow-x: auto;
 }
 
-/* Sleek "what's a placeholder" admonition variant for the SDK reference pages. */
-.md-typeset .admonition.scaffold > .admonition-title {
-  background-color: rgba(99, 102, 241, 0.1);
-  border-color: rgba(99, 102, 241, 0.2);
+.doc-symbol-type {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--md-default-fg-color--light);
+}
+
+/* ── Mermaid: respect the dark theme. */
+[data-md-color-scheme="slate"] .mermaid {
+  filter: invert(0.92) hue-rotate(180deg);
+}
+
+/* ── Section dividers ──────────────────────────────────────────────────── */
+
+.md-typeset hr {
+  border-bottom: 1px solid var(--tape-rule);
+  margin: 2em 0;
+}
+
+/* ── Sidebar navigation ────────────────────────────────────────────────── */
+
+.md-nav__title { font-weight: 700; letter-spacing: 0.02em; }
+
+.md-nav__link {
+  transition: color 100ms ease, background-color 100ms ease;
+  border-radius: 4px;
+  padding: 0.18rem 0.4rem !important;
+}
+
+.md-nav__link:hover {
+  background: var(--tape-accent-soft);
+  color: var(--tape-accent);
+}
+
+.md-nav__link--active {
+  font-weight: 600;
+  color: var(--tape-accent) !important;
+}
+
+/* ── Top tabs ──────────────────────────────────────────────────────────── */
+
+.md-tabs__link {
+  opacity: 0.85;
+  letter-spacing: 0.005em;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.md-tabs__link:hover,
+.md-tabs__link--active {
+  opacity: 1;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+
+.md-footer-meta { font-size: 0.78rem; }
+
+/* ── Search ────────────────────────────────────────────────────────────── */
+
+.md-search__input {
+  font-feature-settings: "kern";
+}
+
+/* ── Right-rail TOC ────────────────────────────────────────────────────── */
+
+.md-nav--secondary .md-nav__title { font-size: 0.74rem; opacity: 0.7; }
+.md-nav--secondary .md-nav__link { font-size: 0.78rem; }
+
+/* ── Glossary <dl> styling ─────────────────────────────────────────────── */
+
+.md-typeset dl {
+  display: grid;
+  grid-template-columns: minmax(10rem, 14rem) 1fr;
+  gap: 0.4rem 1.2rem;
+  align-items: baseline;
+  margin: 1rem 0;
+}
+.md-typeset dl dt {
+  font-weight: 600;
+  color: var(--tape-accent);
+  font-family: var(--md-code-font-family);
+  font-size: 0.92em;
+}
+.md-typeset dl dd { margin: 0; }
+
+@media (max-width: 720px) {
+  .md-typeset dl { grid-template-columns: 1fr; gap: 0.15rem 0; }
+  .md-typeset dl dd { margin: 0 0 0.6rem 0; }
+}
+
+/* ── Index / hub pages — link cards rendered from plain bullet lists. ─── */
+
+.tape-hub ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 0.8rem;
+}
+.tape-hub ul li {
+  border: 1px solid var(--tape-rule);
+  border-radius: var(--tape-radius-lg);
+  padding: 0.9rem 1rem;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.tape-hub ul li:hover {
+  border-color: var(--tape-accent);
+  transform: translateY(-1px);
+}
+.tape-hub ul li > a:first-child {
+  font-weight: 600;
+  font-size: 1.02rem;
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+/* ── Keyboard kbd styling (used in shortcuts / glossary). */
+
+.md-typeset kbd {
+  background: var(--md-default-fg-color--lightest);
+  border-radius: 3px;
+  border: 1px solid var(--tape-rule);
+  box-shadow: 0 1px 0 var(--tape-rule);
+  padding: 0.05em 0.4em;
+  font-size: 0.82em;
+}
+
+/* ── Print: keep things readable. */
+@media print {
+  .md-typeset h2 { break-before: page; }
+  .md-sidebar, .md-tabs, .md-footer-nav { display: none !important; }
 }

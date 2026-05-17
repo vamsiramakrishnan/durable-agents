@@ -1,5 +1,16 @@
 # ADK on Tape — `durable_app(...)` in 15 lines
 
+The wiring entrypoint. One call, four guarantees:
+
+- Every model call is journalled (so a re-driven run doesn't re-ask the
+  model for choices it already made).
+- Every tool call is an [**effect**](concepts/effects.md) with a declared
+  semantics and status.
+- The `Runner` reconnects to the same session on re-drive — ADK's
+  resumability is on.
+- The [**budget**](reference/cheatsheet.md#budget) is enforced *before*
+  each costed boundary and journalled *after*.
+
 ```python
 import tape
 from tape.adk import durable_app
@@ -13,9 +24,7 @@ app, runner = durable_app(
 )
 ```
 
-That's the whole wiring. The plugin journals every model call and every tool
-call, ADK resumability is on, and the `Runner` will reconnect to the same
-session on re-drive.
+That's the whole wiring. → [`durable_app` reference](reference/python/durable.md)
 
 ## The two tool patterns
 
@@ -102,3 +111,14 @@ tape-reactors --runner-from app.agent:build_runner --url tape://localhost:7878
 
 or, in `tape.yaml`, set `agent.runner_factory: app.agent:build_runner` and
 `tape dev` / `tape deploy gcp` wire it through.
+
+## See also
+
+- [**Concepts: effects & idempotency**](concepts/effects.md) — what the
+  decorators *mean*.
+- [**Non-idempotent upstreams**](non-idempotent-upstreams.md) — the
+  outbox pattern, end-to-end, with a real bank example.
+- [**Custom connector**](how-to/custom-connector.md) — when one of the
+  built-ins doesn't fit your upstream.
+- [**Reactors**](reactors.md) — how the runner factory is used during
+  recovery.

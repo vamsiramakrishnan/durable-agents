@@ -50,3 +50,11 @@ qualification, or when AlloyDB is overkill.
   * **Multi-region or extreme scale**: Bigtable.
   * **Eventually**: Spanner once the backend lands.
   * **Local + tests**: SQLite.
+
+## See also
+
+- [**The journal**](concepts/journal.md) — what's stored, structurally.
+- [**Cloud Run deployment**](gcp-cloud-run.md) — how the store is wired
+  via Secret Manager + the AlloyDB Auth Proxy sidecar.
+- [**Troubleshooting / Storage**](help/troubleshooting.md#storage) — when
+  things go wrong with the store.

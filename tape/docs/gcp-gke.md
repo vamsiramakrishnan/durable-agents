@@ -37,3 +37,10 @@ emails created by the IAM Terraform module. The chart wires the KSAs with the
 For the self-managed manifest in `tape/deploy/k8s/tape.yaml`, store-specific
 overlays live in `tape/deploy/gcp/k8s/overlays/{alloydb,bigtable,spanner}/`.
 They're useful if you'd rather not pull in Helm; Helm is the recommended path.
+
+## See also
+
+- [**Cloud Run (recommended)**](gcp-cloud-run.md) — the simpler topology.
+- [**IAM cheat sheet**](deploy/iam.md) — the SAs + roles you'll bind to
+  KSAs via Workload Identity.
+- [**Stores**](stores.md) — picking the right backend.

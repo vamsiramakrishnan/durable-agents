@@ -55,3 +55,10 @@ shape — it's the canary.
 
 If `cargo` is installed (or a `tape-server` binary is on PATH), `tape dev`
 runs the server natively against SQLite. Faster startup; same contract.
+
+## See also
+
+- [**First crash-survival**](start/first-crash-survival.md) — the
+  guided walkthrough of `tape dev --kill-resume-demo`.
+- [**Stores**](stores.md) — backend trade-offs and operating notes.
+- [**CLI: `tape dev`**](reference/cli/index.md#tape-dev) — every flag.

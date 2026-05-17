@@ -57,3 +57,12 @@ JSON in
     failing to resolve, the upstream is degraded, or a status check is missing.
   * `tape/obligations/unresolved > 0` for > 15m — compensation is failing.
   * `tape/reactor/lag_ms > 60_000` — a reactor is starved; check pod CPU.
+
+## See also
+
+- [**Observability (Python reference)**](reference/python/obs.md) — the
+  `tape.obs` API for emitting your own structured logs + spans.
+- [**Reactors**](reactors.md) — what each reactor logs and why
+  `lag_ms` matters.
+- [**Troubleshooting**](help/troubleshooting.md) — what to do when one
+  of these alerts fires.
