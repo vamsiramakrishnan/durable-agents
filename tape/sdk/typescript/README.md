@@ -54,6 +54,38 @@ A `TapePlugin` / `TapeSessionService` for the JS/TS port of ADK — mechanical
 work once that port settles; the protocol is the stable surface and the Python
 adapter in [`../python/tape/adk/`](../python/tape/adk/) is the reference.
 
+### Reactions (event bus)
+
+The TS SDK exposes the event-bus surface in [`design-principles/tape-event-bus.md`](../../../design-principles/tape-event-bus.md):
+register a server-side reaction (subject pattern + optional CEL predicate +
+handler kind), claim and run tasks via the in-proc dispatcher, or forward
+PUBLISH-kind tasks to a Cloud Pub/Sub topic.
+
+```ts
+import { on, onValueChange, registerAll, runDispatcher } from 'tape-ts';
+
+// Declare reactions at startup. Nothing is sent to the server yet.
+on('/tape/effect/failed/**', async ({ task, payload }) => {
+  console.error('effect failed:', task.subject, payload);
+}, { maxConcurrency: 4, retryMax: 3, dlqAfterN: 3 });
+
+onValueChange('treasury', 'fx_rate', async ({ payload }) => {
+  await repriceBook(payload.value.value_json);
+}, { predicate: 'double(payload.value.value_json) > 1.10',
+     maxConcurrency: 8, debounceMs: 500 });
+
+// Push to the server, then run the in-proc dispatcher loop.
+await registerAll({ url: 'tape://localhost:7878' });
+await runDispatcher({ url: 'tape://localhost:7878', register: false });
+```
+
+For low-level access, `TapeClient` exposes every new RPC directly
+(`registerReaction`, `deregisterReaction`, `listReactions`, `claimTasks`,
+`completeTask`, `nackTask`, `listTasks`, `subscribeBySubject`) plus the new
+`HandlerKind` / `TaskStatus` enums. A `runPubSubBridge({ project, topic })`
+helper bridges PUBLISH-kind tasks to Pub/Sub (lazy-imports
+`@google-cloud/pubsub`).
+
 ### Re-syncing the proto
 
 ```bash

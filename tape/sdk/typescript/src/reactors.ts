@@ -118,11 +118,37 @@ export async function runReactors(opts: RunReactorsOptions = {}): Promise<void> 
 }
 
 // ── WAL fan-out ─────────────────────────────────────────────────────────────
-export async function runEventFanout(opts: { url?: string; sink: (entry: any) => Promise<void> | void; fromTsMs?: number; runId?: string; kind?: string }): Promise<void> {
+// Prefers the new event-bus path (`SubscribeBySubject` + `from_global_seq`)
+// when `fromGlobalSeq` or `subjectPattern` is supplied; falls back to the
+// legacy `SubscribeEvents` cursor (`from_ts_ms`/`run_id`/`kind`) for back-
+// compat with pre-event-bus callers.
+export async function runEventFanout(opts: {
+  url?: string;
+  sink: (entry: any) => Promise<void> | void;
+  fromTsMs?: number;            // legacy
+  runId?: string;               // legacy
+  kind?: string;                // legacy
+  fromGlobalSeq?: number;       // new: global_seq cursor
+  subjectPattern?: string;      // new: /tape/.../**
+  predicateCel?: string;        // new: optional CEL filter
+}): Promise<void> {
   const c = new TapeClient(opts.url ?? DEFAULT_URL);
+  const usingSubjectPath = opts.fromGlobalSeq != null || (opts.subjectPattern ?? '') !== '';
   try {
-    for await (const entry of c.subscribeEvents({ fromTsMs: opts.fromTsMs, runId: opts.runId, kind: opts.kind })) {
-      await opts.sink(entry);
+    if (usingSubjectPath) {
+      for await (const entry of c.subscribeBySubject({
+        subjectPattern: opts.subjectPattern ?? '/tape/**',
+        predicateCel: opts.predicateCel ?? '',
+        fromGlobalSeq: opts.fromGlobalSeq ?? 0,
+      })) {
+        await opts.sink(entry);
+      }
+    } else {
+      for await (const entry of c.subscribeEvents({
+        fromTsMs: opts.fromTsMs, runId: opts.runId, kind: opts.kind,
+      })) {
+        await opts.sink(entry);
+      }
     }
   } finally { c.close(); }
 }
