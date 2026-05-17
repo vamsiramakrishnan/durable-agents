@@ -45,6 +45,10 @@ const (
 	Tape_CompleteEffect_FullMethodName            = "/tape.v1.Tape/CompleteEffect"
 	Tape_GetEffect_FullMethodName                 = "/tape.v1.Tape/GetEffect"
 	Tape_ReconcileEffect_FullMethodName           = "/tape.v1.Tape/ReconcileEffect"
+	Tape_ListEffectsToDispatch_FullMethodName     = "/tape.v1.Tape/ListEffectsToDispatch"
+	Tape_ClaimEffectDispatch_FullMethodName       = "/tape.v1.Tape/ClaimEffectDispatch"
+	Tape_RecordDispatchAttempt_FullMethodName     = "/tape.v1.Tape/RecordDispatchAttempt"
+	Tape_RecordExternalObservation_FullMethodName = "/tape.v1.Tape/RecordExternalObservation"
 	Tape_RegisterCompensation_FullMethodName      = "/tape.v1.Tape/RegisterCompensation"
 	Tape_ListObligations_FullMethodName           = "/tape.v1.Tape/ListObligations"
 	Tape_ResolveObligation_FullMethodName         = "/tape.v1.Tape/ResolveObligation"
@@ -91,6 +95,15 @@ type TapeClient interface {
 	CompleteEffect(ctx context.Context, in *CompleteEffectRequest, opts ...grpc.CallOption) (*EffectRecord, error)
 	GetEffect(ctx context.Context, in *GetEffectRequest, opts ...grpc.CallOption) (*GetEffectResponse, error)
 	ReconcileEffect(ctx context.Context, in *ReconcileEffectRequest, opts ...grpc.CallOption) (*EffectRecord, error)
+	// ── outbox dispatch (the GCP-native hardening: for non-idempotent upstreams,
+	//
+	//	intent and dispatch live in separate processes; the tool body records
+	//	intent, the outbox reactor dispatches via a connector, the reconciler
+	//	resolves UNKNOWN ambiguity by asking the counterparty) ────────────────
+	ListEffectsToDispatch(ctx context.Context, in *ListEffectsToDispatchRequest, opts ...grpc.CallOption) (*ListEffectsToDispatchResponse, error)
+	ClaimEffectDispatch(ctx context.Context, in *ClaimEffectDispatchRequest, opts ...grpc.CallOption) (*ClaimEffectDispatchResponse, error)
+	RecordDispatchAttempt(ctx context.Context, in *RecordDispatchAttemptRequest, opts ...grpc.CallOption) (*EffectRecord, error)
+	RecordExternalObservation(ctx context.Context, in *RecordExternalObservationRequest, opts ...grpc.CallOption) (*EffectRecord, error)
 	// ── obligations / compensation ────────────────────────────────────────────
 	RegisterCompensation(ctx context.Context, in *RegisterCompensationRequest, opts ...grpc.CallOption) (*ObligationRecord, error)
 	ListObligations(ctx context.Context, in *ListObligationsRequest, opts ...grpc.CallOption) (*ListObligationsResponse, error)
@@ -261,6 +274,46 @@ func (c *tapeClient) ReconcileEffect(ctx context.Context, in *ReconcileEffectReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EffectRecord)
 	err := c.cc.Invoke(ctx, Tape_ReconcileEffect_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ListEffectsToDispatch(ctx context.Context, in *ListEffectsToDispatchRequest, opts ...grpc.CallOption) (*ListEffectsToDispatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListEffectsToDispatchResponse)
+	err := c.cc.Invoke(ctx, Tape_ListEffectsToDispatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) ClaimEffectDispatch(ctx context.Context, in *ClaimEffectDispatchRequest, opts ...grpc.CallOption) (*ClaimEffectDispatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimEffectDispatchResponse)
+	err := c.cc.Invoke(ctx, Tape_ClaimEffectDispatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) RecordDispatchAttempt(ctx context.Context, in *RecordDispatchAttemptRequest, opts ...grpc.CallOption) (*EffectRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EffectRecord)
+	err := c.cc.Invoke(ctx, Tape_RecordDispatchAttempt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) RecordExternalObservation(ctx context.Context, in *RecordExternalObservationRequest, opts ...grpc.CallOption) (*EffectRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EffectRecord)
+	err := c.cc.Invoke(ctx, Tape_RecordExternalObservation_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -554,6 +607,15 @@ type TapeServer interface {
 	CompleteEffect(context.Context, *CompleteEffectRequest) (*EffectRecord, error)
 	GetEffect(context.Context, *GetEffectRequest) (*GetEffectResponse, error)
 	ReconcileEffect(context.Context, *ReconcileEffectRequest) (*EffectRecord, error)
+	// ── outbox dispatch (the GCP-native hardening: for non-idempotent upstreams,
+	//
+	//	intent and dispatch live in separate processes; the tool body records
+	//	intent, the outbox reactor dispatches via a connector, the reconciler
+	//	resolves UNKNOWN ambiguity by asking the counterparty) ────────────────
+	ListEffectsToDispatch(context.Context, *ListEffectsToDispatchRequest) (*ListEffectsToDispatchResponse, error)
+	ClaimEffectDispatch(context.Context, *ClaimEffectDispatchRequest) (*ClaimEffectDispatchResponse, error)
+	RecordDispatchAttempt(context.Context, *RecordDispatchAttemptRequest) (*EffectRecord, error)
+	RecordExternalObservation(context.Context, *RecordExternalObservationRequest) (*EffectRecord, error)
 	// ── obligations / compensation ────────────────────────────────────────────
 	RegisterCompensation(context.Context, *RegisterCompensationRequest) (*ObligationRecord, error)
 	ListObligations(context.Context, *ListObligationsRequest) (*ListObligationsResponse, error)
@@ -636,6 +698,18 @@ func (UnimplementedTapeServer) GetEffect(context.Context, *GetEffectRequest) (*G
 }
 func (UnimplementedTapeServer) ReconcileEffect(context.Context, *ReconcileEffectRequest) (*EffectRecord, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReconcileEffect not implemented")
+}
+func (UnimplementedTapeServer) ListEffectsToDispatch(context.Context, *ListEffectsToDispatchRequest) (*ListEffectsToDispatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListEffectsToDispatch not implemented")
+}
+func (UnimplementedTapeServer) ClaimEffectDispatch(context.Context, *ClaimEffectDispatchRequest) (*ClaimEffectDispatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClaimEffectDispatch not implemented")
+}
+func (UnimplementedTapeServer) RecordDispatchAttempt(context.Context, *RecordDispatchAttemptRequest) (*EffectRecord, error) {
+	return nil, status.Error(codes.Unimplemented, "method RecordDispatchAttempt not implemented")
+}
+func (UnimplementedTapeServer) RecordExternalObservation(context.Context, *RecordExternalObservationRequest) (*EffectRecord, error) {
+	return nil, status.Error(codes.Unimplemented, "method RecordExternalObservation not implemented")
 }
 func (UnimplementedTapeServer) RegisterCompensation(context.Context, *RegisterCompensationRequest) (*ObligationRecord, error) {
 	return nil, status.Error(codes.Unimplemented, "method RegisterCompensation not implemented")
@@ -938,6 +1012,78 @@ func _Tape_ReconcileEffect_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TapeServer).ReconcileEffect(ctx, req.(*ReconcileEffectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ListEffectsToDispatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListEffectsToDispatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ListEffectsToDispatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ListEffectsToDispatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ListEffectsToDispatch(ctx, req.(*ListEffectsToDispatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_ClaimEffectDispatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimEffectDispatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ClaimEffectDispatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ClaimEffectDispatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ClaimEffectDispatch(ctx, req.(*ClaimEffectDispatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_RecordDispatchAttempt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordDispatchAttemptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).RecordDispatchAttempt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_RecordDispatchAttempt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).RecordDispatchAttempt(ctx, req.(*RecordDispatchAttemptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_RecordExternalObservation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordExternalObservationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).RecordExternalObservation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_RecordExternalObservation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).RecordExternalObservation(ctx, req.(*RecordExternalObservationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1428,6 +1574,22 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReconcileEffect",
 			Handler:    _Tape_ReconcileEffect_Handler,
+		},
+		{
+			MethodName: "ListEffectsToDispatch",
+			Handler:    _Tape_ListEffectsToDispatch_Handler,
+		},
+		{
+			MethodName: "ClaimEffectDispatch",
+			Handler:    _Tape_ClaimEffectDispatch_Handler,
+		},
+		{
+			MethodName: "RecordDispatchAttempt",
+			Handler:    _Tape_RecordDispatchAttempt_Handler,
+		},
+		{
+			MethodName: "RecordExternalObservation",
+			Handler:    _Tape_RecordExternalObservation_Handler,
 		},
 		{
 			MethodName: "RegisterCompensation",

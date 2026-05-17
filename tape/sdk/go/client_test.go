@@ -198,6 +198,78 @@ func TestClientRoundTripsLifecycle(t *testing.T) {
 		t.Fatalf("re-begin: resumed=%v rid=%q status=%v", again.Resumed, again.RunId, again.Status)
 	}
 
+	// ── outbox / non-idempotent contract ───────────────────────────────────
+	// A second run with a NON_IDEMPOTENT + OUTBOX effect, plus the four new
+	// outbox/observation RPCs. Proves the Go SDK and the server agree on the
+	// new wire.
+	r2, err := c.BeginRun(ctx, BeginRunOpts{
+		AppName: "a", UserID: "u", SessionID: "go-outbox",
+		InvocationID: "inv-go-outbox", LeaseOwner: "test", LeaseTTLMs: 60_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Server refuses NON_IDEMPOTENT + INLINE:
+	if _, err := c.BeginEffect(ctx, BeginEffectOpts{
+		RunID: r2.RunId, DecisionIndex: -1, ToolName: "wire_money",
+		Semantics: EffectSemanticsNonIdempotent, DispatchMode: EffectDispatchInline,
+	}); err == nil {
+		t.Fatalf("expected NON_IDEMPOTENT+INLINE to be refused")
+	}
+	// NON_IDEMPOTENT + OUTBOX is accepted; business_key is enforced unique.
+	oe, err := c.BeginEffect(ctx, BeginEffectOpts{
+		RunID: r2.RunId, DecisionIndex: -1, ToolName: "wire_money",
+		RequestJSON: `{"amount":100}`,
+		Semantics: EffectSemanticsNonIdempotent, DispatchMode: EffectDispatchOutbox,
+		BusinessKey: "go:bk-1", Connector: "bank.wire",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int32(oe.Status) != EffectStatusPending {
+		t.Fatalf("outbox effect status=%v", oe.Status)
+	}
+	// Listed by ListEffectsToDispatch.
+	dispatchList, err := c.ListEffectsToDispatch(ctx, "bank.wire", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotIt := false
+	for _, e := range dispatchList.Effects {
+		if e.IdempotencyKey == oe.IdempotencyKey {
+			gotIt = true
+		}
+	}
+	if !gotIt {
+		t.Fatalf("effect not in dispatch list")
+	}
+	// Claim → second claim loses.
+	cl1, _ := c.ClaimEffectDispatch(ctx, r2.RunId, oe.IdempotencyKey, "go-A", 60_000)
+	cl2, _ := c.ClaimEffectDispatch(ctx, r2.RunId, oe.IdempotencyKey, "go-B", 60_000)
+	if !cl1.Acquired || cl2.Acquired {
+		t.Fatalf("CAS lease broken: cl1=%v cl2=%v", cl1.Acquired, cl2.Acquired)
+	}
+	// Record a dispatch failure that drives the effect to UNKNOWN (no retry).
+	if _, err := c.RecordDispatchAttempt(ctx, r2.RunId, oe.IdempotencyKey,
+		"simulated lost ack", 0); err != nil {
+		t.Fatal(err)
+	}
+	ge2, _ := c.GetEffect(ctx, r2.RunId, oe.IdempotencyKey)
+	if int32(ge2.Effect.Status) != EffectStatusUnknown {
+		t.Fatalf("expected UNKNOWN after lost ack; got %v", ge2.Effect.Status)
+	}
+	// Reconciler observes ABSENT for non-idempotent → FAILED (no re-issue).
+	if _, err := c.RecordExternalObservation(ctx, RecordExternalObservationOpts{
+		RunID: r2.RunId, Key: oe.IdempotencyKey,
+		Resolution: EffectResolutionAbsent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ge2, _ = c.GetEffect(ctx, r2.RunId, oe.IdempotencyKey)
+	if int32(ge2.Effect.Status) != EffectStatusFailed {
+		t.Fatalf("NON_IDEMPOTENT + ABSENT must land FAILED; got %v", ge2.Effect.Status)
+	}
+
 	// session + event roundtrip
 	if _, err := c.CreateSession(ctx, "a", "u", "go-sess", `{"k":1}`); err != nil {
 		t.Fatal(err)

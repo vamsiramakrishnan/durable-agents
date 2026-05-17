@@ -1,4 +1,9 @@
-export { TapeClient, DEFAULT_URL, RunStatus, EffectStatus, ObligationStatus, type ClientOptions } from './client.ts';
+export {
+  TapeClient, DEFAULT_URL, RunStatus, EffectStatus, ObligationStatus,
+  // Outbox / non-idempotent contract — opt in via beginEffect's new fields.
+  EffectSemantics, EffectDispatchMode, EffectResolution,
+  type ClientOptions,
+} from './client.ts';
 export {
   effect, effectMetaOf, idempotencyKey, runIdOf, registerCompensator, getCompensator,
   registerStatusCheck, getStatusCheck, AckLost,

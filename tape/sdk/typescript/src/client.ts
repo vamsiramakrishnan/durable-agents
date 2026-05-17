@@ -27,6 +27,19 @@ export const RunStatus = Object.freeze({
 export const EffectStatus = Object.freeze({
   UNSPECIFIED: 0, PENDING: 1, CONFIRMED: 2, FAILED: 3, UNKNOWN: 4,
 });
+// Outbox / non-idempotent contract (see proto: EffectSemantics,
+// EffectDispatchMode, EffectResolution). Defaults preserve v1 behaviour
+// (idempotent + inline); opt into the outbox path by passing non-defaults
+// to beginEffect.
+export const EffectSemantics = Object.freeze({
+  UNSPECIFIED: 0, IDEMPOTENT: 1, NON_IDEMPOTENT: 2, OBSERVE_ONLY: 3,
+});
+export const EffectDispatchMode = Object.freeze({
+  UNSPECIFIED: 0, INLINE: 1, OUTBOX: 2,
+});
+export const EffectResolution = Object.freeze({
+  UNSPECIFIED: 0, CONFIRMED: 1, FAILED: 2, ABSENT: 3, DUPLICATE: 4, STUCK: 5,
+});
 export const ObligationStatus = Object.freeze({
   UNSPECIFIED: 0, PENDING: 1, COMMITTED: 2, COMPENSATED: 3, STUCK: 4,
 });
@@ -178,8 +191,22 @@ export class TapeClient {
   getDecision(r: { runId: string; decisionIndex: number }) { return this.call('GetDecision', r); }
 
   // ── effects ───────────────────────────────────────────────────────────────
-  beginEffect(r: { runId: string; decisionIndex: number; toolName: string; callIndex?: number; requestJson?: string; customKey?: string }) {
-    return this.call('BeginEffect', { callIndex: 0, requestJson: '', customKey: '', ...r });
+  //
+  // `semantics`, `dispatchMode`, `businessKey`, `connector` opt into the outbox
+  // contract (non-idempotent upstreams). Defaults are IDEMPOTENT + INLINE,
+  // which preserves the v1 behaviour. The server refuses NON_IDEMPOTENT +
+  // INLINE — that error surfaces as a gRPC InvalidArgument / Internal here.
+  beginEffect(r: {
+    runId: string; decisionIndex: number; toolName: string;
+    callIndex?: number; requestJson?: string; customKey?: string;
+    semantics?: number; dispatchMode?: number;
+    businessKey?: string; connector?: string;
+  }) {
+    return this.call('BeginEffect', {
+      callIndex: 0, requestJson: '', customKey: '',
+      semantics: EffectSemantics.UNSPECIFIED, dispatchMode: EffectDispatchMode.UNSPECIFIED,
+      businessKey: '', connector: '', ...r,
+    });
   }
   completeEffect(r: { runId: string; idempotencyKey: string; status: number; responseJson?: string; errorJson?: string }) {
     return this.call('CompleteEffect', { responseJson: '', errorJson: '', ...r });
@@ -187,6 +214,37 @@ export class TapeClient {
   getEffect(r: { runId: string; idempotencyKey: string }) { return this.call('GetEffect', r); }
   reconcileEffect(r: { runId: string; idempotencyKey: string; resolvedStatus: number; responseJson?: string; errorJson?: string }) {
     return this.call('ReconcileEffect', { responseJson: '', errorJson: '', ...r });
+  }
+
+  // ── outbox dispatch (for non-idempotent upstreams) ────────────────────────
+
+  // PENDING+OUTBOX effects whose next_dispatch_at_ms <= now and whose lease is
+  // empty/expired. `connector` scopes the result.
+  listEffectsToDispatch(r: { connector?: string; limit?: number; nowMs?: number } = {}) {
+    return this.call('ListEffectsToDispatch', { connector: '', limit: 200, nowMs: 0, ...r });
+  }
+  // Atomic CAS lease. `acquired=false` => another dispatcher won; the loser
+  // must not call the upstream.
+  claimEffectDispatch(r: { runId: string; idempotencyKey: string; claimer: string; leaseTtlMs?: number }) {
+    return this.call('ClaimEffectDispatch', { leaseTtlMs: 60_000, ...r });
+  }
+  // Failed dispatch. `nextDispatchAtMs <= 0` drives the effect to UNKNOWN
+  // (safety exit — no blind retry); a positive value schedules a retry.
+  recordDispatchAttempt(r: { runId: string; idempotencyKey: string; error: string; nextDispatchAtMs: number }) {
+    return this.call('RecordDispatchAttempt', r);
+  }
+  // The reconciler's write path. `resolution` is one of EffectResolution.*.
+  // DUPLICATE + `compensateOnDuplicateKind` registers a compensation
+  // obligation atomically with the observation.
+  recordExternalObservation(r: {
+    runId: string; idempotencyKey: string; resolution: number;
+    externalRef?: string; responseJson?: string; errorJson?: string;
+    compensateOnDuplicateKind?: string;
+  }) {
+    return this.call('RecordExternalObservation', {
+      externalRef: '', responseJson: '', errorJson: '',
+      compensateOnDuplicateKind: '', ...r,
+    });
   }
 
   // ── obligations ───────────────────────────────────────────────────────────

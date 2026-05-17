@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as net from 'node:net';
-import { TapeClient, RunStatus, EffectStatus } from '../src/index.ts';
+import { TapeClient, RunStatus, EffectStatus, EffectSemantics, EffectDispatchMode, EffectResolution } from '../src/index.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_BIN = join(__dirname, '..', '..', '..', 'server', 'target', 'debug', 'tape-server');
@@ -123,5 +123,54 @@ test('TapeClient round-trips a full effect lifecycle', async () => {
     assert.equal(again.resumed, true);
     assert.equal(again.runId, rid);
     assert.equal(again.status, RunStatus.TERMINAL);
+  } finally { c.close(); }
+});
+
+test('TapeClient round-trips the outbox / non-idempotent contract', async () => {
+  if (!proc) return; // skipped
+  const c = new TapeClient(url);
+  try {
+    const begun: any = await c.beginRun({ appName: 'a', userId: 'u', sessionId: 'ts-outbox',
+      invocationId: 'inv-ts-outbox', leaseOwner: 'test', leaseTtlMs: 60_000 });
+    const rid: string = begun.runId;
+
+    // Server refuses NON_IDEMPOTENT + INLINE.
+    await assert.rejects(c.beginEffect({
+      runId: rid, decisionIndex: -1, toolName: 'wire_money',
+      semantics: EffectSemantics.NON_IDEMPOTENT,
+      dispatchMode: EffectDispatchMode.INLINE,
+    }));
+
+    // NON_IDEMPOTENT + OUTBOX with a business key is accepted.
+    const oe: any = await c.beginEffect({
+      runId: rid, decisionIndex: -1, toolName: 'wire_money',
+      requestJson: '{"amount":100}',
+      semantics: EffectSemantics.NON_IDEMPOTENT,
+      dispatchMode: EffectDispatchMode.OUTBOX,
+      businessKey: 'ts:bk-1', connector: 'bank.wire',
+    });
+    assert.equal(oe.status, EffectStatus.PENDING);
+
+    // Visible to the outbox dispatcher.
+    const list: any = await c.listEffectsToDispatch({ connector: 'bank.wire', limit: 50 });
+    assert.ok(list.effects.some((e: any) => e.idempotencyKey === oe.idempotencyKey));
+
+    // CAS lease — second claim loses.
+    const cl1: any = await c.claimEffectDispatch({ runId: rid, idempotencyKey: oe.idempotencyKey, claimer: 'ts-A' });
+    const cl2: any = await c.claimEffectDispatch({ runId: rid, idempotencyKey: oe.idempotencyKey, claimer: 'ts-B' });
+    assert.equal(cl1.acquired, true);
+    assert.equal(cl2.acquired, false);
+
+    // Lost ack → UNKNOWN.
+    await c.recordDispatchAttempt({ runId: rid, idempotencyKey: oe.idempotencyKey,
+      error: 'simulated lost ack', nextDispatchAtMs: 0 });
+    let ge: any = await c.getEffect({ runId: rid, idempotencyKey: oe.idempotencyKey });
+    assert.equal(ge.effect.status, EffectStatus.UNKNOWN);
+
+    // Reconciler observes ABSENT for non-idempotent → FAILED (no re-issue).
+    await c.recordExternalObservation({ runId: rid, idempotencyKey: oe.idempotencyKey,
+      resolution: EffectResolution.ABSENT });
+    ge = await c.getEffect({ runId: rid, idempotencyKey: oe.idempotencyKey });
+    assert.equal(ge.effect.status, EffectStatus.FAILED);
   } finally { c.close(); }
 });
