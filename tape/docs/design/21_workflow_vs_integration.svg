@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title>The Bank Did Its Job. The Workflow Still Doesn't Know.</title>
+  <desc>A sequence diagram showing that per-integration idempotency does not produce workflow-level idempotency.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-fade" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#b9b3a6"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 30px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .part{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .msg{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#303030}
+      .note{font:500 12.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#404040}
+      .pbox{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.6;rx:12}
+      .wbox{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.8;rx:12}
+      .life{stroke:#b9b3a6;stroke-width:1.4;stroke-dasharray:4 4}
+      .m{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .fade{stroke:#b9b3a6;stroke-width:2;fill:none;marker-end:url(#arrow-fade);stroke-dasharray:5 5}
+      .crash{stroke:#8A3C3C;stroke-width:3.2;fill:none}
+      .band{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.4;rx:8}
+      .bad{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.4;rx:8}
+      .ok{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.4;rx:8}
+      .jnote{fill:#EAE7DF;stroke:#8a8a8a;stroke-width:1;rx:6}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="680"/>
+  <text x="60" y="54" class="title">The Bank Did Its Job. The Workflow Still Doesn't Know.</text>
+  <text x="60" y="82" class="subtitle">Idempotency at each integration does not add up to idempotency at the workflow level.</text>
+
+  <rect x="120" y="106" width="220" height="40" class="wbox"/><text x="230" y="131" class="part" text-anchor="middle">workflow</text>
+  <rect x="500" y="106" width="200" height="40" class="pbox"/><text x="600" y="131" class="part" text-anchor="middle">bank (dedups on key)</text>
+  <rect x="860" y="106" width="220" height="40" class="pbox"/><text x="970" y="131" class="part" text-anchor="middle">custodian</text>
+  <line x1="230" y1="146" x2="230" y2="600" class="life"/>
+  <line x1="600" y1="146" x2="600" y2="600" class="life"/>
+  <line x1="970" y1="146" x2="970" y2="600" class="life"/>
+
+  <path d="M230,185 L598,185" class="m"/><text x="414" y="178" class="msg" text-anchor="middle">wire $50  (idempotency_key = k1)</text>
+  <path d="M600,218 L232,218" class="m"/><text x="414" y="211" class="msg" text-anchor="middle">✓ wire 0a17  — bank stores k1</text>
+
+  <path d="M150,250 L175,237 L200,257 L225,237 L250,257 L275,237 L300,257 L320,248" class="crash"/>
+  <text x="350" y="253" class="msg" fill="#8A3C3C" font-weight="700">✗ workflow crashes here — the confirmation was never folded into its own books</text>
+
+  <rect x="120" y="270" width="320" height="26" class="band"/><text x="280" y="288" class="msg" text-anchor="middle">…restart… replay — but no record of k1 ever firing…</text>
+
+  <path d="M230,330 L598,330" class="m"/><text x="414" y="323" class="msg" text-anchor="middle">wire $50  (idempotency_key = k1)  — fired again</text>
+  <path d="M600,363 L232,363" class="m"/><text x="414" y="356" class="msg" text-anchor="middle">✓ wire 0a17  — deduped, same as before</text>
+  <rect x="500" y="378" width="200" height="22" class="ok"/><text x="600" y="394" class="note" text-anchor="middle">the bank did exactly the right thing</text>
+
+  <rect x="80" y="420" width="540" height="62" class="jnote"/><text x="350" y="441" class="note" text-anchor="middle">workflow ▸ my own books have no record of k1's confirmation.</text><text x="350" y="461" class="note" text-anchor="middle">did the first run succeed and the response was lost? or did it never run?</text><text x="350" y="477" class="note" text-anchor="middle">I cannot tell from the bank's reply alone.</text>
+
+  <path d="M230,520 L968,520" class="fade"/><text x="600" y="513" class="msg" text-anchor="middle">custodian.book(...) — was after the wire; on retry, fires now, with no knowledge of what already happened</text>
+
+  <rect x="80" y="540" width="540" height="44" class="bad"/><text x="350" y="561" class="msg" text-anchor="middle" font-weight="700">so the workflow may: abort · retry from the wrong place ·</text><text x="350" y="578" class="msg" text-anchor="middle">falsely report failure to the user — none of them right</text>
+
+  <rect x="660" y="540" width="500" height="44" class="ok"/><text x="910" y="561" class="msg" text-anchor="middle">The fix is not at the bank. It is the workflow's own journal:</text><text x="910" y="578" class="msg" text-anchor="middle">write the intent before the call, the outcome after.</text>
+
+  <rect x="280" y="600" width="640" height="40" class="soft"/><text x="600" y="626" class="part" text-anchor="middle">The bank only keeps the bank's half of the ledger. The other half is yours to keep.</text>
+</svg>

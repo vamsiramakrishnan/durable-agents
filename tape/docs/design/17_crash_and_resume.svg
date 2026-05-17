@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title>Crash, Then Resume</title>
+  <desc>A sequence diagram: user, workflow, card network, retailer; the same workflow id and keys on either side of a crash; one charge, one order.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-blue" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#486A8F"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .part{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .msg{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#303030}
+      .note{font:500 12px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#404040}
+      .ph{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .pbox{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.6;rx:12}
+      .wbox{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.8;rx:12}
+      .jnote{fill:#EAE7DF;stroke:#8a8a8a;stroke-width:1;rx:6}
+      .life{stroke:#b9b3a6;stroke-width:1.4;stroke-dasharray:4 4}
+      .m{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .mb{stroke:#486A8F;stroke-width:2;fill:none;marker-end:url(#arrow-blue)}
+      .crash{stroke:#8A3C3C;stroke-width:3.2;fill:none}
+      .band{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.4;rx:8}
+      .ok{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.4;rx:8}
+      .bad{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.4;rx:8}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="760"/>
+  <text x="60" y="56" class="title">Crash, Then Resume</text>
+  <text x="60" y="84" class="subtitle">The same workflow id, the same idempotency keys, on either side of a crash. One charge. One order.</text>
+
+  <!-- participants -->
+  <rect x="80" y="110" width="170" height="40" class="pbox"/><text x="165" y="135" class="part" text-anchor="middle">user</text>
+  <rect x="380" y="110" width="200" height="40" class="wbox"/><text x="480" y="135" class="part" text-anchor="middle">workflow (durable)</text>
+  <rect x="680" y="110" width="200" height="40" class="pbox"/><text x="780" y="135" class="part" text-anchor="middle">card network</text>
+  <rect x="980" y="110" width="200" height="40" class="pbox"/><text x="1080" y="135" class="part" text-anchor="middle">retailer / warehouse</text>
+  <!-- lifelines -->
+  <line x1="165" y1="150" x2="165" y2="660" class="life"/>
+  <line x1="480" y1="150" x2="480" y2="660" class="life"/>
+  <line x1="780" y1="150" x2="780" y2="660" class="life"/>
+  <line x1="1080" y1="150" x2="1080" y2="660" class="life"/>
+
+  <!-- 1: user -> workflow -->
+  <path d="M165,185 L478,185" class="m"/><text x="320" y="178" class="msg" text-anchor="middle">"buy these running shoes, size 11, ship home"</text>
+  <!-- journal: authorize pending -->
+  <rect x="395" y="200" width="280" height="24" class="jnote"/><text x="535" y="216" class="note" text-anchor="middle">journal ▸ authorize: pending  (key W/auth)</text>
+  <!-- 2: workflow -> card authorize -->
+  <path d="M480,250 L778,250" class="m"/><text x="630" y="243" class="msg" text-anchor="middle">authorize $129  (idempotency_key = W/auth)</text>
+  <!-- 3: card -> workflow -->
+  <path d="M780,283 L482,283" class="m"/><text x="630" y="276" class="msg" text-anchor="middle">✓ hold 4f2a</text>
+  <!-- journal: authorize confirmed -->
+  <rect x="385" y="298" width="300" height="24" class="jnote"/><text x="535" y="314" class="note" text-anchor="middle">journal ▸ authorize: confirmed (4f2a)</text>
+
+  <!-- crash -->
+  <path d="M395,345 L420,332 L445,352 L470,332 L495,352 L520,332 L545,352 L565,343" class="crash"/>
+  <text x="600" y="348" class="msg" fill="#8A3C3C" font-weight="700">✗ host crashes — the process is gone</text>
+
+  <!-- restart band -->
+  <rect x="300" y="365" width="380" height="28" class="band"/><text x="490" y="384" class="msg" text-anchor="middle">…restart… the engine replays the workflow from the top…</text>
+
+  <!-- journal: authorize already confirmed -->
+  <rect x="350" y="408" width="370" height="24" class="jnote"/><text x="535" y="424" class="note" text-anchor="middle">journal ▸ authorize already confirmed → don't re-call the card</text>
+
+  <!-- 4: workflow -> retailer place order -->
+  <path d="M480,460 L1078,460" class="m"/><text x="780" y="453" class="msg" text-anchor="middle">place order  (idempotency_key = W/order)</text>
+  <!-- 5: retailer -> workflow -->
+  <path d="M1080,493 L482,493" class="m"/><text x="780" y="486" class="msg" text-anchor="middle">✓ order 7c3d · inventory −1</text>
+  <!-- journal: order confirmed -->
+  <rect x="395" y="508" width="280" height="24" class="jnote"/><text x="535" y="524" class="note" text-anchor="middle">journal ▸ order: confirmed (7c3d)</text>
+  <!-- 6: workflow -> user -->
+  <path d="M478,558 L167,558" class="m"/><text x="320" y="551" class="msg" text-anchor="middle">done — one charge, one order</text>
+
+  <rect x="620" y="545" width="540" height="30" class="ok"/><text x="890" y="565" class="msg" text-anchor="middle">RESULT — one hold, one order, regardless of how many times the host bounced</text>
+
+  <!-- without durable execution note -->
+  <rect x="80" y="600" width="1080" height="56" class="bad"/>
+  <text x="100" y="623" class="msg" font-weight="700">Without durable execution:</text>
+  <text x="290" y="623" class="msg">restart re-runs from the top → a second "authorize $129" → a second hold. Whether the card's 24-hour dedup window</text>
+  <text x="100" y="643" class="msg">catches it depends on whose idempotency layer was paying attention. The optimistic outcome is one charge; the pessimistic is two.</text>
+
+  <!-- footer -->
+  <rect x="320" y="670" width="560" height="40" class="soft"/>
+  <text x="600" y="696" class="part" text-anchor="middle">Retry repeats the story. Resume reads the story and continues it.</text>
+</svg>

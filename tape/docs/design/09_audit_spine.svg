@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>Audit: The Journal You Cannot Argue With</title>
+  <desc>Audit: The Journal You Cannot Argue With — diagram for durable agent execution.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#486A8F" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8A3C3C" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; rx: 18; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.3; rx: 16; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; rx: 18; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; rx: 18; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.7; rx: 18; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; rx: 18; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .line-red { stroke: #8A3C3C; stroke-width: 2.2; fill: none; marker-end: url(#arrow-red); }
+      .dash { stroke: #686868; stroke-width: 1.8; fill: none; stroke-dasharray: 7 6; }
+      .thin { stroke: #686868; stroke-width: 1.2; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+<text x="60" y="68" class="title" text-anchor="start">Audit: The Journal You Cannot Argue With</text>
+<text x="60" y="100" class="subtitle" text-anchor="start">Logs are written for operators. Journals are written for disputes.</text>
+<path d="M600,150 L600,575" stroke="#1f1f1f" stroke-width="3" fill="none"/>
+<circle cx="600" cy="170" r="19" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.8"/>
+<text x="600" y="176" class="small" text-anchor="middle">1</text>
+<path d="M530,170 L581,170" class="line"/>
+<rect x="300" y="138" width="230" height="64" class="box"/>
+<text x="320" y="164" class="small" text-anchor="start">User mandate</text>
+<text x="320" y="187" class="tiny" text-anchor="start">what was delegated</text>
+<circle cx="600" cy="230" r="19" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.8"/>
+<text x="600" y="236" class="small" text-anchor="middle">2</text>
+<path d="M619,230 L670,230" class="line"/>
+<rect x="670" y="198" width="260" height="64" class="box"/>
+<text x="690" y="224" class="small" text-anchor="start">Fresh state read</text>
+<text x="690" y="247" class="tiny" text-anchor="start">what the agent knew now</text>
+<circle cx="600" cy="290" r="19" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.8"/>
+<text x="600" y="296" class="small" text-anchor="middle">3</text>
+<path d="M530,290 L581,290" class="line"/>
+<rect x="300" y="258" width="230" height="64" class="box"/>
+<text x="320" y="284" class="small" text-anchor="start">Model decision</text>
+<text x="320" y="307" class="tiny" text-anchor="start">why this action, not another</text>
+<circle cx="600" cy="350" r="19" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.8"/>
+<text x="600" y="356" class="small" text-anchor="middle">4</text>
+<path d="M619,350 L670,350" class="line"/>
+<rect x="670" y="318" width="260" height="64" class="box"/>
+<text x="690" y="344" class="small" text-anchor="start">Policy / authority</text>
+<text x="690" y="367" class="tiny" text-anchor="start">what allowed the act</text>
+<circle cx="600" cy="410" r="19" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.8"/>
+<text x="600" y="416" class="small" text-anchor="middle">5</text>
+<path d="M530,410 L581,410" class="line"/>
+<rect x="300" y="378" width="230" height="64" class="box"/>
+<text x="320" y="404" class="small" text-anchor="start">External effect</text>
+<text x="320" y="427" class="tiny" text-anchor="start">request, response, idempotency key</text>
+<circle cx="600" cy="470" r="19" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.8"/>
+<text x="600" y="476" class="small" text-anchor="middle">6</text>
+<path d="M619,470 L670,470" class="line"/>
+<rect x="670" y="438" width="260" height="64" class="box"/>
+<text x="690" y="464" class="small" text-anchor="start">Obligation created</text>
+<text x="690" y="487" class="tiny" text-anchor="start">approval, expiry, promise, lock</text>
+<circle cx="600" cy="530" r="19" fill="#fffefa" stroke="#1f1f1f" stroke-width="1.8"/>
+<text x="600" y="536" class="small" text-anchor="middle">7</text>
+<path d="M530,530 L581,530" class="line"/>
+<rect x="300" y="498" width="230" height="64" class="box"/>
+<text x="320" y="524" class="small" text-anchor="start">Compensation / close</text>
+<text x="320" y="547" class="tiny" text-anchor="start">repair, reconcile, or finish</text>
+<rect x="230" y="600" width="740" height="45" class="red"/>
+<text x="600" y="629" class="label" text-anchor="middle">When the dispute arrives, the journal answers in order.</text>
+</svg>

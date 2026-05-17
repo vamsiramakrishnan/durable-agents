@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title>Where the Load-Bearing Claims Sit</title>
+  <desc>The treatise's claims placed on a spectrum: solved (with caveats), being built, the open frontier, and outside the frame.</desc>
+  <defs>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .band{font:700 18px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .item{font:400 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .note{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#555}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .green{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.7;rx:14}
+      .blue{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.7;rx:14}
+      .amber{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.7;rx:14}
+      .grey{fill:#EFEDE7;stroke:#b9b3a6;stroke-width:1.5;rx:14}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="680"/>
+  <text x="60" y="54" class="title">Where the Load-Bearing Claims Sit</text>
+  <text x="60" y="82" class="subtitle">What this treatise is honest about — and where the floor is "solved with a chapter of caveats," not solved.</text>
+
+  <!-- 1 SOLVED -->
+  <rect x="60" y="110" width="1080" height="118" class="green"/>
+  <text x="84" y="138" class="band">SOLVED — with a chapter of caveats</text>
+  <text x="84" y="164" class="item">idempotency · sagas · outboxes · durable timers/signals · long-running suspend &amp; resume · "exactly-once-effectively"</text>
+  <text x="84" y="190" class="note">…which is: at-least-once delivery + idempotent receivers + a finite-window dedup store + a restart-surviving key — four real systems</text>
+  <text x="84" y="214" class="tiny">"solved" the way "the database handles concurrency" is solved: true, with caveats you ignore at your peril</text>
+
+  <!-- 2 BEING BUILT -->
+  <rect x="60" y="240" width="1080" height="110" class="blue"/>
+  <text x="84" y="268" class="band">BEING BUILT</text>
+  <text x="84" y="294" class="item">decision journaling · action gates · budgets · multi-agent coordination via journaled state · fresh-state verification · per-class replay semantics</text>
+  <text x="84" y="320" class="note">the runtimes (Temporal, Restate, DBOS, Inngest, …) are converging on these — none has the full set yet</text>
+  <text x="84" y="338" class="tiny">"first-class budget" is generous: today it's workflow state your code checks; the win is that it survives replay</text>
+
+  <!-- 3 OPEN FRONTIER -->
+  <rect x="60" y="362" width="1080" height="104" class="amber"/>
+  <text x="84" y="390" class="band">OPEN FRONTIER</text>
+  <text x="84" y="416" class="item">verification — the LLM judge, fallible in both directions (false fail → needless rollback; false pass → ships broken)</text>
+  <text x="84" y="440" class="item">adaptive compensation — a model undoing a model's mistake; bounded to reversible steps, gated like a forward act, or escalated</text>
+  <text x="84" y="460" class="tiny">durable execution makes the agent consistent and auditable — it does not make the agent right</text>
+
+  <!-- 4 OUTSIDE THE FRAME -->
+  <rect x="60" y="478" width="1080" height="104" class="grey"/>
+  <text x="84" y="506" class="band" fill="#5a5a5a">OUTSIDE THE FRAME</text>
+  <text x="84" y="532" class="item">agent composition (child workflows) · the journal as a PII/secrets/retention liability · streaming UX vs the journaled backend</text>
+  <text x="84" y="556" class="item">human-in-the-loop richer than a boolean · the performance tax (a round-trip per step; replay of a long workflow is slow; history must be pruned)</text>
+  <text x="84" y="576" class="tiny">the property has a price — a treatise that sells the property without naming the price is selling</text>
+
+  <rect x="200" y="600" width="800" height="56" class="soft"/>
+  <text x="600" y="622" class="band" text-anchor="middle">None of this unsays the argument.</text>
+  <text x="600" y="644" class="note" text-anchor="middle">"The runtime makes up the difference" describes a research programme with a few good products in it — not a finished thing with a vendor.</text>
+</svg>

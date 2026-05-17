@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="660" viewBox="0 0 1200 660" role="img" aria-labelledby="title desc">
+  <title>Step 3, On the Clock</title>
+  <desc>A timeline: the workflow parks on a gated action, suspends, a deploy passes through, two days pass, the approval signal arrives, the workflow wakes, re-verifies the world, and acts.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .label{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .small{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .t{font:700 13px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#1f1f1f}
+      .axis{stroke:#1f1f1f;stroke-width:2.4;fill:none;marker-end:url(#arrow)}
+      .tick{stroke:#1f1f1f;stroke-width:2}
+      .suspend{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.8;rx:10}
+      .box{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:10}
+      .green{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.6;rx:10}
+      .amber{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.6;rx:10}
+      .grey{fill:#EFEDE7;stroke:#b9b3a6;stroke-width:1.4;rx:10}
+      .line{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .dot{stroke:#8a8a8a;stroke-width:1.5;stroke-dasharray:3 3;fill:none}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="660"/>
+  <text x="60" y="54" class="title">Step 3, On the Clock</text>
+  <text x="60" y="82" class="subtitle">The workflow parks on a condition and holds nothing — a deploy passes through, two days pass — then the signal arrives.</text>
+
+  <!-- time axis -->
+  <path d="M90,420 L1130,420" class="axis"/>
+  <line x1="150" y1="412" x2="150" y2="428" class="tick"/><text x="150" y="448" class="t" text-anchor="middle">t0</text>
+  <line x1="430" y1="412" x2="430" y2="428" class="tick"/><text x="430" y="448" class="t" text-anchor="middle">t0 + 6h</text>
+  <line x1="620" y1="412" x2="620" y2="428" class="tick"/><text x="620" y="448" class="tiny" text-anchor="middle">t0 + 8h (timeout)</text>
+  <line x1="960" y1="412" x2="960" y2="428" class="tick"/><text x="960" y="448" class="t" text-anchor="middle">t0 + 2 days</text>
+
+  <!-- suspend band -->
+  <rect x="150" y="300" width="810" height="56" class="suspend"/>
+  <text x="555" y="324" class="label" text-anchor="middle">SUSPENDED — no thread · no socket · no host held</text>
+  <text x="555" y="343" class="tiny" text-anchor="middle">the workflow is durable state in the runtime; it costs nothing to wait</text>
+
+  <!-- t0: reach gated action -->
+  <line x1="150" y1="300" x2="150" y2="200" class="dot"/>
+  <rect x="60" y="140" width="200" height="60" class="box"/><text x="160" y="164" class="label" text-anchor="middle">reach a gated action</text><text x="160" y="184" class="small" text-anchor="middle">notify approver · suspend</text>
+
+  <!-- t0+6h: deploy -->
+  <line x1="430" y1="300" x2="430" y2="220" class="dot"/>
+  <rect x="330" y="160" width="200" height="60" class="box"/><text x="430" y="184" class="label" text-anchor="middle">deploy v1 → v2 ships</text><text x="430" y="204" class="small" text-anchor="middle">the workflow doesn't care</text>
+
+  <!-- t0+8h timeout path -->
+  <line x1="620" y1="412" x2="620" y2="490" class="dot"/>
+  <rect x="510" y="490" width="220" height="56" class="amber"/><text x="620" y="513" class="small" text-anchor="middle">if no signal by then →</text><text x="620" y="531" class="small" text-anchor="middle">declined / escalate</text>
+
+  <!-- t0+2d: approve signal -->
+  <line x1="960" y1="300" x2="960" y2="200" class="dot"/>
+  <rect x="850" y="140" width="220" height="60" class="box"/><text x="960" y="164" class="label" text-anchor="middle">approver clicks "approve"</text><text x="960" y="184" class="small" text-anchor="middle">→ <tspan font-family="ui-monospace,monospace">approve</tspan> signal → workflow wakes</text>
+
+  <!-- after waking: re-verify -->
+  <path d="M960,356 L960,470" class="line"/>
+  <rect x="800" y="470" width="320" height="56" class="box"/><text x="960" y="491" class="label" text-anchor="middle">re-verify the precondition</text><text x="960" y="510" class="tiny" text-anchor="middle">the world moved in two days — re-check; don't trust the journal</text>
+  <path d="M810,498 L740,498" class="line"/>
+  <rect x="540" y="556" width="270" height="44" class="green"/><text x="675" y="582" class="small" text-anchor="middle">still valid → perform the action</text>
+  <path d="M960,526 L960,556" class="line"/>
+  <rect x="830" y="556" width="270" height="44" class="amber"/><text x="965" y="582" class="small" text-anchor="middle">stale → mark stale, loop</text>
+
+  <!-- contrast -->
+  <rect x="60" y="556" width="430" height="60" class="grey"/><text x="275" y="580" class="small" text-anchor="middle" fill="#8a8a8a">A flag in RAM cannot do this. The process that set it</text><text x="275" y="600" class="small" text-anchor="middle" fill="#8a8a8a">is long gone — and so is the question of who approved.</text>
+</svg>

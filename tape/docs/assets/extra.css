@@ -1,0 +1,34 @@
+/* Tape — small Material overrides. Keep this short. */
+
+:root {
+  --md-text-font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Tighter hero on the landing page. */
+.md-typeset h1 { font-weight: 600; letter-spacing: -0.01em; }
+.md-typeset h2 { font-weight: 600; letter-spacing: -0.005em; }
+
+/* Parity-table flavour: render `✓` / `✗` more prominently. */
+.md-typeset td:has(> code:only-child) { font-variant-numeric: tabular-nums; }
+
+/* Mermaid: respect the chosen theme. */
+[data-md-color-scheme="slate"] .mermaid { filter: invert(0.9) hue-rotate(180deg); }
+
+/* Subtle section dividers on long pages. */
+.md-typeset hr { border-bottom: 1px solid var(--md-default-fg-color--lightest); }
+
+/* Reference pages: lift the signature block. */
+.doc-signature {
+  background: var(--md-code-bg-color);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border-left: 3px solid var(--md-primary-fg-color);
+  margin-bottom: 1rem;
+}
+
+/* Sleek "what's a placeholder" admonition variant for the SDK reference pages. */
+.md-typeset .admonition.scaffold > .admonition-title {
+  background-color: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.2);
+}

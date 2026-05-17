@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="660" viewBox="0 0 1200 660" role="img" aria-labelledby="title desc">
+  <title>One Change, Four Assumptions Break</title>
+  <desc>The orchestrator's decisions are now sampled at runtime, not pre-specified — and four classical assumptions stop holding.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .label{font:700 16px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .small{font:400 13.5px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .src{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.8;rx:16}
+      .was{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.5;rx:12}
+      .now{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.5;rx:12}
+      .line{stroke:#1f1f1f;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="660"/>
+  <text x="60" y="56" class="title">One Change, Four Assumptions Break</text>
+  <text x="60" y="84" class="subtitle">The orchestrator's decisions are no longer pre-specified — they are sampled at runtime from a model whose policy was learned.</text>
+
+  <!-- source -->
+  <rect x="80" y="280" width="220" height="100" class="src"/>
+  <text x="190" y="318" class="label" text-anchor="middle">the orchestrator is</text>
+  <text x="190" y="340" class="label" text-anchor="middle">an LLM</text>
+  <text x="190" y="362" class="tiny" text-anchor="middle">sampled, not authored</text>
+
+  <!-- fan-out arrows -->
+  <path d="M300,310 C380,250 420,170 520,150" class="line"/>
+  <path d="M300,322 C400,300 430,260 520,250" class="line"/>
+  <path d="M300,340 C400,360 430,400 520,400" class="line"/>
+  <path d="M300,352 C380,420 420,490 520,500" class="line"/>
+
+  <!-- consequence 1 -->
+  <text x="520" y="138" class="label">① the forward path</text>
+  <rect x="520" y="146" width="280" height="48" class="was"/><text x="660" y="166" class="tiny" text-anchor="middle">was: a graph — A → B → C,</text><text x="660" y="184" class="tiny" text-anchor="middle">and its compensation ¬C → ¬B → ¬A</text>
+  <path d="M800,170 L840,170" class="line"/>
+  <rect x="840" y="146" width="300" height="48" class="now"/><text x="990" y="166" class="tiny" text-anchor="middle">now: a runtime trajectory you can only</text><text x="990" y="184" class="tiny" text-anchor="middle">constrain — journal what was chosen</text>
+
+  <!-- consequence 2 -->
+  <text x="520" y="240" class="label">② the compensation</text>
+  <rect x="520" y="248" width="280" height="48" class="was"/><text x="660" y="268" class="tiny" text-anchor="middle">was: pre-written ¬B, ¬A</text><text x="660" y="286" class="tiny" text-anchor="middle">known at design time</text>
+  <path d="M800,272 L840,272" class="line"/>
+  <rect x="840" y="248" width="300" height="48" class="now"/><text x="990" y="268" class="tiny" text-anchor="middle">now: depends on what was sampled —</text><text x="990" y="286" class="tiny" text-anchor="middle">often only the LLM can write it</text>
+
+  <!-- consequence 3 -->
+  <text x="520" y="390" class="label">③ the idempotency unit</text>
+  <rect x="520" y="398" width="280" height="48" class="was"/><text x="660" y="418" class="tiny" text-anchor="middle">was: a call → hash its params →</text><text x="660" y="436" class="tiny" text-anchor="middle">that hash is the key</text>
+  <path d="M800,422 L840,422" class="line"/>
+  <rect x="840" y="398" width="300" height="48" class="now"/><text x="990" y="418" class="tiny" text-anchor="middle">now: a call is clear; a plan is fuzzy;</text><text x="990" y="436" class="tiny" text-anchor="middle">"book me a trip" is not a key</text>
+
+  <!-- consequence 4 -->
+  <text x="520" y="490" class="label">④ verification</text>
+  <rect x="520" y="498" width="280" height="48" class="was"/><text x="660" y="518" class="tiny" text-anchor="middle">was: an oracle — the bank's</text><text x="660" y="536" class="tiny" text-anchor="middle">response said yes or no</text>
+  <path d="M800,522 L840,522" class="line"/>
+  <rect x="840" y="498" width="300" height="48" class="now"/><text x="990" y="518" class="tiny" text-anchor="middle">now: no oracle — "did the report answer</text><text x="990" y="536" class="tiny" text-anchor="middle">well?" is a slower, more expensive judgment</text>
+
+  <text x="60" y="600" class="small">These are not problems classical patterns solve. They are problems classical patterns assume away —</text>
+  <text x="60" y="620" class="small">and the assumption was load-bearing.</text>
+</svg>

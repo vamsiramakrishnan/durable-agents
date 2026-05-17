@@ -1,0 +1,181 @@
+site_name: Tape — durable agents
+site_description: A durable-execution substrate for ADK agents.
+site_url: https://vamsiramakrishnan.github.io/durable-agents/
+repo_url: https://github.com/vamsiramakrishnan/durable-agents
+repo_name: vamsiramakrishnan/durable-agents
+edit_uri: edit/main/tape/docs/
+copyright: Apache-2.0 · the durable-agents authors
+
+docs_dir: tape/docs
+site_dir: site
+
+theme:
+  name: material
+  language: en
+  logo: assets/tape.svg
+  favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle: { icon: material/weather-night, name: Switch to dark }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle: { icon: material/weather-sunny, name: Switch to light }
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/file-edit-outline
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - meta
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+      use_pygments: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: vamsiramakrishnan
+      repo: durable-agents
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      check_paths: true
+      base_path: ["."]
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+      clickable_checkbox: true
+  - pymdownx.tilde
+
+plugins:
+  - search:
+      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - autorefs
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [tape/sdk/python]
+          options:
+            show_root_heading: true
+            show_source: false
+            show_signature_annotations: true
+            separate_signature: true
+            merge_init_into_class: true
+            docstring_style: google
+            docstring_section_style: spacy
+            members_order: source
+            filters: ["!^_"]
+            heading_level: 3
+            show_symbol_type_toc: true
+            show_symbol_type_heading: true
+            inherited_members: true
+            line_length: 88
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/vamsiramakrishnan/durable-agents
+  version:
+    provider: mike
+    default: latest
+  generator: false
+
+extra_css:
+  - assets/extra.css
+
+# Navigation — keep this hand-curated; the tree is the table of contents.
+nav:
+  - Home: index.md
+  - Get started:
+      - Quickstart: quickstart.md
+      - Local dev: local-dev.md
+      - ADK on Tape: adk.md
+  - Guides:
+      - Non-idempotent upstreams: non-idempotent-upstreams.md
+      - Reactors: reactors.md
+      - Stores: stores.md
+      - Observability: observability.md
+      - Tenancy: tenancy.md
+  - Deploy on GCP:
+      - Cloud Run: gcp-cloud-run.md
+      - GKE Autopilot: gcp-gke.md
+  - SDK Reference:
+      - reference/index.md
+      - Python:
+          - reference/python/index.md
+          - durable_app: reference/python/durable.md
+          - effect & outbox_tool: reference/python/effect.md
+          - Connectors: reference/python/connectors.md
+          - Reactors: reference/python/reactors.md
+          - Observability: reference/python/obs.md
+          - Tenancy: reference/python/tenancy.md
+          - Client: reference/python/client.md
+      - Go:
+          - reference/go/index.md
+          - Package reference: reference/go/api.md
+      - TypeScript:
+          - reference/typescript/index.md
+          - Package reference: reference/typescript/api.md
+      - Java:
+          - reference/java/index.md
+          - Javadoc: reference/java/javadoc.md
+  - CLI Reference:
+      - reference/cli/index.md
+  - Design:
+      - design/index.md
+      - Treatise: design/agents-that-act-treatise.md
+      - Tape spec: design/tape.md
+      - Event bus: design/tape-event-bus.md
+      - Parity matrix: design/parity.md

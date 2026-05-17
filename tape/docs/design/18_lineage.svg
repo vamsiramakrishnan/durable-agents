@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>Forty Years of Saying It Already</title>
+  <desc>A timeline of the distributed-systems literature, each result still true with the parameters adjusted, each assuming the orchestrator was code.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .yr{font:700 16px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .who{font:700 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .what{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .axis{stroke:#1f1f1f;stroke-width:2.4;fill:none;marker-end:url(#arrow)}
+      .tick{stroke:#1f1f1f;stroke-width:2;fill:none}
+      .node{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:12}
+      .last{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.8;rx:12}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+      .leader{stroke:#b9b3a6;stroke-width:1.4;fill:none}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="56" class="title">Forty Years of Saying It Already</text>
+  <text x="60" y="84" class="subtitle">Each result is still true with the parameters adjusted — and each assumed the orchestrator was code an engineer wrote.</text>
+
+  <!-- timeline axis -->
+  <path d="M90,360 L1110,360" class="axis"/>
+  <!-- ticks -->
+  <line x1="150" y1="352" x2="150" y2="368" class="tick"/>
+  <line x1="300" y1="352" x2="300" y2="368" class="tick"/>
+  <line x1="450" y1="352" x2="450" y2="368" class="tick"/>
+  <line x1="640" y1="352" x2="640" y2="368" class="tick"/>
+  <line x1="830" y1="352" x2="830" y2="368" class="tick"/>
+  <line x1="990" y1="352" x2="990" y2="368" class="tick"/>
+
+  <!-- nodes above -->
+  <line x1="150" y1="352" x2="150" y2="220" class="leader"/>
+  <rect x="60" y="120" width="200" height="100" class="node"/><text x="160" y="142" class="yr" text-anchor="middle">1978</text><text x="160" y="162" class="who" text-anchor="middle">Lamport</text><text x="160" y="182" class="what" text-anchor="middle">no global clock;</text><text x="160" y="200" class="what" text-anchor="middle">causal order is partial</text>
+  <line x1="450" y1="352" x2="450" y2="220" class="leader"/>
+  <rect x="350" y="120" width="200" height="100" class="node"/><text x="450" y="142" class="yr" text-anchor="middle">1986–87</text><text x="450" y="162" class="who" text-anchor="middle">sagas · the actor model</text><text x="450" y="182" class="what" text-anchor="middle">compensate to undo;</text><text x="450" y="200" class="what" text-anchor="middle">mailboxes, supervised processes</text>
+  <line x1="830" y1="352" x2="830" y2="220" class="leader"/>
+  <rect x="730" y="120" width="220" height="100" class="node"/><text x="840" y="142" class="yr" text-anchor="middle">2014–2020</text><text x="840" y="162" class="who" text-anchor="middle">microservices refine it</text><text x="840" y="182" class="what" text-anchor="middle">idempotency keys · outboxes ·</text><text x="840" y="200" class="what" text-anchor="middle">effectively-once · in production</text>
+
+  <!-- nodes below -->
+  <line x1="300" y1="368" x2="300" y2="430" class="leader"/>
+  <rect x="200" y="430" width="200" height="100" class="node"/><text x="300" y="452" class="yr" text-anchor="middle">1984</text><text x="300" y="472" class="who" text-anchor="middle">Saltzer · Reed · Clark</text><text x="300" y="492" class="what" text-anchor="middle">the end-to-end argument:</text><text x="300" y="510" class="what" text-anchor="middle">reliability is checked at the endpoints</text>
+  <line x1="640" y1="368" x2="640" y2="430" class="leader"/>
+  <rect x="530" y="430" width="220" height="100" class="node"/><text x="640" y="452" class="yr" text-anchor="middle">~2005–07</text><text x="640" y="472" class="who" text-anchor="middle">event sourcing · Helland</text><text x="640" y="492" class="what" text-anchor="middle">store events, replay for state;</text><text x="640" y="510" class="what" text-anchor="middle">grants, agreements, apologies</text>
+  <line x1="990" y1="368" x2="990" y2="430" class="leader"/>
+  <rect x="880" y="430" width="240" height="100" class="last"/><text x="1000" y="452" class="yr" text-anchor="middle">2024–2025</text><text x="1000" y="472" class="who" text-anchor="middle">durable agent runtimes</text><text x="1000" y="492" class="what" text-anchor="middle">the orchestrator is now an LLM —</text><text x="1000" y="510" class="what" text-anchor="middle">and the assumption breaks</text>
+
+  <!-- the shared assumption band -->
+  <rect x="90" y="248" width="660" height="34" class="soft"/><text x="420" y="270" class="who" text-anchor="middle">ALL of the above assumed: the orchestrator's behaviour can be characterised at design time.</text>
+  <rect x="820" y="560" width="340" height="34" class="last"/><text x="990" y="582" class="who" text-anchor="middle">…except now it can't.</text>
+
+  <text x="60" y="640" class="what">Sagas have known forward and compensation graphs. Event sourcing has deterministic transitions. The actor model has typed messages.</text>
+  <text x="60" y="660" class="what">Idempotency keys cover known operations. The LLM-orchestrator pattern violates all four — structurally, not incidentally.</text>
+</svg>

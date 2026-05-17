@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>No Changes to ADK</title>
+  <desc>No Changes to ADK — Tape rides only on extension points ADK already exposes: the plugin system, a custom SessionService, LongRunningFunctionTool, and invocation_id-based resume.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#486A8F"/></marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 33px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 16px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 12.5px ui-sans-serif, system-ui, sans-serif; fill: #686868; }
+      .mono { font: 600 12.5px ui-monospace, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.2; }
+      .line { stroke: #1f1f1f; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #486A8F; stroke-width: 2; fill: none; marker-end: url(#arrow-blue); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="62" class="title">No Changes to ADK</text>
+  <text x="60" y="92" class="subtitle">Every primitive Tape needs is a door ADK already opened.</text>
+
+  <!-- ADK column -->
+  <rect x="60" y="130" width="430" height="470" rx="14" class="amber"/>
+  <text x="80" y="158" class="label">ADK — unmodified</text>
+
+  <rect x="85" y="175" width="380" height="58" rx="10" class="box"/><text x="105" y="199" class="small">Runner(plugins=[ … ])</text><text x="105" y="219" class="tiny">before/after_model · before/after_tool · on_*_error · on_event</text>
+
+  <rect x="85" y="245" width="380" height="58" rx="10" class="box"/><text x="105" y="269" class="small">BaseSessionService</text><text x="105" y="289" class="tiny">create/get/list/delete_session · append_event (event + state_delta)</text>
+
+  <rect x="85" y="315" width="380" height="58" rx="10" class="box"/><text x="105" y="339" class="small">LongRunningFunctionTool</text><text x="105" y="359" class="tiny">returns "pending" → pauses the run; result injected later via append_event</text>
+
+  <rect x="85" y="385" width="380" height="58" rx="10" class="box"/><text x="105" y="409" class="small">runner.run(invocation_id = …)</text><text x="105" y="429" class="tiny">replays committed events, restarts from the first incomplete agent</text>
+
+  <rect x="85" y="455" width="380" height="58" rx="10" class="box"/><text x="105" y="479" class="small">before/after_model_callback</text><text x="105" y="499" class="tiny">request, response, model id all flow through here</text>
+
+  <rect x="85" y="525" width="380" height="58" rx="10" class="box"/><text x="105" y="549" class="small">tool_context.state</text><text x="105" y="569" class="tiny">policy_version and friends</text>
+
+  <!-- Tape column -->
+  <rect x="710" y="130" width="430" height="470" rx="14" class="blue"/>
+  <text x="730" y="158" class="label">Tape — rides those doors</text>
+
+  <rect x="735" y="175" width="380" height="58" rx="10" class="green"/><text x="755" y="199" class="small">TapePlugin (a BasePlugin)</text><text x="755" y="219" class="tiny">replay a decision · journal an effect · admit/charge budget</text>
+
+  <rect x="735" y="245" width="380" height="58" rx="10" class="green"/><text x="755" y="269" class="small">TapeSessionService</text><text x="755" y="289" class="tiny">append_event → event + state_delta + tape_* rows, ONE txn</text>
+
+  <rect x="735" y="315" width="380" height="58" rx="10" class="green"/><text x="755" y="339" class="small">tape.gated(name, …)</text><text x="755" y="359" class="tiny">a LongRunningFunctionTool → status=waiting; SendSignal resumes it</text>
+
+  <rect x="735" y="385" width="380" height="58" rx="10" class="green"/><text x="755" y="409" class="small">Tape recovery loop</text><text x="755" y="429" class="tiny">scans non-terminal runs, calls runner.run(invocation_id=…)</text>
+
+  <rect x="735" y="455" width="380" height="58" rx="10" class="green"/><text x="755" y="479" class="small">decision ledger + auto-provenance</text><text x="755" y="499" class="tiny">RecordDecision / GetDecision; model + request + response captured</text>
+
+  <rect x="735" y="525" width="380" height="58" rx="10" class="green"/><text x="755" y="549" class="small">RecordDecision(policy_version=…)</text><text x="755" y="569" class="tiny">the seventh point of ceremony, for free</text>
+
+  <path d="M465,204 L735,204" class="line-blue"/>
+  <path d="M465,274 L735,274" class="line-blue"/>
+  <path d="M465,344 L735,344" class="line-blue"/>
+  <path d="M465,414 L735,414" class="line-blue"/>
+  <path d="M465,484 L735,484" class="line-blue"/>
+  <path d="M465,554 L735,554" class="line-blue"/>
+
+  <rect x="230" y="630" width="740" height="50" rx="12" class="soft"/>
+  <text x="600" y="652" class="label" text-anchor="middle">Wiring it in:  Runner(session_service=TapeSessionService(…), plugins=[TapePlugin()])</text>
+  <text x="600" y="671" class="tiny" text-anchor="middle">…or, for an app you'd rather not touch:  tape run -- python my_adk_app.py  (an honest monkeypatch)</text>
+</svg>

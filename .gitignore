@@ -28,3 +28,22 @@ tape/sdk/go/bin/
 tape/sdk/java/target/
 tape/sdk/java/.mvn/
 *.class
+
+# Docs site
+site/
+
+# Generator outputs that should NOT be committed.
+# The handwritten landing pages (index.md / api.md placeholders) stay tracked
+# so `mkdocs serve` works for a fresh checkout; CI overwrites them at build
+# time. The multi-file trees and copied javadoc are pure generator output.
+tape/docs/design/                                # mirrored from design-principles/
+tape/docs/reference/typescript/classes/
+tape/docs/reference/typescript/interfaces/
+tape/docs/reference/typescript/functions/
+tape/docs/reference/typescript/types/
+tape/docs/reference/typescript/type-aliases/
+tape/docs/reference/typescript/variables/
+tape/docs/reference/typescript/enumerations/
+tape/docs/reference/typescript/modules/
+tape/docs/reference/java/javadoc/                # the real Javadoc tree
+!tape/docs/reference/java/javadoc/index.html     # keep the placeholder redirect

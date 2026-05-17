@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="780" viewBox="0 0 1200 780" role="img" aria-labelledby="title desc">
+  <title>Six Places the Inherited Toolkit Runs Out</title>
+  <desc>Six classes of agent — where classical microservice patterns run out, and what the system needs instead.</desc>
+  <defs>
+    <marker id="arrow-grey" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8a8a8a" />
+    </marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 33px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .head { font: 700 15px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .label { font: 700 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #404040; }
+      .tiny { font: 400 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #404040; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.2; rx: 12; }
+      .name { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.5; rx: 12; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.4; rx: 12; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.5; rx: 12; }
+      .conn { stroke: #8a8a8a; stroke-width: 1.3; fill: none; marker-end: url(#arrow-grey); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="780"/>
+  <text x="60" y="64" class="title" text-anchor="start">Six Places the Inherited Toolkit Runs Out</text>
+  <text x="60" y="94" class="subtitle" text-anchor="start">Classical microservice primitives handle the side-effect mechanics. They were not built for these six.</text>
+
+  <text x="170" y="124" class="head" text-anchor="middle">agent class</text>
+  <text x="510" y="124" class="head" text-anchor="middle" fill="#8A3C3C">where the toolkit runs out</text>
+  <text x="910" y="124" class="head" text-anchor="middle" fill="#486A8F">what the system needs</text>
+
+  <!-- ROW 1 coding -->
+  <rect x="60"  y="134" width="240" height="96" class="name"/>
+  <text x="78"  y="160" class="label" text-anchor="start">autonomous coding</text>
+  <text x="78"  y="180" class="tiny"  text-anchor="start">plan → edit → test → PR;</text>
+  <text x="78"  y="197" class="tiny"  text-anchor="start">on fail, revert</text>
+  <text x="78"  y="218" class="mono"  text-anchor="start">"a saga"</text>
+  <rect x="312" y="134" width="396" height="96" class="red"/>
+  <text x="328" y="160" class="small" text-anchor="start">the plan is sampled at runtime —</text>
+  <text x="328" y="178" class="small" text-anchor="start">the forward graph is not knowable;</text>
+  <text x="328" y="196" class="small" text-anchor="start">compensation is partial: the code</text>
+  <text x="328" y="214" class="small" text-anchor="start">reverts, the burned context does not.</text>
+  <rect x="720" y="134" width="420" height="96" class="blue"/>
+  <text x="736" y="160" class="small" text-anchor="start">journaled decisions, not just effects;</text>
+  <text x="736" y="178" class="small" text-anchor="start">cheap fork and abandon of plans;</text>
+  <text x="736" y="196" class="small" text-anchor="start">budget enforcement; resume that uses</text>
+  <text x="736" y="214" class="small" text-anchor="start">the journal as memory, not a transcript.</text>
+  <path d="M708,182 L718,182" class="conn"/>
+
+  <!-- ROW 2 browser -->
+  <rect x="60"  y="240" width="240" height="96" class="name"/>
+  <text x="78"  y="266" class="label" text-anchor="start">browser-use</text>
+  <text x="78"  y="286" class="tiny"  text-anchor="start">see screenshot → click →</text>
+  <text x="78"  y="303" class="tiny"  text-anchor="start">type → navigate</text>
+  <text x="78"  y="324" class="mono"  text-anchor="start">"idempotent retry"</text>
+  <rect x="312" y="240" width="396" height="96" class="red"/>
+  <text x="328" y="266" class="small" text-anchor="start"><tspan class="mono">click@(453,287)</tspan> is not idempotent;</text>
+  <text x="328" y="284" class="small" text-anchor="start">the DOM is a stateful UI with implicit</text>
+  <text x="328" y="302" class="small" text-anchor="start">locks the model can't see; replay hits</text>
+  <text x="328" y="320" class="small" text-anchor="start">a different page two minutes later.</text>
+  <rect x="720" y="240" width="420" height="96" class="blue"/>
+  <text x="736" y="266" class="small" text-anchor="start">visual state snapshots in the journal;</text>
+  <text x="736" y="284" class="small" text-anchor="start">action verification — did the click do</text>
+  <text x="736" y="302" class="small" text-anchor="start">what was intended; detection when</text>
+  <text x="736" y="320" class="small" text-anchor="start">replay diverges from the trajectory.</text>
+  <path d="M708,288 L718,288" class="conn"/>
+
+  <!-- ROW 3 SRE -->
+  <rect x="60"  y="346" width="240" height="96" class="name"/>
+  <text x="78"  y="372" class="label" text-anchor="start">SRE on a page</text>
+  <text x="78"  y="392" class="tiny"  text-anchor="start">alert → metrics → logs →</text>
+  <text x="78"  y="409" class="tiny"  text-anchor="start">hypothesis → fix</text>
+  <text x="78"  y="430" class="mono"  text-anchor="start">"a runbook saga"</text>
+  <rect x="312" y="346" width="396" height="96" class="red"/>
+  <text x="328" y="372" class="small" text-anchor="start">action space = anything on a Linux box;</text>
+  <text x="328" y="390" class="small" text-anchor="start">some acts destructive; the system</text>
+  <text x="328" y="408" class="small" text-anchor="start">mutates while the agent reasons;</text>
+  <text x="328" y="426" class="small" text-anchor="start">two agents on one incident fight.</text>
+  <rect x="720" y="346" width="420" height="96" class="blue"/>
+  <text x="736" y="372" class="small" text-anchor="start">per-action approval gates for</text>
+  <text x="736" y="390" class="small" text-anchor="start">destructive ops; fresh-state checks;</text>
+  <text x="736" y="408" class="small" text-anchor="start">coordination via shared environment</text>
+  <text x="736" y="426" class="small" text-anchor="start">state; a journal that doubles as audit.</text>
+  <path d="M708,394 L718,394" class="conn"/>
+
+  <!-- ROW 4 support -->
+  <rect x="60"  y="452" width="240" height="96" class="name"/>
+  <text x="78"  y="478" class="label" text-anchor="start">customer support</text>
+  <text x="78"  y="498" class="tiny"  text-anchor="start">read → classify → query →</text>
+  <text x="78"  y="515" class="tiny"  text-anchor="start">act → respond</text>
+  <text x="78"  y="536" class="mono"  text-anchor="start">"request / response"</text>
+  <rect x="312" y="452" width="396" height="96" class="red"/>
+  <text x="328" y="478" class="small" text-anchor="start">the conversation accumulates</text>
+  <text x="328" y="496" class="small" text-anchor="start">commitments — "$50 refund" in turn 2,</text>
+  <text x="328" y="514" class="small" text-anchor="start">honored in turn 5, two days later;</text>
+  <text x="328" y="532" class="small" text-anchor="start">you cannot undo an empathetic sentence.</text>
+  <rect x="720" y="452" width="420" height="96" class="blue"/>
+  <text x="736" y="478" class="small" text-anchor="start">commitments as data the language</text>
+  <text x="736" y="496" class="small" text-anchor="start">renders; conversation suspend across</text>
+  <text x="736" y="514" class="small" text-anchor="start">days; a verification step before any</text>
+  <text x="736" y="532" class="small" text-anchor="start">commitment is rendered to the customer.</text>
+  <path d="M708,500 L718,500" class="conn"/>
+
+  <!-- ROW 5 research -->
+  <rect x="60"  y="558" width="240" height="96" class="name"/>
+  <text x="78"  y="584" class="label" text-anchor="start">deep research</text>
+  <text x="78"  y="604" class="tiny"  text-anchor="start">plan queries → read →</text>
+  <text x="78"  y="621" class="tiny"  text-anchor="start">synthesize → follow up</text>
+  <text x="78"  y="642" class="mono"  text-anchor="start">"fan-out / fan-in"</text>
+  <rect x="312" y="558" width="396" height="96" class="red"/>
+  <text x="328" y="584" class="small" text-anchor="start">branching is non-enumerable; costs</text>
+  <text x="328" y="602" class="small" text-anchor="start">accumulate to exhaustion; citation</text>
+  <text x="328" y="620" class="small" text-anchor="start">correctness is unverifiable; replay</text>
+  <text x="328" y="638" class="small" text-anchor="start">re-runs searches → a different report.</text>
+  <rect x="720" y="558" width="420" height="96" class="blue"/>
+  <text x="736" y="584" class="small" text-anchor="start">budget as a first-class workflow</text>
+  <text x="736" y="602" class="small" text-anchor="start">construct; journaled provenance for</text>
+  <text x="736" y="620" class="small" text-anchor="start">every claim; replay = resume the</text>
+  <text x="736" y="638" class="small" text-anchor="start">search tree, not reproduce the output.</text>
+  <path d="M708,606 L718,606" class="conn"/>
+
+  <!-- ROW 6 sales -->
+  <rect x="60"  y="664" width="240" height="96" class="name"/>
+  <text x="78"  y="690" class="label" text-anchor="start">sales / outbound</text>
+  <text x="78"  y="710" class="tiny"  text-anchor="start">research → draft → send →</text>
+  <text x="78"  y="727" class="tiny"  text-anchor="start">follow up → book</text>
+  <text x="78"  y="748" class="mono"  text-anchor="start">"a drip campaign"</text>
+  <rect x="312" y="664" width="396" height="96" class="red"/>
+  <text x="328" y="690" class="small" text-anchor="start">communication is reputation-bearing —</text>
+  <text x="328" y="708" class="small" text-anchor="start">the wrong message is a damage event;</text>
+  <text x="328" y="726" class="small" text-anchor="start">there is no unsend; the plan must adapt</text>
+  <text x="328" y="744" class="small" text-anchor="start">to signals; two agents on one prospect.</text>
+  <rect x="720" y="664" width="420" height="96" class="blue"/>
+  <text x="736" y="690" class="small" text-anchor="start">lock-and-coordinate at the prospect</text>
+  <text x="736" y="708" class="small" text-anchor="start">level; irreversible-action gates with</text>
+  <text x="736" y="726" class="small" text-anchor="start">human approval; "do not contact" state</text>
+  <text x="736" y="744" class="small" text-anchor="start">that lives outside any single run.</text>
+  <path d="M708,712 L718,712" class="conn"/>
+</svg>

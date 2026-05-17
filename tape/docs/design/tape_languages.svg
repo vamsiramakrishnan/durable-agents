@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title>One Server, Four SDKs</title>
+  <desc>One Server, Four SDKs — a single Rust Tape server fronts ADK agents written in Python, Java, Go, or TypeScript, all speaking the same tape.proto contract.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 33px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 18px ui-serif, Georgia, serif; fill: #686868; }
+      .label { font: 700 17px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, sans-serif; fill: #1f1f1f; }
+      .tiny { font: 400 12.5px ui-sans-serif, system-ui, sans-serif; fill: #686868; }
+      .mono { font: 600 13px ui-monospace, Menlo, Consolas, monospace; fill: #1f1f1f; }
+      .box { fill: #fffefa; stroke: #1f1f1f; stroke-width: 1.6; }
+      .amber { fill: #F4E7D8; stroke: #A36A28; stroke-width: 1.7; }
+      .blue { fill: #E8EEF5; stroke: #486A8F; stroke-width: 1.7; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.7; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.2; }
+      .line { stroke: #1f1f1f; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="560"/>
+  <text x="60" y="62" class="title">One Server, Four SDKs</text>
+  <text x="60" y="92" class="subtitle">Python writes the agent — or Java, or Go, or TypeScript. The runtime is the same.</text>
+
+  <!-- four agents -->
+  <rect x="70" y="130" width="240" height="74" rx="12" class="amber"/><text x="190" y="160" class="label" text-anchor="middle">ADK · Python</text><text x="190" y="184" class="mono" text-anchor="middle">tape-py  (import tape)</text>
+  <rect x="330" y="130" width="240" height="74" rx="12" class="amber"/><text x="450" y="160" class="label" text-anchor="middle">ADK · Java</text><text x="450" y="184" class="mono" text-anchor="middle">tape-java</text>
+  <rect x="630" y="130" width="240" height="74" rx="12" class="amber"/><text x="750" y="160" class="label" text-anchor="middle">ADK · Go</text><text x="750" y="184" class="mono" text-anchor="middle">tape-go</text>
+  <rect x="890" y="130" width="240" height="74" rx="12" class="amber"/><text x="1010" y="160" class="label" text-anchor="middle">ADK · TypeScript</text><text x="1010" y="184" class="mono" text-anchor="middle">tape-ts</text>
+
+  <!-- proto contract -->
+  <rect x="330" y="265" width="540" height="64" rx="12" class="blue"/>
+  <text x="600" y="291" class="label" text-anchor="middle">tape.proto — the contract</text>
+  <text x="600" y="313" class="tiny" text-anchor="middle">BeginRun · RecordDecision · BeginEffect · CompleteEffect · Compensate · AwaitSignal · AppendEvent · …</text>
+
+  <!-- server -->
+  <rect x="330" y="390" width="540" height="100" rx="14" class="green"/>
+  <text x="600" y="418" class="label" text-anchor="middle">Tape server  (Rust · Tokio · Tonic · sqlx)</text>
+  <text x="600" y="442" class="small" text-anchor="middle">run registry · decision / effect / obligation ledgers · gates · budget · reconciler · recovery loop</text>
+  <text x="600" y="464" class="small" text-anchor="middle">→ Postgres  (SQLite for dev / tests)</text>
+  <text x="600" y="482" class="tiny" text-anchor="middle">v1: Python fully wired &amp; tested · Java/Go/TS ship generated clients + adapter scaffolds</text>
+
+  <path d="M190,204 C 190,235 420,250 470,265" class="line"/>
+  <path d="M450,204 C 450,230 530,250 560,265" class="line"/>
+  <path d="M750,204 C 750,230 670,250 640,265" class="line"/>
+  <path d="M1010,204 C 1010,235 780,250 730,265" class="line"/>
+  <path d="M600,329 L600,390" class="line"/>
+</svg>

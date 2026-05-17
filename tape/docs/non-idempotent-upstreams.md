@@ -79,7 +79,7 @@ The outbox reactor invokes a registered connector under a CAS lease. Built-ins:
 `HTTPConnector` (POST + `X-Tape-*` headers) and `PubSubConnector` (publish to a
 topic, paired with a downstream subscriber that talks to the upstream). Custom
 connectors implement the `EffectConnector` protocol (`dispatch` / `observe` /
-`compensate`) — see [`tape/sdk/python/tape/connectors/base.py`](../sdk/python/tape/connectors/base.py).
+`compensate`) — see the [Python connectors reference](reference/python/connectors.md).
 
 ```python
 from tape import connectors

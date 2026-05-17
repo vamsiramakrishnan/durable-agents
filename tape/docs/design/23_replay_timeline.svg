@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title>How Replay Actually Works</title>
+  <desc>Two timelines: the first run makes calls and appends results to history; every replay re-runs the function but reads those results back, resuming where history runs out.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <marker id="arrow-grey" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#8a8a8a"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .h{font:700 16px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .step{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#1f1f1f}
+      .small{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .ev{font:500 12px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#404040}
+      .sbox{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:10}
+      .sbox2{fill:#E8EEF5;stroke:#486A8F;stroke-width:1.6;rx:10}
+      .hist{fill:#EAE7DF;stroke:#8a8a8a;stroke-width:1.3;rx:8}
+      .histnew{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.4;rx:8}
+      .line{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .down{stroke:#8a8a8a;stroke-width:1.5;fill:none;marker-end:url(#arrow-grey)}
+      .up{stroke:#486A8F;stroke-width:1.6;fill:none;marker-end:url(#arrow);stroke-dasharray:5 4}
+      .crash{stroke:#8A3C3C;stroke-width:3;fill:none}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+      .band{fill:#F4E7D8;stroke:#A36A28;stroke-width:1.4;rx:8}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="680"/>
+  <text x="60" y="54" class="title">How Replay Actually Works</text>
+  <text x="60" y="82" class="subtitle">The first run makes calls and appends results to history. Every replay re-runs the function but reads those results back.</text>
+
+  <!-- FIRST RUN -->
+  <text x="60" y="130" class="h">FIRST RUN — the function executes; each activity runs on a worker; the result is appended to history</text>
+  <rect x="80"  y="146" width="180" height="46" class="sbox"/><text x="170" y="174" class="step" text-anchor="middle">read_balances()</text>
+  <rect x="300" y="146" width="180" height="46" class="sbox"/><text x="390" y="174" class="step" text-anchor="middle">decide_sweeps()</text>
+  <rect x="520" y="146" width="180" height="46" class="sbox"/><text x="610" y="174" class="step" text-anchor="middle">execute_sweep()</text>
+  <path d="M260,169 L300,169" class="line"/><path d="M480,169 L520,169" class="line"/>
+  <path d="M700,169 L760,169" class="line"/><text x="800" y="173" class="small">…</text>
+  <path d="M845,300 L850,288 L855,300 L860,288 L865,300 L870,288 L875,300 L878,295" class="crash"/><text x="880" y="180" class="small" fill="#8A3C3C" font-weight="700">✗ crash</text>
+  <!-- arrows down to history -->
+  <path d="M170,192 L170,232" class="down"/><path d="M390,192 L390,232" class="down"/><path d="M610,192 L610,232" class="down"/>
+
+  <!-- HISTORY strip -->
+  <text x="60" y="262" class="h">HISTORY  (append-only event log, owned by the runtime)</text>
+  <rect x="80"  y="272" width="180" height="44" class="hist"/><text x="170" y="293" class="ev" text-anchor="middle">e1 ▸ Balances(...)</text><text x="170" y="309" class="tiny" text-anchor="middle">activity result</text>
+  <rect x="300" y="272" width="180" height="44" class="hist"/><text x="390" y="293" class="ev" text-anchor="middle">e2 ▸ Plan(id="p-91")</text><text x="390" y="309" class="tiny" text-anchor="middle">the model's choice</text>
+  <rect x="520" y="272" width="180" height="44" class="histnew"/><text x="610" y="293" class="ev" text-anchor="middle">e3 ▸ wire 4f2a</text><text x="610" y="309" class="tiny" text-anchor="middle">written on the resumed run</text>
+  <rect x="740" y="272" width="180" height="44" class="histnew" fill-opacity="0.4"/><text x="830" y="298" class="tiny" text-anchor="middle">e4 … onward</text>
+
+  <!-- REPLAY -->
+  <text x="60" y="378" class="h">REPLAY (after crash / deploy) — the function re-runs from the top; each activity call returns the recorded result</text>
+  <rect x="80"  y="394" width="180" height="46" class="sbox2"/><text x="170" y="416" class="step" text-anchor="middle">read_balances()</text><text x="170" y="432" class="tiny" text-anchor="middle">→ reads e1, NOT re-run</text>
+  <rect x="300" y="394" width="180" height="46" class="sbox2"/><text x="390" y="416" class="step" text-anchor="middle">decide_sweeps()</text><text x="390" y="432" class="tiny" text-anchor="middle">→ reads e2, model NOT re-sampled</text>
+  <rect x="520" y="394" width="180" height="46" class="sbox"/><text x="610" y="412" class="step" text-anchor="middle">execute_sweep()</text><text x="610" y="430" class="tiny" text-anchor="middle">→ not in history → runs NOW</text>
+  <path d="M260,417 L300,417" class="line"/><path d="M480,417 L520,417" class="line"/><path d="M700,417 L760,417" class="line"/><text x="800" y="421" class="small">… forward …</text>
+  <path d="M170,394 L170,318" class="up"/><path d="M390,394 L390,318" class="up"/>
+  <rect x="520" y="452" width="220" height="22" class="band"/><text x="630" y="468" class="small" text-anchor="middle">▲ execution resumes here</text>
+
+  <!-- side note + footer -->
+  <rect x="80" y="500" width="1040" height="56" class="soft"/>
+  <text x="600" y="522" class="h" text-anchor="middle">If the function is not deterministic, it takes a path history doesn't describe — non-determinism error.</text>
+  <text x="600" y="542" class="small" text-anchor="middle">That is the whole subject of Section XI: the language can drift you, and so can your next deploy.</text>
+
+  <text x="60" y="600" class="small">Event sourcing: the workflow function re-runs, but its activity calls become reads from history —</text>
+  <text x="60" y="620" class="small">so side effects fire once, and the function resumes exactly where history runs out.</text>
+  <text x="60" y="652" class="tiny">the first run makes calls · every replay makes reads</text>
+</svg>

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title>The Language Can Drift You</title>
+  <desc>A non-deterministic call in workflow code makes the function take a path history does not describe; the fix is to record the value or make it an activity result.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .h{font:700 16px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .lane{font:700 14px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .code{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#1f1f1f}
+      .small{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .tiny{font:400 12px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .box{fill:#fffefa;stroke:#1f1f1f;stroke-width:1.5;rx:10}
+      .red{fill:#F2DEDE;stroke:#8A3C3C;stroke-width:1.6;rx:10}
+      .green{fill:#E5EFE8;stroke:#4E745B;stroke-width:1.6;rx:10}
+      .hist{fill:#EAE7DF;stroke:#8a8a8a;stroke-width:1.2;rx:8}
+      .line{stroke:#1f1f1f;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .div{stroke:#d8d3c8;stroke-width:1.4}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="640"/>
+  <text x="60" y="54" class="title">The Language Can Drift You</text>
+  <text x="60" y="82" class="subtitle">Anything in workflow code whose value isn't recorded in history must give the same answer on every replay.</text>
+
+  <!-- WRONG lane -->
+  <text x="60" y="122" class="lane" fill="#8A3C3C">WRONG — random / now in workflow code</text>
+  <rect x="60" y="134" width="500" height="44" class="box"/><text x="80" y="153" class="tiny">FIRST RUN</text><text x="80" y="171" class="code">jitter = random.uniform(0.98, 1.02)  → 0.99</text>
+  <path d="M310,178 L310,200" class="line"/>
+  <rect x="60" y="200" width="500" height="36" class="box"/><text x="310" y="223" class="code" text-anchor="middle">if jitter &lt; 1.0:  →  branch A  →  execute_activity(price_low)</text>
+  <path d="M310,236 L310,256" class="line"/>
+  <rect x="120" y="256" width="380" height="32" class="hist"/><text x="310" y="277" class="code" text-anchor="middle">history ▸ e_n = price_low's result</text>
+  <rect x="60" y="306" width="500" height="44" class="box"/><text x="80" y="325" class="tiny">REPLAY</text><text x="80" y="343" class="code">jitter = random.uniform(0.98, 1.02)  → 1.01  ← different!</text>
+  <path d="M310,350 L310,372" class="line"/>
+  <rect x="60" y="372" width="500" height="36" class="box"/><text x="310" y="395" class="code" text-anchor="middle">if jitter &lt; 1.0:  →  branch B  →  execute_activity(price_high)</text>
+  <path d="M310,408 L310,430" class="line"/>
+  <rect x="60" y="430" width="500" height="58" class="red"/><text x="310" y="453" class="small" text-anchor="middle">expects price_high's result — history has price_low's</text><text x="310" y="473" class="h" text-anchor="middle">✗ NON-DETERMINISM PANIC  (or worse: silent divergence)</text>
+
+  <line x1="600" y1="110" x2="600" y2="500" class="div"/>
+
+  <!-- RIGHT lane -->
+  <text x="640" y="122" class="lane" fill="#4E745B">RIGHT — runtime call or activity result</text>
+  <rect x="640" y="134" width="500" height="44" class="box"/><text x="660" y="153" class="tiny">FIRST RUN</text><text x="660" y="171" class="code">jitter = await execute_activity(roll_jitter)  → 0.99</text>
+  <path d="M890,178 L890,200" class="line"/>
+  <rect x="700" y="200" width="380" height="32" class="hist"/><text x="890" y="221" class="code" text-anchor="middle">history ▸ e_m = 0.99  (recorded)</text>
+  <path d="M890,232 L890,254" class="line"/>
+  <rect x="640" y="254" width="500" height="36" class="box"/><text x="890" y="277" class="code" text-anchor="middle">branch A  →  execute_activity(price_low)  →  recorded</text>
+  <rect x="640" y="312" width="500" height="44" class="box"/><text x="660" y="331" class="tiny">REPLAY</text><text x="660" y="349" class="code">jitter = await execute_activity(roll_jitter)  → reads 0.99</text>
+  <path d="M890,356 L890,378" class="line"/>
+  <rect x="640" y="378" width="500" height="36" class="box"/><text x="890" y="401" class="code" text-anchor="middle">branch A  →  price_low  →  reads from history</text>
+  <path d="M890,414 L890,436" class="line"/>
+  <rect x="640" y="436" width="500" height="52" class="green"/><text x="890" y="459" class="h" text-anchor="middle">✓ same path — resumes forward</text><text x="890" y="478" class="tiny" text-anchor="middle">also: workflow.now() instead of datetime.now(); workflow.random()</text>
+
+  <rect x="200" y="520" width="800" height="48" class="soft"/><text x="600" y="540" class="h" text-anchor="middle">"Don't use time.sleep in workflow code" is not documentation.</text><text x="600" y="560" class="small" text-anchor="middle">It is a load-bearing rule with no enforcement behind it — in a system where the model is already one source of non-determinism.</text>
+</svg>

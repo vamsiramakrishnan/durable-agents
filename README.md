@@ -30,6 +30,21 @@ budget a piece of run state, every irreversible step compensable — so a crashe
 
 See [`tape/README.md`](tape/README.md) for the quickstart.
 
+## Documentation
+
+The full docs site is at **<https://vamsiramakrishnan.github.io/durable-agents/>** — built
+from `tape/docs/`, the SDK source (via `mkdocstrings` / `gomarkdoc` / `typedoc` /
+`javadoc`), and the live Typer app for the CLI reference.
+
+To preview locally:
+
+```bash
+pip install -r docs/requirements.txt
+pip install -e tape/sdk/python -e tape/cli
+scripts/docs/gen_all.sh        # mirror design pages + generate per-language API docs
+mkdocs serve                   # → http://127.0.0.1:8000
+```
+
 ## License
 
 [Apache 2.0](LICENSE).

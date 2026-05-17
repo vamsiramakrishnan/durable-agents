@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title>Where the Inherited Toolkit Runs Out</title>
+  <desc>Six agent classes plotted by breadth of action space and reversibility; the classical toolkit covers only the bounded, reversible corner.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3 L0,6 Z" fill="#1f1f1f"/></marker>
+    <style>
+      .bg{fill:#fbfaf7}
+      .title{font:700 33px ui-serif,Georgia,serif;fill:#1f1f1f}
+      .subtitle{font:400 17px ui-serif,Georgia,serif;fill:#686868}
+      .axis{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .axissub{font:400 12.5px ui-sans-serif,system-ui,sans-serif;fill:#686868}
+      .dot{fill:#8A3C3C}
+      .dotg{fill:#4E745B}
+      .lbl{font:700 13.5px ui-sans-serif,system-ui,sans-serif;fill:#1f1f1f}
+      .small{font:400 13px ui-sans-serif,system-ui,sans-serif;fill:#404040}
+      .axisline{stroke:#1f1f1f;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .box{stroke:#4E745B;stroke-width:1.8;fill:#E5EFE8;fill-opacity:0.55;stroke-dasharray:8 5;rx:8}
+      .grid{stroke:#e0dccf;stroke-width:1}
+      .soft{fill:#EAE7DF;stroke:#1f1f1f;stroke-width:1.2;rx:10}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="700"/>
+  <text x="60" y="56" class="title">Where the Inherited Toolkit Runs Out</text>
+  <text x="60" y="84" class="subtitle">Classical microservice primitives assumed a bounded, reversible action space. These six agents leave the box.</text>
+
+  <!-- plot area: x 200..1120, y 560..150 -->
+  <line x1="180" y1="320" x2="180" y2="560" class="grid"/><line x1="560" y1="150" x2="560" y2="560" class="grid"/><line x1="900" y1="150" x2="900" y2="560" class="grid"/>
+  <line x1="200" y1="440" x2="1120" y2="440" class="grid"/><line x1="200" y1="290" x2="1120" y2="290" class="grid"/>
+  <!-- axes -->
+  <path d="M180,560 L1140,560" class="axisline"/><text x="660" y="595" class="axis" text-anchor="middle">ACTION SPACE  →</text>
+  <text x="270" y="615" class="axissub" text-anchor="middle">bounded API calls</text><text x="660" y="615" class="axissub" text-anchor="middle">DOM clicks · shell commands</text><text x="1030" y="615" class="axissub" text-anchor="middle">anything · reputation-bearing comms</text>
+  <path d="M180,560 L180,130" class="axisline"/><text x="100" y="345" class="axis" transform="rotate(-90 100 345)" text-anchor="middle">REVERSIBILITY  ↑ (harder)</text>
+  <text x="150" y="540" class="axissub" text-anchor="end">DB revert ·</text><text x="150" y="556" class="axissub" text-anchor="end">idempotent retry</text>
+  <text x="150" y="370" class="axissub" text-anchor="end">contextual undo</text><text x="150" y="386" class="axissub" text-anchor="end">(another agent run)</text>
+  <text x="150" y="200" class="axissub" text-anchor="end">no inverse</text><text x="150" y="216" class="axissub" text-anchor="end">exists</text>
+
+  <!-- the box the toolkit covers -->
+  <rect x="180" y="460" width="320" height="100" class="box"/><text x="340" y="500" class="lbl" text-anchor="middle" fill="#4E745B">the toolkit's box</text><text x="340" y="518" class="small" text-anchor="middle">bounded · reversible —</text><text x="340" y="534" class="small" text-anchor="middle">idempotency &amp; revert handle it</text>
+
+  <!-- dots -->
+  <circle cx="430" cy="370" r="9" class="dot"/><text x="445" y="368" class="lbl">coding — revert code, not burned context</text>
+  <circle cx="640" cy="345" r="9" class="dot"/><text x="655" y="343" class="lbl">browser — "undo" is another agent run</text>
+  <circle cx="980" cy="215" r="9" class="dot"/><text x="965" y="213" class="lbl" text-anchor="end">SRE — destructive, partial; the box changes as you act</text>
+  <circle cx="520" cy="230" r="9" class="dot"/><text x="535" y="228" class="lbl">support — can't undo an empathetic sentence</text>
+  <circle cx="700" cy="430" r="9" class="dot"/><text x="715" y="428" class="lbl">research — replay finds different results, not "undone"</text>
+  <circle cx="430" cy="185" r="9" class="dot"/><text x="445" y="183" class="lbl">sales — no unsend; reputation-bearing</text>
+
+  <!-- footer -->
+  <rect x="250" y="640" width="700" height="48" class="soft"/>
+  <text x="600" y="660" class="lbl" text-anchor="middle">The toolkit handles the bounded, reversible corner. The six agents push out along both axes —</text>
+  <text x="600" y="679" class="small" text-anchor="middle">and the toolkit runs out where the dots leave the box. That gap is the ceiling.</text>
+</svg>

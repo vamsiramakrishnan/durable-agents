@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title>Two Axes, Not One</title>
+  <desc>Declarative-vs-imperative is how the orchestration is written; durable-vs-ephemeral is whether it survives — the two are orthogonal.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfaf7; }
+      .title { font: 700 34px ui-serif, Georgia, serif; fill: #1f1f1f; }
+      .subtitle { font: 400 17px ui-serif, Georgia, serif; fill: #686868; }
+      .axis { font: 700 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .axissub { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .label { font: 700 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #1f1f1f; }
+      .small { font: 400 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #303030; }
+      .tiny { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; fill: #686868; }
+      .mono { font: 500 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #303030; }
+      .red { fill: #F2DEDE; stroke: #8A3C3C; stroke-width: 1.6; rx: 14; }
+      .green { fill: #E5EFE8; stroke: #4E745B; stroke-width: 1.6; rx: 14; }
+      .soft { fill: #EAE7DF; stroke: #1f1f1f; stroke-width: 1.2; rx: 12; }
+      .tick { stroke: #b9b3a6; stroke-width: 1.4; fill: none; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1200" height="675"/>
+  <text x="60" y="64" class="title" text-anchor="start">Two Axes, Not One</text>
+  <text x="60" y="94" class="subtitle" text-anchor="start">Declarative-vs-imperative is how you write the orchestration. Durable-vs-ephemeral is whether it survives. They are orthogonal.</text>
+
+  <!-- column headers -->
+  <text x="500" y="150" class="axis"   text-anchor="middle" fill="#8A3C3C">EPHEMERAL</text>
+  <text x="500" y="168" class="axissub" text-anchor="middle">crash = gone</text>
+  <text x="930" y="150" class="axis"   text-anchor="middle" fill="#4E745B">DURABLE</text>
+  <text x="930" y="168" class="axissub" text-anchor="middle">survives a crash · a deploy · a 48-hour wait</text>
+
+  <!-- row labels -->
+  <text x="150" y="290" class="axis"    text-anchor="middle">IMPERATIVE</text>
+  <text x="150" y="309" class="axissub" text-anchor="middle">await chains</text>
+  <text x="150" y="500" class="axis"    text-anchor="middle">DECLARATIVE</text>
+  <text x="150" y="519" class="axissub" text-anchor="middle">onEvent · graph · statechart</text>
+
+  <!-- top-left: imperative + ephemeral -->
+  <rect x="285" y="186" width="430" height="200" class="red"/>
+  <text x="305" y="216" class="label" text-anchor="start">a script with retries</text>
+  <text x="305" y="244" class="mono"  text-anchor="start">@retry def step(): bank.wire(...)</text>
+  <text x="305" y="270" class="tiny"  text-anchor="start">state in RAM; resume = re-run from the top;</text>
+  <text x="305" y="288" class="tiny"  text-anchor="start">duplicates belong to whoever's idempotency</text>
+  <text x="305" y="306" class="tiny"  text-anchor="start">layer happens to be paying attention.</text>
+  <text x="305" y="334" class="small" text-anchor="start">→ the developer rebuilds Temporal, badly,</text>
+  <text x="305" y="352" class="small" text-anchor="start">   one integration at a time.</text>
+
+  <!-- top-right: imperative + durable -->
+  <rect x="745" y="186" width="395" height="200" class="green"/>
+  <text x="765" y="216" class="label" text-anchor="start">the imperative durable runtime</text>
+  <text x="765" y="244" class="mono"  text-anchor="start">await workflow.execute_activity(...)</text>
+  <text x="765" y="270" class="tiny"  text-anchor="start">Temporal · Restate · DBOS · Step Functions ·</text>
+  <text x="765" y="288" class="tiny"  text-anchor="start">Azure Durable Functions · Cloudflare Workflows</text>
+  <text x="765" y="316" class="small" text-anchor="start">→ history is the journal; replay returns it;</text>
+  <text x="765" y="334" class="small" text-anchor="start">   resume from the last completed step.</text>
+  <text x="765" y="362" class="tiny"  text-anchor="start">— Section VIII</text>
+
+  <!-- bottom-left: declarative + ephemeral  (the trap) -->
+  <rect x="285" y="396" width="430" height="200" class="red"/>
+  <text x="305" y="426" class="label" text-anchor="start">the onEvent hook, alone</text>
+  <text x="305" y="454" class="mono"  text-anchor="start">on(state.x change) if cond: next_node()</text>
+  <text x="305" y="480" class="tiny"  text-anchor="start">RxJS · vanilla actors · in-memory statecharts ·</text>
+  <text x="305" y="498" class="tiny"  text-anchor="start">LangGraph with no checkpointer</text>
+  <text x="305" y="526" class="small" text-anchor="start">→ state lost on crash; trigger may drop or</text>
+  <text x="305" y="544" class="small" text-anchor="start">   double-fire; no timer, no journal.</text>
+  <text x="305" y="574" class="label" text-anchor="start" fill="#8A3C3C">— the tell</text>
+
+  <!-- bottom-right: declarative + durable  (the synthesis) -->
+  <rect x="745" y="396" width="395" height="200" class="green"/>
+  <text x="765" y="426" class="label" text-anchor="start">the synthesis</text>
+  <text x="765" y="454" class="mono"  text-anchor="start">@workflow.signal / @workflow.update</text>
+  <text x="765" y="480" class="tiny"  text-anchor="start">Inngest · Convex · Restate virtual objects ·</text>
+  <text x="765" y="498" class="tiny"  text-anchor="start">Temporal signals/updates · LangGraph + a</text>
+  <text x="765" y="516" class="tiny"  text-anchor="start">durable engine underneath</text>
+  <text x="765" y="544" class="small" text-anchor="start">→ the declarative surface, the durable</text>
+  <text x="765" y="562" class="small" text-anchor="start">   guarantees. Section IX ⑥ is built here.</text>
+
+  <!-- footer -->
+  <rect x="250" y="618" width="700" height="40" class="soft"/>
+  <text x="600" y="644" class="label" text-anchor="middle">The reactive model picks a point on the first axis. It is silent about the second.</text>
+</svg>
