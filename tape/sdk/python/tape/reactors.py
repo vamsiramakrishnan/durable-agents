@@ -188,56 +188,101 @@ def run_reactors(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAU
 
 
 # ── outbox relay (durable cursor; the WAL → external-system bridge) ────────
+#
+# Cursor format: `{"last_global_seq": N}` — a single integer over the new
+# monotonic `tape_journal.global_seq` column (see design-principles/
+# tape-event-bus.md). The legacy `{"from_ts_ms", "last_run_id", "last_seq"}`
+# shape is detected on read and one-shot-migrated to `{"last_global_seq": 0}`
+# (i.e. re-read from the start), which is the correct conservative choice:
+# the relay's at-least-once contract already requires the downstream sink to
+# dedup on (run_id, seq), so a re-read is harmless.
+
+import logging as _logging
+
+_log = _logging.getLogger("tape.reactors.outbox")
+
 
 def _read_cursor(path):
-    """Returns (from_ts_ms, last_run_id, last_seq) from a JSON cursor file."""
+    """Returns `last_global_seq` (int). If the file is in the legacy format
+    (`from_ts_ms` / `last_run_id` / `last_seq`), migrates it to the new shape
+    by resetting to 0 and logging a warning — the downstream sink is expected
+    to be idempotent, so a one-time re-read is harmless."""
     import os, json as _json
     if not path or not os.path.exists(path):
-        return 0, "", 0
+        return 0
     try:
         d = _json.load(open(path))
-        return int(d.get("from_ts_ms", 0)), str(d.get("last_run_id", "")), int(d.get("last_seq", 0))
     except Exception:
-        return 0, "", 0
+        return 0
+    if "last_global_seq" in d:
+        try:
+            return int(d.get("last_global_seq", 0))
+        except Exception:
+            return 0
+    # Legacy cursor: convert + warn.
+    if any(k in d for k in ("from_ts_ms", "last_run_id", "last_seq")):
+        _log.warning(
+            "tape outbox: legacy cursor at %s (keys=%s); migrating to "
+            "{last_global_seq:0} and re-reading from the start (downstream "
+            "sink should dedup on (run_id, seq))",
+            path, sorted(d.keys()))
+        _write_cursor(path, 0)
+        return 0
+    return 0
 
 
-def _write_cursor(path, from_ts_ms, last_run_id, last_seq):
+def _write_cursor(path, last_global_seq):
     import os, json as _json
     if not path:
         return
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        _json.dump({"from_ts_ms": from_ts_ms, "last_run_id": last_run_id, "last_seq": last_seq}, f)
+        _json.dump({"last_global_seq": int(last_global_seq)}, f)
     os.replace(tmp, path)
 
 
 def outbox_relay_tick(url: str, sink: Any, *, cursor_path: str = "",
-                     run_id: str = "", kind: str = "", batch_limit: int = 512,
-                     client: Optional[TapeClient] = None, idle_window_s: float = 0.5) -> int:
+                     run_id: str = "", kind: str = "",
+                     subject_pattern: str = "", predicate_cel: str = "",
+                     batch_limit: int = 512,
+                     client: Optional[TapeClient] = None,
+                     idle_window_s: float = 0.5) -> int:
     """One pass of the relay. Reads journal entries since the cursor via
-    `SubscribeEvents`, calls `sink.publish(entry)` for each, advances the cursor.
-    Returns the number of entries published. Skips the last-published `(run_id,
-    seq)` (the WAL tail's at-least-once boundary repeat). Combined with a sink
-    that's idempotent on `(run_id, seq)`, this is exactly-once-effective."""
+    `SubscribeBySubject` (cursored by `global_seq`), calls `sink.publish(entry)`
+    for each, advances the cursor. Returns the number of entries published.
+    Subject filter (`subject_pattern`, default `/tape/**`) + optional CEL
+    predicate are evaluated server-side. The cursor is monotonic on
+    `global_seq`, so dedup is just `entry.global_seq > last_global_seq`.
+
+    `run_id` / `kind` are retained for back-compat: when set, they're filtered
+    client-side after the subject-routed stream — preferable to translating
+    them into subject patterns because the canonical subject grammar is the
+    authoritative filter."""
     c = client or TapeClient(url)
     try:
-        from_ts, last_run, last_seq = _read_cursor(cursor_path)
+        last_seq = _read_cursor(cursor_path)
         from ._gen import tape_pb2 as _pb
-        req = _pb.SubscribeEventsRequest(from_ts_ms=from_ts, run_id=run_id, kind=kind)
-        # Per-call timeout: the server-side SubscribeEvents stream polls forever.
-        # We set a short timeout so the iterator surfaces DEADLINE_EXCEEDED when
-        # the server pauses (no more entries) — which is our signal to stop the
-        # batch. Within the window we drain whatever arrives, up to batch_limit.
+        pat = subject_pattern or "/tape/**"
+        # Per-call timeout: the server-side stream waits for more entries.
+        # A short deadline surfaces DEADLINE_EXCEEDED when the server pauses
+        # (no more entries) — our signal to stop the batch.
         import grpc as _grpc
-        stream = c.stub.SubscribeEvents(req, timeout=idle_window_s)
+        stream = c.subscribe_by_subject(
+            subject_pattern=pat, predicate_cel=predicate_cel,
+            from_global_seq=last_seq, timeout=idle_window_s)
         n = 0
         try:
             for entry in stream:
-                if entry.run_id == last_run and entry.seq <= last_seq:
+                # Skip the boundary entry that the server may re-emit at the
+                # cursor.
+                if entry.global_seq <= last_seq:
+                    continue
+                if run_id and entry.run_id != run_id:
+                    continue
+                if kind and entry.kind != kind:
                     continue
                 sink.publish(entry)
-                last_run, last_seq = entry.run_id, entry.seq
-                from_ts = max(from_ts, entry.ts_ms)
+                last_seq = entry.global_seq
                 n += 1
                 if n >= batch_limit:
                     break
@@ -253,7 +298,7 @@ def outbox_relay_tick(url: str, sink: Any, *, cursor_path: str = "",
             except Exception:
                 pass
         if n:
-            _write_cursor(cursor_path, from_ts, last_run, last_seq)
+            _write_cursor(cursor_path, last_seq)
         return n
     finally:
         if client is None:
@@ -261,15 +306,21 @@ def outbox_relay_tick(url: str, sink: Any, *, cursor_path: str = "",
 
 
 def run_outbox_relay(url: str, sink: Any, *, cursor_path: str = "", run_id: str = "",
-                    kind: str = "", interval_s: float = 1.0, once: bool = False) -> None:
+                    kind: str = "", subject_pattern: str = "", predicate_cel: str = "",
+                    interval_s: float = 1.0, once: bool = False) -> None:
     """Loop `outbox_relay_tick` forever (or once). The cursor is durable in
     `cursor_path` (a local JSON file), so a relay restart resumes from where it
-    stopped. Run multiple relays = multiple sinks (one cursor file each)."""
+    stopped. Run multiple relays = multiple sinks (one cursor file each).
+
+    `subject_pattern` (default `/tape/**`) and `predicate_cel` (default empty)
+    are forwarded to `SubscribeBySubject` so the server does the filtering."""
     c = TapeClient(url)
     try:
         while True:
             try:
-                outbox_relay_tick(url, sink, cursor_path=cursor_path, run_id=run_id, kind=kind, client=c)
+                outbox_relay_tick(url, sink, cursor_path=cursor_path, run_id=run_id,
+                                  kind=kind, subject_pattern=subject_pattern,
+                                  predicate_cel=predicate_cel, client=c)
             except Exception as ex:  # noqa: BLE001
                 import sys
                 print(f"[tape outbox] tick error: {ex}", file=sys.stderr, flush=True)

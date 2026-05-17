@@ -34,6 +34,20 @@ OBLIGATION_STATUS_COMMITTED = pb.OBLIGATION_STATUS_COMMITTED
 OBLIGATION_STATUS_COMPENSATED = pb.OBLIGATION_STATUS_COMPENSATED
 OBLIGATION_STATUS_STUCK = pb.OBLIGATION_STATUS_STUCK
 
+# Event-bus rebuild — handler kinds and task lifecycle states (see
+# design-principles/tape-event-bus.md).
+HANDLER_KIND_UNSPECIFIED = pb.HANDLER_KIND_UNSPECIFIED
+HANDLER_KIND_AGENT = pb.HANDLER_KIND_AGENT
+HANDLER_KIND_TASK = pb.HANDLER_KIND_TASK
+HANDLER_KIND_PUBLISH = pb.HANDLER_KIND_PUBLISH
+
+TASK_STATUS_UNSPECIFIED = pb.TASK_STATUS_UNSPECIFIED
+TASK_STATUS_PENDING = pb.TASK_STATUS_PENDING
+TASK_STATUS_CLAIMED = pb.TASK_STATUS_CLAIMED
+TASK_STATUS_DONE = pb.TASK_STATUS_DONE
+TASK_STATUS_FAILED = pb.TASK_STATUS_FAILED
+TASK_STATUS_DLQ = pb.TASK_STATUS_DLQ
+
 DEFAULT_URL = os.environ.get("TAPE_URL", "tape://localhost:7878")
 
 
@@ -254,8 +268,70 @@ class TapeClient:
 
     # ── the WAL tail ────────────────────────────────────────────────────────
 
-    def subscribe_events(self, *, from_ts_ms=0, run_id="", kind=""):
-        return self.stub.SubscribeEvents(pb.SubscribeEventsRequest(from_ts_ms=from_ts_ms, run_id=run_id, kind=kind))
+    def subscribe_events(self, *, from_ts_ms=0, run_id="", kind="",
+                         from_global_seq=0, subject_pattern=""):
+        return self.stub.SubscribeEvents(pb.SubscribeEventsRequest(
+            from_ts_ms=from_ts_ms, run_id=run_id, kind=kind,
+            from_global_seq=from_global_seq, subject_pattern=subject_pattern))
+
+    def subscribe_by_subject(self, *, subject_pattern, predicate_cel="",
+                             from_global_seq=0, timeout=None):
+        """Subject-routed, global-seq-cursored bus stream. Returns the streaming
+        gRPC iterator; iterate it (optionally in a thread) and `.cancel()` to
+        stop. Pass `timeout=` to bound the call (the iterator will surface
+        DEADLINE_EXCEEDED when the deadline passes — useful for tick-style
+        consumers like the outbox relay)."""
+        req = pb.SubscribeBySubjectRequest(
+            subject_pattern=subject_pattern, predicate_cel=predicate_cel,
+            from_global_seq=from_global_seq)
+        if timeout is not None:
+            return self.stub.SubscribeBySubject(req, timeout=timeout)
+        return self.stub.SubscribeBySubject(req)
+
+    # ── reactions & tasks (see design-principles/tape-event-bus.md) ─────────
+
+    def register_reaction(self, *, reaction_id="", name="", subject_pattern,
+                          predicate_cel="", handler_kind, agent_app="",
+                          publish_target="", max_concurrency=1,
+                          rate_limit_per_s=0, debounce_ms=0, retry_max=5,
+                          retry_backoff_ms=1000, dlq_after_n=5, num_shards=1):
+        """Register a server-side reaction. Returns the persisted `Reaction`
+        (with `reaction_id` filled in if it was empty)."""
+        return self.stub.RegisterReaction(pb.Reaction(
+            reaction_id=reaction_id, name=name, subject_pattern=subject_pattern,
+            predicate_cel=predicate_cel, handler_kind=handler_kind,
+            agent_app=agent_app, publish_target=publish_target,
+            max_concurrency=max_concurrency, rate_limit_per_s=rate_limit_per_s,
+            debounce_ms=debounce_ms, retry_max=retry_max,
+            retry_backoff_ms=retry_backoff_ms, dlq_after_n=dlq_after_n,
+            num_shards=num_shards))
+
+    def deregister_reaction(self, reaction_id) -> bool:
+        resp = self.stub.DeregisterReaction(pb.DeregisterReactionRequest(reaction_id=reaction_id))
+        return bool(resp.deregistered)
+
+    def list_reactions(self, subject_pattern=""):
+        resp = self.stub.ListReactions(pb.ListReactionsRequest(subject_pattern=subject_pattern))
+        return list(resp.reactions)
+
+    def claim_tasks(self, *, reaction_id, shard=-1, owner, lease_ms=60_000,
+                    max=16, now_ms=0):
+        resp = self.stub.ClaimTasks(pb.ClaimTasksRequest(
+            reaction_id=reaction_id, shard=shard, owner=owner,
+            lease_ms=lease_ms, max=max, now_ms=now_ms))
+        return list(resp.tasks)
+
+    def complete_task(self, *, task_id, owner):
+        return self.stub.CompleteTask(pb.CompleteTaskRequest(task_id=task_id, owner=owner)).task
+
+    def nack_task(self, *, task_id, owner, error="", permanent=False):
+        return self.stub.NackTask(pb.NackTaskRequest(
+            task_id=task_id, owner=owner, error=error, permanent=permanent)).task
+
+    def list_tasks(self, *, reaction_id, status=0, limit=200):
+        resp = self.stub.ListTasks(pb.ListTasksRequest(
+            reaction_id=reaction_id, status=status, limit=limit))
+        return list(resp.tasks)
 
     # ── reactive key-value store (treatise §IX ⑥: coordinate through state) ──
 
