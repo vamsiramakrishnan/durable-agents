@@ -414,6 +414,15 @@ impl RunStore for BigtableRunStore {
             return Err(StoreError::msg(
                 "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch"));
         }
+        // P2 fix: business_key requires connector — same reasoning as SQL.
+        // On Bigtable the bk# pointer-row key is `bk#<connector>#<key>`, so
+        // an empty connector would collapse all keyless effects into one
+        // pointer-row collision (the inverse of dedupe). Refuse cleanly.
+        if !business_key.is_empty() && connector.is_empty() {
+            return Err(StoreError::msg(
+                "begin_effect: business_key requires connector \
+                 (cross-run dedupe is per-(connector, business_key))"));
+        }
         let key = if custom_key.is_empty() { derive_key(run_id, decision_index, tool_name, call_index) } else { custom_key.to_string() };
         if let Some(m) = self.read_row(&rk_effect(&key)).await? {
             return Ok(effect_from(&key, &m));

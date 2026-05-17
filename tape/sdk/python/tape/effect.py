@@ -29,6 +29,11 @@ from .retry import RetryPolicy
 _COMPENSATORS: dict[str, Callable] = {}
 # tool name -> status-check callable, for the reconciler
 _STATUS_CHECKS: dict[str, Callable] = {}
+# tool name -> {kind, fn, compensator_ref, max_attempts, compensation_payload}.
+# Distinct from _COMPENSATORS (keyed by compensator kind/name) so the outbox
+# reactor and reconciler — which only know the *tool* name at lookup time —
+# can resolve "what inverse should I register for this tool?" deterministically.
+_TOOL_COMPENSATORS: dict[str, dict] = {}
 
 
 def register_compensator(name: str, fn: Callable) -> None:
@@ -37,6 +42,29 @@ def register_compensator(name: str, fn: Callable) -> None:
 
 def get_compensator(name: str) -> Optional[Callable]:
     return _COMPENSATORS.get(name)
+
+
+def register_tool_compensator(tool_name: str, fn: Callable, *,
+                              compensator_ref: str = "",
+                              max_attempts: int = 0,
+                              compensation_payload: Optional[Callable] = None) -> None:
+    """Index a compensator by the *tool* name it inverses (in addition to the
+    plain `register_compensator` keying it by its own name). The outbox
+    reactor and reconciler use this so they can look up "what inverse should
+    I register for this tool?" from just the tool name on the EffectRecord."""
+    if not tool_name or fn is None:
+        return
+    _TOOL_COMPENSATORS[tool_name] = {
+        "kind": getattr(fn, "__name__", "compensate"),
+        "fn": fn,
+        "compensator_ref": compensator_ref or "",
+        "max_attempts": int(max_attempts or 0),
+        "compensation_payload": compensation_payload,
+    }
+
+
+def get_tool_compensator(tool_name: str) -> Optional[dict]:
+    return _TOOL_COMPENSATORS.get(tool_name)
 
 
 def register_status_check(tool_name: str, fn: Callable) -> None:
@@ -130,6 +158,16 @@ def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Call
                         business_key=business_key, allow_unsafe=allow_unsafe)
     if dispatch == "outbox" and not connector:
         raise ValueError("@tape.effect: dispatch='outbox' requires connector=<routing key>")
+    # P2: business_key without connector creates a unique-index landmine on
+    # the server side (the partial UNIQUE on `tape_effects(connector,
+    # business_key) WHERE business_key <> ''` collides for any pair of rows
+    # with `connector=''` sharing a business_key). Refuse the contract here
+    # so the misconfiguration surfaces at decoration time, not as a flaky
+    # gRPC error under retry.
+    if business_key is not None and isinstance(business_key, str) and business_key and not connector:
+        raise ValueError(
+            "@tape.effect: business_key=<str> requires connector=<routing key>; "
+            "cross-run dedupe is per-(connector, business_key)")
 
     def deco(fn: Callable) -> Callable:
         meta = {
@@ -152,6 +190,16 @@ def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Call
         }
         if compensate is not None:
             register_compensator(getattr(compensate, "__name__", "compensate"), compensate)
+            # Also key the compensator by the *tool* name so the outbox
+            # reactor / reconciler (which only have the EffectRecord's
+            # tool_name at lookup time) can resolve the inverse and the
+            # compensation_payload deterministically. Fixes the P1 bug
+            # where confirmed outbox effects never enqueued rollback
+            # obligations.
+            register_tool_compensator(getattr(fn, "__name__", ""), compensate,
+                                      compensator_ref=meta["compensator_ref"],
+                                      max_attempts=max_attempts,
+                                      compensation_payload=compensation_payload)
         if status_check is not None:
             register_status_check(getattr(fn, "__name__", ""), status_check)
         if retry is None:
@@ -311,22 +359,43 @@ def _dispatch_to_pb(s: str) -> int:
 
 
 def _resolve_business_key(value: Any, tool_args: dict, tool_context: Any) -> str:
-    """`business_key=` on the decorator may be a string (static) or a callable
-    `(tool_args, tool_context) -> str | None`. Return the resolved key or ''."""
+    """`business_key=` on the decorator may be a static string, or a callable
+    that yields the cross-run dedupe key. The callable can take any of these
+    shapes — we try them in order and return the first one that doesn't
+    raise:
+
+        lambda **kw, tool_context=None: ...   # the explicit form
+        lambda account, amount, date: ...     # the documented form
+        lambda tool_args, tool_context: ...   # the (dict, ctx) form
+        lambda tool_args: ...                 # the (dict,) form
+
+    Falls through to "" only if every shape raised — i.e. the signature is
+    genuinely incompatible. Using `inspect.signature` to dispatch would be
+    cleaner but bind() blesses partial matches; the explicit ladder makes
+    "what we tried" obvious in tracebacks. (P1 fix: previously the second
+    fallback was `value(tool_args, tool_context)`, which failed for the
+    documented `lambda account, amount, date: ...` form and silently
+    returned "" — losing the cross-run dedupe key.)
+    """
     if value is None:
         return ""
     if isinstance(value, str):
         return value
-    if callable(value):
+    if not callable(value):
+        return ""
+    args = tool_args or {}
+    attempts = (
+        lambda: value(**args, tool_context=tool_context),  # kwargs + ctx
+        lambda: value(**args),                              # kwargs only (the documented form)
+        lambda: value(args, tool_context),                  # positional (dict, ctx)
+        lambda: value(args),                                # positional (dict,)
+    )
+    for attempt in attempts:
         try:
-            # Try the (kwargs, tool_context) shape first — most readable.
-            v = value(**(tool_args or {}), tool_context=tool_context)
+            v = attempt()
         except TypeError:
-            try:
-                v = value(tool_args, tool_context)
-            except Exception:
-                v = ""
+            continue
         except Exception:
-            v = ""
+            return ""
         return str(v or "")
     return ""

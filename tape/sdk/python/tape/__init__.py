@@ -47,7 +47,7 @@ from .client import (
 )
 from .effect import (effect, outbox_tool, idempotency_key, run_id_of,
                      business_key, external_ref, effect_semantics,
-                     get_compensator, get_status_check)
+                     get_compensator, get_status_check, get_tool_compensator)
 from .retry import RetryPolicy
 from .gates import AckLost, gate, gate_tool
 from .budget import Budget, with_budget
@@ -67,7 +67,7 @@ __all__ = [
     "resume", "recover_once", "compensate_run", "compensate_one", "send_signal", "set_timer", "cancel_timer",
     "cancel_run", "is_cancelled", "heartbeat", "policy_is",
     "set_value", "get_value", "watch_value", "delete_value",
-    "get_compensator", "get_status_check",
+    "get_compensator", "get_status_check", "get_tool_compensator",
     "connectors",
     "RUN_STATUS_RUNNABLE", "RUN_STATUS_RUNNING", "RUN_STATUS_WAITING", "RUN_STATUS_TERMINAL",
     "RUN_STATUS_FAILED", "RUN_STATUS_STUCK",

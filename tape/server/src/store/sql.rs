@@ -452,6 +452,17 @@ impl RunStore for SqlRunStore {
                 "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch \
                  (a non-idempotent counterparty cannot be safely re-driven inline)"));
         }
+        // P2 fix: a non-empty business_key without a connector is a
+        // misconfiguration — cross-run dedupe is per-(connector, business_key)
+        // and the partial UNIQUE index is meaningless (and footgun-prone)
+        // without a routing key. Refuse the contract with a deterministic
+        // error so it can't surface as a flaky unique-constraint failure on
+        // the second writer.
+        if !business_key.is_empty() && connector.is_empty() {
+            return Err(StoreError::msg(
+                "begin_effect: business_key requires connector \
+                 (cross-run dedupe is per-(connector, business_key))"));
+        }
         let key = if custom_key.is_empty() {
             derive_key(run_id, decision_index, tool_name, call_index)
         } else { custom_key.to_string() };

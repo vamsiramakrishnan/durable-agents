@@ -81,9 +81,15 @@ CREATE INDEX IF NOT EXISTS idx_effects_outbox
 -- Business-level dedupe (when the agent/connector supplies a key): no two
 -- effects may share the same (connector, business_key). Partial index, so
 -- the default empty-string is allowed many times.
+--
+-- Gated on connector <> '' as well as business_key <> '' — server-side
+-- begin_effect refuses business_key without connector, but the index guard
+-- keeps the DB defensive against a bypassing impl (without this, two
+-- effects with `business_key='X', connector=''` would collide on the
+-- (connector='', key) index entry).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_effects_business_key
   ON tape_effects(connector, business_key)
-  WHERE business_key <> '';
+  WHERE business_key <> '' AND connector <> '';
 
 CREATE TABLE IF NOT EXISTS tape_obligations (
   run_id              TEXT NOT NULL,

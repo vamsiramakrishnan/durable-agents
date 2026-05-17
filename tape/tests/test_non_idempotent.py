@@ -492,6 +492,146 @@ def test_pubsub_subscriber_dedupes_redelivery(tape_server):
         assert got.status == tape.EFFECT_STATUS_CONFIRMED
 
 
+# ── P2: business_key without connector is a clean error, not a flaky race ──
+
+def test_business_key_without_connector_is_refused_by_server(tape_server):
+    """The partial UNIQUE index on `(connector, business_key) WHERE
+    business_key <> '' AND connector <> ''` only makes sense when both are
+    set. The server refuses `business_key` without `connector` with a
+    deterministic error (rather than letting two concurrent writers race the
+    index and surface a flaky unique-constraint failure on the loser)."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        with pytest.raises(grpc.RpcError) as ex:
+            c.begin_effect(
+                run_id=run.run_id, decision_index=0, tool_name="wire",
+                request_json="{}",
+                business_key="bk-no-connector",   # ← no connector=...
+            )
+        assert "business_key requires connector" in ex.value.details()
+
+
+def test_business_key_without_connector_is_refused_at_decoration_time():
+    """The @tape.effect / @tape.outbox_tool decorator catches the same
+    misconfiguration at decoration time so a misdeclared tool blows up at
+    import, not at the first call."""
+    with pytest.raises(ValueError) as ex:
+        @tape.effect(business_key="bk-only")
+        def _no_connector(ctx):
+            return {}
+    assert "connector" in str(ex.value).lower()
+
+
+# ── P1: outbox confirmed path registers compensation under the right kind ──
+
+def test_outbox_confirmed_registers_compensation_by_tool(tape_server):
+    """When the outbox reactor confirms an effect for a tool that declared a
+    compensator, the inverse must be enqueued under the *compensator's* kind
+    (not under the tool name). Previously this was a silent no-op:
+    `get_compensator(tool_name)` looked the inverse up by the wrong key and
+    returned None, so confirmed outbox effects never got a rollback
+    obligation. The fix uses the per-tool registry stamped by the
+    decorator."""
+    from tape.connectors.base import DispatchResult, ObservationResult, CompensationResult
+
+    def reverse_wire(wire_id, **kwargs):
+        return {"reversal_id": f"rev-{wire_id}"}
+
+    @tape.outbox_tool(
+        connector="bank.outbox-comp",
+        business_key=lambda account, amount: f"{account}:{amount}",
+        compensate=reverse_wire,
+    )
+    def wire_money(account, amount):
+        return {"account": account, "amount": amount}
+
+    class _ConfirmingConnector:
+        name = "bank.outbox-comp"
+        def dispatch(self, effect):
+            return DispatchResult(status="confirmed", external_ref="wire-comp-001",
+                                  response={"wire_id": "wire-comp-001"})
+        def observe(self, effect):
+            return ObservationResult(status="confirmed", external_ref="wire-comp-001")
+        def compensate(self, obligation):
+            return CompensationResult(status="compensated")
+
+    connectors.clear()
+    connectors.register(_ConfirmingConnector())
+
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        # Begin the effect via the public surface so the plugin's metadata
+        # path is exercised; the test drives the dispatcher directly.
+        c.begin_effect(
+            run_id=run.run_id, decision_index=0, tool_name="wire_money",
+            request_json='{"account":"a","amount":100}',
+            semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+            dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
+            business_key="a:100", connector="bank.outbox-comp")
+        results = outbox_reactor.outbox_dispatch_once(tape_server["url"])
+        ours = [r for r in results if r["connector"] == "bank.outbox-comp"]
+        assert ours and ours[0]["status"] == "confirmed", results
+        obs = c.list_obligations(run_id=run.run_id, only_unresolved=True).obligations
+        kinds = [o.kind for o in obs]
+        assert "reverse_wire" in kinds, (
+            f"outbox-confirmed effect must enqueue a compensation under the "
+            f"compensator's name; got obligations with kinds={kinds!r}")
+        # And the payload should carry the dispatcher's external_ref so the
+        # drainer has what reverse_wire(wire_id=...) needs.
+        ob = next(o for o in obs if o.kind == "reverse_wire")
+        import json as _json
+        assert "wire-comp-001" in ob.payload_json, ob.payload_json
+
+
+# ── P1: business_key resolver supports the documented positional lambda ─────
+
+def test_business_key_resolver_handles_documented_positional_lambda():
+    """The docstring on @tape.outbox_tool shows this exact form:
+
+        business_key=lambda account, amount, date: f"{account}:{amount}:{date}"
+
+    The resolver must call it as `value(**tool_args)` — passing tool_context
+    as a kwarg blows up because the lambda doesn't declare it, and the
+    `value(tool_args, tool_context)` positional fallback blows up because
+    the lambda takes three positional args, not two. Previously both paths
+    failed and the resolver silently returned "" — losing the cross-run
+    dedupe key. The fix tries the kwargs-only shape too."""
+    from tape.effect import _resolve_business_key
+    bk_fn = lambda account, amount, date: f"{account}:{amount}:{date}"
+    got = _resolve_business_key(bk_fn,
+                                {"account": "acct-1", "amount": 100, "date": "2026-05-17"},
+                                tool_context=None)
+    assert got == "acct-1:100:2026-05-17", got
+
+
+def test_business_key_resolver_handles_all_documented_shapes():
+    """The four shapes the resolver supports — confirm each yields the
+    expected key, none silently fail."""
+    from tape.effect import _resolve_business_key
+    args = {"x": 1, "y": 2}
+    ctx = object()
+    # static string
+    assert _resolve_business_key("static-key", args, ctx) == "static-key"
+    # kwargs + ctx
+    assert _resolve_business_key(
+        lambda x, y, tool_context=None: f"{x}-{y}-ctx", args, ctx) == "1-2-ctx"
+    # kwargs only (the documented form)
+    assert _resolve_business_key(
+        lambda x, y: f"{x}+{y}", args, ctx) == "1+2"
+    # (dict, ctx) positional
+    assert _resolve_business_key(
+        lambda a, c: f"{a['x']}/{a['y']}", args, ctx) == "1/2"
+    # (dict,) positional
+    assert _resolve_business_key(
+        lambda a: str(a.get("x", "?")), args, ctx) == "1"
+    # genuinely incompatible signature → empty (and no exception). A
+    # keyword-only-required arg that isn't in tool_args + can't be passed
+    # positionally falls through every shape.
+    def _needs_unknown(*, required_only):  # noqa: E306
+        return required_only
+    assert _resolve_business_key(_needs_unknown, args, ctx) == ""
+
+
 def test_pubsub_subscriber_drops_malformed_messages(tape_server):
     """A message missing the tape_effect_key / tape_run_id attributes is
     ack-and-dropped (we own it; Pub/Sub redelivery wouldn't help)."""

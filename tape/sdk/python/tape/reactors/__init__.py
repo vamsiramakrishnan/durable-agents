@@ -132,14 +132,17 @@ def reconcile_once(url: str = DEFAULT_URL, *, reconcile_pending_after_ms: int = 
             ext = str(observation.get("external_ref") or "")
             resp = json.dumps(observation.get("response") or {}, default=str)
             # If the effect's tool has a compensation handler registered, use
-            # its name for `compensate_on_duplicate_kind` so the server
-            # registers the inverse atomically with the observation.
+            # its (already-registered) kind for `compensate_on_duplicate_kind`
+            # so the server registers the inverse atomically with the
+            # observation. Sibling of the P1 outbox-reactor fix: the lookup
+            # must go through the *tool*-keyed registry, since the kind
+            # registry is keyed by compensator name (not tool name).
             comp_kind = ""
             try:
-                from ..effect import get_compensator as _gc
-                cb = _gc(e.tool_name)
-                if cb is not None:
-                    comp_kind = getattr(cb, "__name__", "")
+                from ..effect import get_tool_compensator as _gtc
+                spec = _gtc(e.tool_name)
+                if spec is not None:
+                    comp_kind = spec.get("kind", "")
             except Exception:
                 pass
             c.record_external_observation(

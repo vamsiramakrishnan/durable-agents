@@ -44,7 +44,7 @@ from ..client import (
     EFFECT_SEMANTICS_IDEMPOTENT,
 )
 from .. import connectors as _connectors
-from ..effect import register_compensator, get_compensator
+from ..effect import register_compensator, get_compensator, get_tool_compensator
 
 
 def _claimer_id() -> str:
@@ -131,15 +131,37 @@ def dispatch_one(eff, *, client: TapeClient, claimer: str,
         # If the tool declared a compensator (via @tape.effect(compensate=...)),
         # register it now that the effect has confirmed — same pattern as the
         # inline path, but driven by the reactor.
-        comp = get_compensator(cur.tool_name)
-        if comp is not None:
+        #
+        # P1 fix: look up by *tool name*, not by compensator name.
+        # `_COMPENSATORS` is keyed by the compensator function's own name
+        # (the same name written into ObligationRecord.kind), so
+        # `get_compensator(tool_name)` returned None in the common case and
+        # the reactor silently skipped registration. `get_tool_compensator`
+        # carries the per-tool spec (kind, ref, max_attempts, payload
+        # callable) that the decorator stamped at registration time.
+        spec = get_tool_compensator(cur.tool_name)
+        if spec is not None:
             try:
-                kind = getattr(comp, "__name__", "compensate")
+                payload_dict = {"external_ref": result.external_ref,
+                                **(result.response or {})}
+                payload_callable = spec.get("compensation_payload")
+                if payload_callable is not None:
+                    try:
+                        tool_args = json.loads(cur.request_json) if cur.request_json else {}
+                    except Exception:
+                        tool_args = {}
+                    try:
+                        custom = payload_callable(tool_args, payload_dict)
+                        if custom:
+                            payload_dict = custom
+                    except Exception:
+                        pass
                 client.register_compensation(
-                    run_id=cur.run_id, effect_key=cur.idempotency_key, kind=kind,
-                    payload_json=json.dumps({**(result.response or {}),
-                                             "external_ref": result.external_ref}, default=str),
-                    max_attempts=0)
+                    run_id=cur.run_id, effect_key=cur.idempotency_key,
+                    kind=spec["kind"],
+                    payload_json=json.dumps(payload_dict, default=str),
+                    compensator_ref=spec.get("compensator_ref", ""),
+                    max_attempts=int(spec.get("max_attempts") or 0))
             except Exception:
                 pass
         out["status"] = "confirmed"
