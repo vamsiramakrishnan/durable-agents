@@ -1,0 +1,357 @@
+"""The headline tests for the non-idempotent outbox + reconciliation contract.
+
+These tests verify the safety claim of the GCP hardening plan, at the wire:
+
+  > Tape does not pretend exactly-once is possible without upstream support.
+  > For non-idempotent upstreams, intent + outbox + observation is the only
+  > safe path: a crash mid-dispatch must not cause a blind retry; the
+  > reconciler must resolve ambiguity by asking the counterparty.
+
+The fixtures here go straight through the gRPC client (no ADK), so each
+behaviour is testable in isolation. The bigger ADK kill-and-resume story is
+covered by `examples/non_idempotent_bank/` + the existing kill harness.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+
+import grpc
+import pytest
+
+import tape
+from tape import connectors
+from tape.client import TapeClient
+from tape.connectors.base import DispatchResult, ObservationResult, CompensationResult
+from tape.reactors import outbox as outbox_reactor
+from tape.reactors import reconcile_once
+
+
+# ── small helpers ──────────────────────────────────────────────────────────
+
+def _begin_run(c, *, app="test", user="u", session=None, invocation=None):
+    s = session or f"sess-{uuid.uuid4().hex[:8]}"
+    inv = invocation or f"inv-{uuid.uuid4().hex[:8]}"
+    return c.begin_run(app_name=app, user_id=user, session_id=s, invocation_id=inv,
+                       lease_owner="test", lease_ttl_ms=60_000)
+
+
+def _begin_outbox_effect(c, run_id, *, tool="wire_money", business_key="",
+                         connector="bank.wire",
+                         semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT):
+    return c.begin_effect(
+        run_id=run_id, decision_index=0, tool_name=tool, call_index=0,
+        request_json='{"amount": 100}',
+        semantics=semantics,
+        dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
+        business_key=business_key, connector=connector)
+
+
+# ── core safety: NON_IDEMPOTENT + INLINE is refused ─────────────────────────
+
+def test_non_idempotent_inline_is_refused(tape_server):
+    """The server must refuse to register a non-idempotent effect with inline
+    dispatch. The whole plan rests on the agent never calling a non-idempotent
+    upstream from a tool body."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        with pytest.raises(grpc.RpcError) as ex:
+            c.begin_effect(
+                run_id=run.run_id, decision_index=0, tool_name="wire_money",
+                call_index=0, request_json="{}",
+                semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                dispatch_mode=tape.EFFECT_DISPATCH_MODE_INLINE)
+        assert "NON_IDEMPOTENT" in ex.value.details()
+
+
+# ── business_key dedupe ─────────────────────────────────────────────────────
+
+def test_business_key_dedupes_effect_creation(tape_server):
+    """Two runs that share a `(connector, business_key)` see the same effect
+    row — the second begin_effect returns the existing record instead of
+    inserting a duplicate. (The unique index also guarantees this at the
+    storage layer.)"""
+    with TapeClient(tape_server["url"]) as c:
+        run1 = _begin_run(c, invocation="inv-1")
+        run2 = _begin_run(c, invocation="inv-2")
+        e1 = _begin_outbox_effect(c, run1.run_id, business_key="acct:1000:2026-05-17")
+        e2 = _begin_outbox_effect(c, run2.run_id, business_key="acct:1000:2026-05-17")
+        # The second call returns the FIRST run's effect (same row).
+        assert e1.idempotency_key == e2.idempotency_key
+        assert e1.seq == e2.seq
+
+
+# ── outbox claim is a single winner ─────────────────────────────────────────
+
+def test_outbox_claim_is_single_winner(tape_server):
+    """Two concurrent dispatchers asking to claim the same outbox effect: one
+    wins, the other gets acquired=False with the current row. The lease keeps
+    the loser from doing anything dangerous."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="bk-1")
+        c1 = c.claim_effect_dispatch(run_id=run.run_id,
+                                     idempotency_key=e.idempotency_key,
+                                     claimer="dispatcher-A")
+        c2 = c.claim_effect_dispatch(run_id=run.run_id,
+                                     idempotency_key=e.idempotency_key,
+                                     claimer="dispatcher-B")
+        assert c1.acquired is True
+        assert c2.acquired is False
+        # Both responses surface the row; the winner is reflected in `dispatch_claimed_by`.
+        assert c1.effect.dispatch_claimed_by == "dispatcher-A"
+        assert c2.effect.dispatch_claimed_by == "dispatcher-A"
+
+
+def test_expired_dispatch_lease_becomes_reclaimable(tape_server):
+    """If a dispatcher claims a row and crashes (the lease expires), a later
+    claim must succeed — the row is reclaimable, not pinned forever."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="bk-lease")
+        # Take a 1ms lease and let it expire.
+        c1 = c.claim_effect_dispatch(run_id=run.run_id,
+                                     idempotency_key=e.idempotency_key,
+                                     claimer="dispatcher-A", lease_ttl_ms=1)
+        assert c1.acquired is True
+        time.sleep(0.05)
+        c2 = c.claim_effect_dispatch(run_id=run.run_id,
+                                     idempotency_key=e.idempotency_key,
+                                     claimer="dispatcher-B")
+        assert c2.acquired is True
+        assert c2.effect.dispatch_claimed_by == "dispatcher-B"
+
+
+# ── non-idempotent + unknown → no auto-retry ────────────────────────────────
+
+def test_non_idempotent_unknown_does_not_auto_retry(tape_server):
+    """A dispatch that returns UNKNOWN must drive the effect to status
+    UNKNOWN with next_dispatch_at_ms = 0 — the outbox dispatcher must not
+    pick it up again. The reconciler is the only path to resolution."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="bk-unknown")
+        # Claim and record an unknown attempt (next_dispatch_at_ms = 0).
+        c.claim_effect_dispatch(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                 claimer="d")
+        c.record_dispatch_attempt(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                  error="ack lost (test)",
+                                  next_dispatch_at_ms=0)
+        # The effect is now UNKNOWN.
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key)
+        assert got.effect.status == tape.EFFECT_STATUS_UNKNOWN
+        # The outbox dispatcher (list_effects_to_dispatch) must NOT return it.
+        for eff in c.list_effects_to_dispatch(limit=100).effects:
+            assert eff.idempotency_key != e.idempotency_key
+
+
+def test_idempotent_unknown_can_retry_after_absent(tape_server):
+    """When the reconciler observes ABSENT on an IDEMPOTENT effect, the
+    server moves it back to PENDING with `next_dispatch_at_ms = now` so the
+    outbox dispatcher can safely retry."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        # IDEMPOTENT semantics, OUTBOX dispatch (e.g. a payment gateway).
+        e = c.begin_effect(
+            run_id=run.run_id, decision_index=0, tool_name="charge_card",
+            call_index=0, request_json='{"amount": 100}',
+            semantics=tape.EFFECT_SEMANTICS_IDEMPOTENT,
+            dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
+            business_key="bk-idem-unknown", connector="cards.charge")
+        # Dispatch returns unknown; effect goes to UNKNOWN.
+        c.claim_effect_dispatch(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                 claimer="d")
+        c.record_dispatch_attempt(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                  error="timeout", next_dispatch_at_ms=0)
+        assert c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect.status == tape.EFFECT_STATUS_UNKNOWN
+        # Reconciler observes ABSENT.
+        c.record_external_observation(
+            run_id=run.run_id, idempotency_key=e.idempotency_key,
+            resolution=tape.EFFECT_RESOLUTION_ABSENT)
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        # IDEMPOTENT + ABSENT → safe to re-issue.
+        assert got.status == tape.EFFECT_STATUS_PENDING
+        # And the outbox dispatcher sees it as eligible again.
+        ready = [e for e in c.list_effects_to_dispatch(limit=100).effects
+                 if e.idempotency_key == got.idempotency_key]
+        assert len(ready) == 1
+
+
+def test_non_idempotent_absent_becomes_failed_not_pending(tape_server):
+    """The mirror case: a NON_IDEMPOTENT effect observed as ABSENT must land
+    as FAILED, not back-to-PENDING. Re-issuing without upstream confirmation
+    risks a duplicate."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="bk-nonidem-absent")
+        c.claim_effect_dispatch(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                 claimer="d")
+        c.record_dispatch_attempt(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                  error="timeout", next_dispatch_at_ms=0)
+        c.record_external_observation(
+            run_id=run.run_id, idempotency_key=e.idempotency_key,
+            resolution=tape.EFFECT_RESOLUTION_ABSENT)
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_FAILED
+
+
+# ── duplicate observation registers compensation ───────────────────────────
+
+def test_duplicate_observation_creates_compensation(tape_server):
+    """When the reconciler discovers the counterparty has TWO matching
+    operations for the same business key (a duplicate), the server marks the
+    effect CONFIRMED and registers a compensation obligation — atomically."""
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="bk-dup")
+        c.claim_effect_dispatch(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                 claimer="d")
+        c.record_dispatch_attempt(run_id=run.run_id, idempotency_key=e.idempotency_key,
+                                  error="timeout", next_dispatch_at_ms=0)
+        # Reconciler asks the bank and learns: two wires happened for this key.
+        c.record_external_observation(
+            run_id=run.run_id, idempotency_key=e.idempotency_key,
+            resolution=tape.EFFECT_RESOLUTION_DUPLICATE,
+            external_ref="wire-extra-12345",
+            compensate_on_duplicate_kind="reverse_wire")
+        # The effect's primary status: CONFIRMED + external_ref recorded.
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_CONFIRMED
+        assert got.external_ref == "wire-extra-12345"
+        # And a compensation obligation now exists for the duplicate side effect.
+        obs = c.list_obligations(run_id=run.run_id, only_unresolved=True).obligations
+        assert any(o.kind == "reverse_wire" and o.effect_key == e.idempotency_key
+                   for o in obs), obs
+
+
+# ── end-to-end with a fake non-idempotent bank + the outbox reactor ────────
+
+class FakeNonIdempotentBank:
+    """A bank that has no idempotency key support. Every wire() call lands.
+    Counts wires per business key, so the test can assert how many calls
+    actually crossed the wire."""
+
+    def __init__(self):
+        self.wires = []   # list of (business_key, amount)
+        self.next_id = 0
+        self.dispatch_should_unknown_once = False
+
+    def wire(self, business_key: str, amount: int) -> str:
+        self.next_id += 1
+        wid = f"wire-{self.next_id}"
+        self.wires.append((business_key, amount, wid))
+        return wid
+
+    def by_business_key(self, business_key: str):
+        return [w for w in self.wires if w[0] == business_key]
+
+
+class _BankConnector:
+    """A connector for the fake bank. dispatch() emulates "the network ate
+    our ack" once (so we exercise the UNKNOWN path), then observes truthfully."""
+
+    name = "bank.wire"
+
+    def __init__(self, bank: FakeNonIdempotentBank):
+        self.bank = bank
+
+    def dispatch(self, effect):
+        # The "interesting" behaviour: the dispatch DOES call the bank, but
+        # then the connector returns `unknown` (simulating a lost ack) so the
+        # reactor can't tell whether the call landed. This is the exact
+        # window the safety claim covers.
+        req = json.loads(effect.request_json or "{}")
+        self.bank.wire(effect.business_key, req.get("amount", 0))
+        if self.bank.dispatch_should_unknown_once:
+            self.bank.dispatch_should_unknown_once = False
+            return DispatchResult(status="unknown",
+                                  error={"reason": "simulated lost ack"})
+        # Otherwise: confirmed.
+        wid = f"wire-{self.bank.next_id}"
+        return DispatchResult(status="confirmed", external_ref=wid,
+                              response={"wire_id": wid})
+
+    def observe(self, effect):
+        matches = self.bank.by_business_key(effect.business_key)
+        if not matches:
+            return ObservationResult(status="absent")
+        if len(matches) > 1:
+            return ObservationResult(status="duplicate",
+                                     external_ref=matches[0][2])
+        return ObservationResult(status="confirmed", external_ref=matches[0][2])
+
+    def compensate(self, obligation):
+        return CompensationResult(status="compensated", response={"reversed": True})
+
+
+def test_outbox_reactor_drives_one_call_and_reconciler_resolves_unknown(tape_server):
+    """The headline scenario: a non-idempotent upstream + a dispatcher that
+    returned UNKNOWN once → the reconciler asks the bank and confirms. The
+    bank was called exactly once; no blind retry happens."""
+    bank = FakeNonIdempotentBank()
+    bank.dispatch_should_unknown_once = True
+    connectors.clear()
+    connectors.register(_BankConnector(bank))
+
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        _begin_outbox_effect(c, run.run_id, business_key="bk-headline")
+
+        # First outbox tick: connector calls the bank (one wire) and returns
+        # UNKNOWN. The reactor records UNKNOWN; the effect is parked.
+        results = outbox_reactor.outbox_dispatch_once(tape_server["url"])
+        assert any(r["status"] == "unknown" for r in results), results
+        assert len(bank.wires) == 1, "the bank was called exactly once on first dispatch"
+
+        # Second outbox tick: the effect is UNKNOWN, so list_effects_to_dispatch
+        # does NOT return it. The reactor finds nothing to dispatch.
+        results2 = outbox_reactor.outbox_dispatch_once(tape_server["url"])
+        assert results2 == []
+        assert len(bank.wires) == 1, "no blind retry — bank still has one wire"
+
+        # Reconciler: asks the bank via the connector's observe() — finds the
+        # one wire, marks the effect CONFIRMED.
+        rec = reconcile_once(tape_server["url"])
+        # We may also pick up unrelated PENDING effects in the suite; filter.
+        ours = [r for r in rec if "observed" in str(r.get("resolved", ""))]
+        assert ours, rec
+        # The effect is now CONFIRMED.
+        eff = c.list_pending_effects(include_pending=False, include_unknown=True).effects
+        assert not any(e.business_key == "bk-headline" for e in eff)
+        assert len(bank.wires) == 1, "reconciliation does not re-dispatch"
+
+
+def test_outbox_reactor_confirmed_path(tape_server):
+    """Sanity: the happy path — connector returns confirmed; effect lands
+    CONFIRMED in one step, bank has one wire, no UNKNOWN cycle."""
+    bank = FakeNonIdempotentBank()
+    connectors.clear()
+    connectors.register(_BankConnector(bank))
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="bk-happy")
+        results = outbox_reactor.outbox_dispatch_once(tape_server["url"])
+        ours = [r for r in results if r["idempotency_key"] == e.idempotency_key]
+        assert ours and ours[0]["status"] == "confirmed", results
+        assert len(bank.wires) == 1
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_CONFIRMED
+
+
+def test_outbox_skips_when_connector_missing(tape_server):
+    """If no connector is registered for an effect's `connector` name, the
+    reactor leaves the row PENDING (a later process with the connector loaded
+    will pick it up). No crash, no side effect."""
+    connectors.clear()
+    with TapeClient(tape_server["url"]) as c:
+        run = _begin_run(c)
+        e = _begin_outbox_effect(c, run.run_id, business_key="bk-missing",
+                                 connector="bank.no-such-connector")
+        results = outbox_reactor.outbox_dispatch_once(tape_server["url"])
+        ours = [r for r in results if r["idempotency_key"] == e.idempotency_key]
+        assert ours and ours[0]["status"] == "skipped", ours
+        assert "no connector" in ours[0]["reason"]
+        got = c.get_effect(run_id=run.run_id, idempotency_key=e.idempotency_key).effect
+        assert got.status == tape.EFFECT_STATUS_PENDING

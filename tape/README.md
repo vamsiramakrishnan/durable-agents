@@ -172,6 +172,78 @@ on FX moves can act on the *change*. Different from signals (point-to-point,
 single-consumer) and the WAL tail (cross-run, everything-in-order); this is
 shared state, fan-out, by-key — Tape as the connective tissue between agents.
 
+## Non-idempotent upstreams
+
+Tape does not pretend exactly-once is possible without upstream support. For
+counterparties that *do* accept idempotency keys (Stripe, most modern payment
+APIs, brokers with `clOrdID`), the v1 model — `@tape.effect(...)` + the
+counterparty dedupes on the key Tape mints — is exactly-once-effective.
+
+For counterparties that **don't** — a legacy bank wire API, a fax bridge,
+a partner system with no key support — Tape ships an explicit ambiguity
+protocol: **outbox dispatch + reconciliation**. The tool body is intent-only;
+an outbox reactor calls the counterparty exactly once via a registered
+connector; the reconciler resolves any `unknown` outcome by asking the
+counterparty (by business key).
+
+| Upstream contract             | Tape pattern                                              |
+| ----------------------------- | --------------------------------------------------------- |
+| **Idempotent API**            | `@tape.effect()`, inline; auto retry is safe              |
+| **Non-idempotent API**        | `@tape.outbox_tool(connector=…, business_key=…)`; no blind retry — outbox + reconciliation |
+| **Opaque / partially-known API** | as above, plus `@tape.gate(...)` for a human approval gate |
+
+The minimum to get this in your agent:
+
+```python
+import tape
+
+def _bk(*, account, amount, date, tool_context=None):
+    return f"{account}:{amount}:{date}"
+
+@tape.outbox_tool(
+    connector="bank.wire",
+    semantics="non_idempotent",
+    business_key=_bk,
+    compensate=reverse_wire,
+)
+def wire_money(account, amount, beneficiary, date, tool_context):
+    return {"account": account, "amount": amount,
+            "beneficiary": beneficiary, "date": date}
+```
+
+…then a connector + the outbox reactor (one Cloud Run service —
+`tape/deploy/gcp/outbox.service.yaml`):
+
+```python
+# my_app/connectors/bank.py
+import tape.connectors as connectors
+from tape.connectors.base import DispatchResult, ObservationResult
+
+class BankConnector:
+    name = "bank.wire"
+    def dispatch(self, effect):
+        wire_id = real_bank.wire(**json.loads(effect.request_json))
+        return DispatchResult(status="confirmed", external_ref=wire_id)
+    def observe(self, effect):
+        rows = real_bank.find_by_key(effect.business_key)
+        if not rows: return ObservationResult(status="absent")
+        if len(rows) > 1: return ObservationResult(status="duplicate",
+                                                    external_ref=rows[0].id)
+        return ObservationResult(status="confirmed", external_ref=rows[0].id)
+    def compensate(self, obligation): ...
+
+connectors.register(BankConnector())
+```
+
+```bash
+# alongside tape-server and tape-reactors:
+tape-outbox --url tapes://tape-server --load my_app.connectors.bank
+```
+
+The full walkthrough (with a fake non-idempotent bank, all three failure
+modes, and a runnable script) is in
+[`examples/non_idempotent_bank/`](examples/non_idempotent_bank/).
+
 ## Zero-touch mode
 
 There is also a zero-touch mode for an app you'd rather not edit:
