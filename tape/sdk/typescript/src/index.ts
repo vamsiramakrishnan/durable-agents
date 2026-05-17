@@ -20,3 +20,36 @@ export {
   type ReactionOptions, type ReactionHandler, type ReactionDef,
   type ReactionEnvelope, type Reaction, type Task,
 } from './reactions.ts';
+
+// ── Standalone DX (parity with Python's tape.adk.durable_app / @tape.outbox_tool /
+//    tape.connectors / tape.obs / tape.tenancy) ───────────────────────────────
+export {
+  durableApp,
+  type Budget, type DurableApp, type DurableAppConfig,
+} from './durable.ts';
+export {
+  outboxTool, outboxMetaOf, isOutboxEnvelope, OutboxConfigError,
+  type OutboxSemantics, type OutboxToolOpts, type OutboxEnvelope,
+} from './outbox.ts';
+export {
+  CONNECTORS, ConnectorRegistry,
+  LogConnector, HttpConnector, PubSubConnector, CloudTasksConnector,
+  type Connector,
+  type DispatchOutcome, type ObservationOutcome, type CompensationOutcome,
+  type EffectRecord, type ObligationRecord,
+  type DispatchResult, type ObservationResult, type CompensationResult,
+  type HttpConnectorOpts, type PubSubConnectorOpts, type CloudTasksConnectorOpts,
+} from './connectors/index.ts';
+export {
+  logJson, span, setSpanHook, ALL_SPANS, STRUCTURED_FIELDS,
+  SPAN_BEGIN_RUN, SPAN_RESUME_RUN, SPAN_RECORD_DECISION,
+  SPAN_BEGIN_EFFECT, SPAN_COMPLETE_EFFECT,
+  SPAN_RECONCILE_EFFECT, SPAN_DISPATCH_EFFECT,
+  SPAN_COMPENSATE, SPAN_REDRIVE,
+  SPAN_AWAIT_SIGNAL, SPAN_SEND_SIGNAL,
+  type SpanEnd, type SpanHook,
+} from './obs.ts';
+export {
+  tenancyDefaults, tenancyFromEnv, tenancyFromObject, isHard, warnIfHardButUnenforced,
+  type TenancyMode, type TenancyConfig,
+} from './tenancy.ts';

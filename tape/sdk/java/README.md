@@ -92,10 +92,85 @@ predicateCel, fromGlobalSeq)`. The Java SDK does **not** ship subject helpers
 (`@on_value_change` etc.) as a separate package — they're static methods on
 `Reactions`.
 
-### What's a scaffold
+### Standalone DX — parity with `tape-py`
 
-A `TapePlugin` / `TapeSessionService` for the Java ADK port — mechanical work on
-top of the wired client (the Python adapter in
-[`../python/tape/adk/`](../python/tape/adk/) is the reference). And the higher-
-level reactor helpers (`RecoverOnce` / `ReconcileOnce` / `FireDueTimersOnce` /
-`RunReactors`) — pattern-port from the Go SDK in this folder.
+The Java SDK ships the same standalone-DX surface as Python's
+`tape.adk.durable_app` / `@tape.outbox_tool` / `tape.connectors` /
+`tape.obs` / `tape.tenancy`.
+
+#### `DurableApp` — the wiring entrypoint
+
+```java
+import dev.tape.DurableApp;
+import dev.tape.TapeClient;
+
+try (DurableApp app = DurableApp.wire(new DurableApp.Config()
+        .name("treasury")
+        .budget(new DurableApp.Budget(50.0, 2_000_000)))) {
+    var run = app.client().beginRun(
+        app.name(), "cfo", "s1", "inv-1", app.leaseOwner(), app.leaseTtlMs());
+}
+```
+
+`DurableApp` honours `$TAPE_URL` and `$TAPE_LEASE_MS`. When the Java ADK
+port lands, its `Runner` constructor will accept a `DurableApp` directly.
+
+#### `OutboxTool` — non-idempotent upstreams, enforced
+
+```java
+import dev.tape.OutboxTool;
+import java.util.Map;
+
+OutboxTool wire = OutboxTool.builder("wire_money", "bank.wire")
+    .semantics(OutboxTool.Semantics.NON_IDEMPOTENT)
+    .businessKey(p -> p.get("account") + ":" + p.get("amount") + ":" + p.get("date"))
+    .waitForResult(true)
+    .build();
+// `NON_IDEMPOTENT` without businessKey / statusCheck / compensate /
+// humanGate throws OutboxConfigError at build() time.
+
+Map<String, Object> env = wire.envelope(Map.of(
+    "account", "ACME-1", "amount", 100_000,
+    "beneficiary", "MMF-A", "date", "2026-05-17"));
+assert OutboxTool.isEnvelope(env);
+```
+
+#### Capability connectors
+
+```java
+import dev.tape.connectors.*;
+
+ConnectorRegistry.DEFAULT.register("bank.wire", new HttpConnector(new HttpConnector.Opts()
+    .url("https://bank.example/wires")
+    .observeUrl("https://bank.example/wires/lookup")
+    .compensateUrl("https://bank.example/wires/reverse")));
+
+// Built-ins: LogConnector (deps-free), HttpConnector (java.net.http),
+// PubSubConnector (reflective; needs google-cloud-pubsub on classpath),
+// CloudTasksConnector (reflective; needs google-cloud-tasks on classpath).
+```
+
+#### Observability + tenancy
+
+```java
+import dev.tape.Obs;
+import dev.tape.Tenancy;
+
+Obs.logJson("effect.dispatched", Map.of(
+    "run_id", "r-1", "tool", "wire_money", "reactor", "outbox"));
+
+Obs.setSpanHook((name, attrs) -> err -> { /* open + close span via your tracer */ });
+
+Tenancy.Config t = new Tenancy.Config(Tenancy.Mode.HARD_MULTI_TENANT, "x");
+t.warnIfHardButUnenforced().forEach(System.err::println);
+```
+
+### Still a scaffold
+
+A full `TapePlugin` / `TapeSessionService` for the Java ADK port — mechanical
+work on top of the wired client (the Python adapter in
+[`../python/tape/adk/`](../python/tape/adk/) is the reference, and the values
+returned by `DurableApp.wire(...)` are what its constructor will read). And the
+higher-level reactor helpers (`RecoverOnce` / `ReconcileOnce` /
+`FireDueTimersOnce` / `RunReactors`) — pattern-port from the Go SDK in this
+folder.

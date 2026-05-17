@@ -63,6 +63,27 @@ app, runner = durable_app(
 See [`docs/adk.md`](docs/adk.md), [`docs/non-idempotent-upstreams.md`](docs/non-idempotent-upstreams.md),
 and [`docs/gcp-cloud-run.md`](docs/gcp-cloud-run.md) for the full story.
 
+### Same DX in Go, TypeScript, and Java
+
+The standalone DX is mirrored in every SDK. The CLI stays Python-only (it
+provisions cloud infrastructure and scaffolds projects — language-agnostic
+artifacts); the *agent process* can be in any of the four languages.
+
+| Concern                         | Python                       | Go                                      | TypeScript                          | Java                                       |
+|---|---|---|---|---|
+| Wire the runtime in one call    | `tape.adk.durable_app(...)`  | `tape.NewDurableApp(ctx, cfg)`          | `durableApp({...})`                 | `DurableApp.wire(new Config().…)`          |
+| Outbox tool for non-idempotent  | `@tape.outbox_tool(...)`     | `tape.NewOutboxTool(opts)`              | `outboxTool(fn, opts)`              | `OutboxTool.builder(name, conn).…build()`  |
+| Capability connector registry   | `tape.connectors.CONNECTORS` | `connectors.Default`                    | `CONNECTORS`                        | `ConnectorRegistry.DEFAULT`                |
+| Built-in connectors             | Log / Http / PubSub / Tasks  | Log / Http / PubSub (`-tags pubsub`) / Tasks (`-tags cloudtasks`) | Log / Http / PubSub / Tasks (lazy)  | Log / Http / PubSub (reflective) / Tasks (reflective) |
+| Structured logs + OTel spans    | `tape.obs.log_json` / `span` | `tape.LogJSON` / `tape.Span`            | `logJson` / `span` / `setSpanHook`  | `Obs.logJson` / `Obs.span`                 |
+| Tenancy config + DESIGN-ONLY warn | `tape.TenancyConfig`       | `tape.TenancyConfig`                    | `tenancyFromObject` / `warnIf…`     | `Tenancy.Config`                           |
+
+All four enforce the same `non_idempotent` safety rule at decoration /
+construction time: no `business_key`, no `status_check`, no `compensate`,
+no `human_gate` ⇒ the SDK refuses to build the tool. The point is
+identical in every language: an UNKNOWN dispatch must never be blindly
+retried.
+
 ## Manual quick start (the long way)
 
 ```bash
