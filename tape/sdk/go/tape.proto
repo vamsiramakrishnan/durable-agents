@@ -60,7 +60,35 @@ service Tape {
   rpc ListDueTimers   (ListDueTimersRequest)   returns (ListDueTimersResponse);    // claim=true => atomically mark fired
 
   // ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
-  rpc SubscribeEvents (SubscribeEventsRequest) returns (stream EventEntry);
+  // The legacy cross-run journal stream; preserved for back-compat.
+  // `SubscribeEventsRequest` now also accepts `from_global_seq` and
+  // `subject_pattern`; pass them instead of `from_ts_ms` for new code.
+  rpc SubscribeEvents    (SubscribeEventsRequest)    returns (stream EventEntry);
+  // The subject-routed, global-seq-cursored bus. Path-style subjects with
+  // `*` (one segment) / `**` (rest) wildcards; optional CEL predicate.
+  rpc SubscribeBySubject (SubscribeBySubjectRequest) returns (stream EventEntry);
+
+  // ── reactions & tasks (the event-bus surface; see design-principles/tape-event-bus.md) ─
+  // Reactions are server-side subscriptions: a subject pattern + optional CEL
+  // predicate + a handler kind (agent | task | publish) + back-pressure config.
+  // Matching journal entries become `tape_tasks` rows that dispatchers claim,
+  // run, and complete/nack.
+  rpc RegisterReaction   (Reaction)                  returns (Reaction);
+  rpc DeregisterReaction (DeregisterReactionRequest) returns (DeregisterReactionResponse);
+  rpc ListReactions      (ListReactionsRequest)      returns (ListReactionsResponse);
+  rpc ClaimTasks         (ClaimTasksRequest)         returns (ClaimTasksResponse);
+  rpc CompleteTask       (CompleteTaskRequest)       returns (CompleteTaskResponse);
+  rpc NackTask           (NackTaskRequest)           returns (NackTaskResponse);
+  rpc ListTasks          (ListTasksRequest)          returns (ListTasksResponse);
+
+  // ── reactive key-value store (the "X : X (70 → 90)" surface) ──────────────
+  // Coordination through journaled state, not messages (treatise §IX ⑥).
+  // Writes are atomic and versioned; WatchValue streams the current value plus
+  // every change (with the prior value, so subscribers see the transition).
+  rpc WriteValue   (WriteValueRequest)   returns (ValueRecord);
+  rpc GetValue     (GetValueRequest)     returns (GetValueResponse);
+  rpc WatchValue   (WatchValueRequest)   returns (stream ValueEvent);
+  rpc DeleteValue  (DeleteValueRequest)  returns (DeleteValueResponse);
 
   // ── ADK SessionService shim ───────────────────────────────────────────────
   rpc CreateSession   (CreateSessionRequest)   returns (Session);
@@ -146,10 +174,17 @@ message RunState {
 }
 
 message JournalEntry {
-  int64 seq = 1;
-  string kind = 2;                 // "decision" | "effect" | "obligation" | "gate" | "state" | "event"
-  string payload_json = 3;
-  int64  ts_ms = 4;
+  int64  seq             = 1;
+  string kind            = 2;       // "decision" | "effect" | "obligation" | "gate" | "value" | "run" | "event"
+  string payload_json    = 3;
+  int64  ts_ms           = 4;
+  // The event-bus rebuild (see design-principles/tape-event-bus.md):
+  int64  global_seq      = 5;       // monotonic across all runs in this store
+  string subject         = 6;       // /tape/<kind>/<verb>/<dim1>/<dim2>...
+  int32  schema_version  = 7;       // payload schema version (default 1)
+  string trace_id        = 8;       // W3C trace-context hex, propagated end-to-end
+  string span_id         = 9;
+  string parent_span_id  = 10;
 }
 
 // ── decision ledger ─────────────────────────────────────────────────────────
@@ -381,17 +416,160 @@ message ListDueTimersResponse { repeated TimerRecord timers = 1; }
 // ── the WAL → reactors feed ─────────────────────────────────────────────────
 
 message SubscribeEventsRequest {
-  int64  from_ts_ms = 1;          // tail from this timestamp (0 => from the beginning)
-  string run_id = 2;              // "" => all runs
-  string kind = 3;                // "" => all kinds  (decision | effect | obligation | gate | state | event)
+  // Legacy filters (still honoured for back-compat).
+  int64  from_ts_ms      = 1;     // tail from this timestamp (0 => from the beginning)
+  string run_id          = 2;     // "" => all runs
+  string kind            = 3;     // "" => all kinds  (decision | effect | obligation | gate | value | run | event)
+  // New (preferred) filters — see design-principles/tape-event-bus.md.
+  int64  from_global_seq = 4;     // tail from this global_seq (0 => from earliest)
+  string subject_pattern = 5;     // /tape/<kind>/<verb>/.../**  ; "" => match all
+}
+message SubscribeBySubjectRequest {
+  string subject_pattern = 1;     // /tape/<kind>/<verb>/.../**
+  string predicate_cel   = 2;     // CEL expression; "" => always-true
+  int64  from_global_seq = 3;     // 0 => from earliest available
 }
 message EventEntry {
-  string run_id = 1;
-  int64  seq = 2;
-  string kind = 3;
-  string payload_json = 4;
-  int64  ts_ms = 5;
+  string run_id          = 1;
+  int64  seq             = 2;
+  string kind            = 3;
+  string payload_json    = 4;
+  int64  ts_ms           = 5;
+  // Event-bus rebuild fields:
+  int64  global_seq      = 6;
+  string subject         = 7;
+  int32  schema_version  = 8;
+  string trace_id        = 9;
+  string span_id         = 10;
+  string parent_span_id  = 11;
 }
+
+// ── reactions & tasks ───────────────────────────────────────────────────────
+
+enum HandlerKind {
+  HANDLER_KIND_UNSPECIFIED = 0;
+  HANDLER_KIND_AGENT       = 1;   // matching entries create tape_runs (durable, multi-step)
+  HANDLER_KIND_TASK        = 2;   // matching entries create tape_tasks for the in-proc dispatcher
+  HANDLER_KIND_PUBLISH     = 3;   // matching entries create tape_tasks for a broker bridge
+}
+
+message Reaction {
+  string      reaction_id      = 1;   // stable id; "" => server generates
+  string      name             = 2;   // human label
+  string      subject_pattern  = 3;   // /tape/.../*/.../**
+  string      predicate_cel    = 4;   // CEL; "" => always-true
+  HandlerKind handler_kind     = 5;
+  string      agent_app        = 6;   // kind=AGENT: which app to re-invoke
+  string      publish_target   = 7;   // kind=PUBLISH: e.g. pubsub://proj/topic, nats://subj
+  int32       max_concurrency  = 8;   // <= 0 => 1
+  int32       rate_limit_per_s = 9;   // 0 => unbounded
+  int32       debounce_ms      = 10;  // coalesce repeated (reaction, subject) within window
+  int32       retry_max        = 11;  // attempts before NackTask(permanent=true)
+  int32       retry_backoff_ms = 12;  // starting backoff; doubles each attempt
+  int32       dlq_after_n      = 13;  // status=DLQ after this many attempts
+  int32       num_shards       = 14;  // <= 0 => 1; tasks hashed by source_run_id % num_shards
+  int64       created_at_ms    = 15;
+  bool        deleted          = 16;
+  // When true, RegisterReaction seeds the per-shard cursors at the current
+  // journal head — so the reaction only sees entries written AFTER its
+  // registration, never the backlog. When false (default), the cursors start
+  // at 0 and replay every existing journal entry through the reaction. Set
+  // this for reactions that don't want history (alerts on new effects, hot-
+  // path debounce of live FX writes); leave it false for replay-style work
+  // (audit projections, cold-start rebuilds).
+  bool        bootstrap_from_head = 17;
+}
+
+message DeregisterReactionRequest  { string reaction_id = 1; }
+message DeregisterReactionResponse { bool   deregistered = 1; }
+message ListReactionsRequest       { string subject_pattern = 1; }   // "" => all
+message ListReactionsResponse      { repeated Reaction reactions = 1; }
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING     = 1;
+  TASK_STATUS_CLAIMED     = 2;
+  TASK_STATUS_DONE        = 3;
+  TASK_STATUS_FAILED      = 4;   // soft fail; will be retried until DLQ
+  TASK_STATUS_DLQ         = 5;
+}
+
+message Task {
+  string     task_id             = 1;
+  string     reaction_id         = 2;
+  int32      shard               = 3;
+  string     source_run_id       = 4;
+  int64      source_global_seq   = 5;
+  string     subject             = 6;
+  string     payload_json        = 7;
+  TaskStatus status              = 8;
+  int32      attempts            = 9;
+  int64      next_attempt_at_ms  = 10;
+  string     lease_owner         = 11;
+  int64      lease_expires_at_ms = 12;
+  string     last_error          = 13;
+  int64      created_at_ms       = 14;
+  string     trace_id            = 15;
+  string     parent_span_id      = 16;
+}
+
+message ClaimTasksRequest {
+  string reaction_id = 1;
+  int32  shard       = 2;        // <0 => any shard
+  string owner       = 3;
+  int64  lease_ms    = 4;        // <=0 => server default (60_000)
+  int32  max         = 5;        // <=0 => server default (16)
+  int64  now_ms      = 6;        // 0 => server time
+}
+message ClaimTasksResponse  { repeated Task tasks = 1; }
+message CompleteTaskRequest { string task_id = 1; string owner = 2; }
+message CompleteTaskResponse { Task task = 1; }
+message NackTaskRequest    {
+  string task_id   = 1;
+  string owner     = 2;
+  string error     = 3;
+  bool   permanent = 4;          // true => DLQ immediately regardless of attempts
+}
+message NackTaskResponse   { Task task = 1; }
+message ListTasksRequest   { string reaction_id = 1; TaskStatus status = 2; int32 limit = 3; }
+message ListTasksResponse  { repeated Task tasks = 1; }
+
+// ── reactive key-value store ───────────────────────────────────────────────
+
+message ValueRecord {
+  string namespace = 1;         // user-chosen namespace (e.g. "treasury", "user:<id>", "run:<run_id>", "")
+  string key = 2;
+  string value_json = 3;
+  int64  version = 4;            // monotonic per (namespace, key); CAS uses this
+  int64  ts_ms = 5;
+  string writer = 6;             // free-form attribution (a process id, an agent name, …)
+  bool   deleted = 7;            // set on the event emitted by DeleteValue
+}
+
+message WriteValueRequest {
+  string namespace = 1;
+  string key = 2;
+  string value_json = 3;
+  int64  if_version = 4;         // optimistic CAS: only write if the current version == if_version. < 0 disables.
+  string writer = 5;
+}
+
+message GetValueRequest { string namespace = 1; string key = 2; }
+message GetValueResponse { bool found = 1; ValueRecord value = 2; }
+
+message WatchValueRequest {
+  string namespace = 1;
+  string key = 2;
+  int64  from_version = 3;       // 0 => start from the current value (one snapshot, then changes)
+}
+message ValueEvent {
+  ValueRecord value = 1;         // the new value (or `deleted = true`)
+  int64  prev_version = 2;       // 0 if no prior value
+  string prev_value_json = 3;    // "" if no prior value
+}
+
+message DeleteValueRequest { string namespace = 1; string key = 2; }
+message DeleteValueResponse { bool deleted = 1; int64 version = 2; }
 
 // ── ADK SessionService shim ─────────────────────────────────────────────────
 

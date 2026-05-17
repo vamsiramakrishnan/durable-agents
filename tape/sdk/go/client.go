@@ -54,6 +54,19 @@ const (
 	ObligationStuck       = int32(pb.ObligationStatus_OBLIGATION_STATUS_STUCK)
 )
 
+// HandlerKind and TaskStatus re-exports for ergonomic call-sites.
+const (
+	HandlerKindAgent   = pb.HandlerKind_HANDLER_KIND_AGENT
+	HandlerKindTask    = pb.HandlerKind_HANDLER_KIND_TASK
+	HandlerKindPublish = pb.HandlerKind_HANDLER_KIND_PUBLISH
+
+	TaskStatusPending = pb.TaskStatus_TASK_STATUS_PENDING
+	TaskStatusClaimed = pb.TaskStatus_TASK_STATUS_CLAIMED
+	TaskStatusDone    = pb.TaskStatus_TASK_STATUS_DONE
+	TaskStatusFailed  = pb.TaskStatus_TASK_STATUS_FAILED
+	TaskStatusDLQ     = pb.TaskStatus_TASK_STATUS_DLQ
+)
+
 // Options for Dial.
 type Options struct {
 	Auth       bool   // default true on tapes://
@@ -292,8 +305,180 @@ func (c *Client) ListDueTimers(ctx context.Context, nowMs, limit int64, claim bo
 }
 
 // SubscribeEvents returns a streaming client; iterate with .Recv() until io.EOF.
+//
+// Legacy entry point. New code should use SubscribeEventsOpts (which supports
+// `from_global_seq` and `subject_pattern`) or SubscribeBySubject.
 func (c *Client) SubscribeEvents(ctx context.Context, fromTsMs int64, runID, kind string) (grpc.ServerStreamingClient[pb.EventEntry], error) {
 	return c.pb.SubscribeEvents(ctx, &pb.SubscribeEventsRequest{FromTsMs: fromTsMs, RunId: runID, Kind: kind})
+}
+
+// SubscribeEventsOpts is the rich form for the WAL tail RPC: a single struct
+// covering both the legacy filters (FromTsMs / RunID / Kind) and the new
+// event-bus filters (FromGlobalSeq / SubjectPattern). Mix-and-match freely;
+// `from_ts_ms` is honoured only when `from_global_seq` is zero.
+type SubscribeEventsOpts struct {
+	FromTsMs       int64
+	RunID          string
+	Kind           string
+	FromGlobalSeq  int64
+	SubjectPattern string
+}
+
+// SubscribeEventsWith is the option-struct form of SubscribeEvents. Prefer
+// this for new code; it supports the event-bus rebuild fields.
+func (c *Client) SubscribeEventsWith(ctx context.Context, o SubscribeEventsOpts) (grpc.ServerStreamingClient[pb.EventEntry], error) {
+	return c.pb.SubscribeEvents(ctx, &pb.SubscribeEventsRequest{
+		FromTsMs:       o.FromTsMs,
+		RunId:          o.RunID,
+		Kind:           o.Kind,
+		FromGlobalSeq:  o.FromGlobalSeq,
+		SubjectPattern: o.SubjectPattern,
+	})
+}
+
+// ──── reactions & tasks (event-bus surface) ─────────────────────────────────
+
+// RegisterReactionOpts mirrors the `Reaction` proto fields the client supplies
+// at registration time. Leave a field zero/empty for the server default.
+type RegisterReactionOpts struct {
+	ReactionID        string
+	Name              string
+	SubjectPattern    string
+	PredicateCEL      string
+	HandlerKind       pb.HandlerKind
+	AgentApp          string
+	PublishTarget     string
+	MaxConcurrency    int32
+	RateLimitPerS     int32
+	DebounceMs        int32
+	RetryMax          int32
+	RetryBackoffMs    int32
+	DLQAfterN         int32
+	NumShards         int32
+	BootstrapFromHead bool
+}
+
+// RegisterReaction creates (or upserts on `reaction_id`) a server-side
+// reaction. The returned Reaction echoes the persisted row with its
+// server-assigned `reaction_id` filled in.
+func (c *Client) RegisterReaction(ctx context.Context, o RegisterReactionOpts) (*pb.Reaction, error) {
+	r := &pb.Reaction{
+		ReactionId:        o.ReactionID,
+		Name:              o.Name,
+		SubjectPattern:    o.SubjectPattern,
+		PredicateCel:      o.PredicateCEL,
+		HandlerKind:       o.HandlerKind,
+		AgentApp:          o.AgentApp,
+		PublishTarget:     o.PublishTarget,
+		MaxConcurrency:    o.MaxConcurrency,
+		RateLimitPerS:     o.RateLimitPerS,
+		DebounceMs:        o.DebounceMs,
+		RetryMax:          o.RetryMax,
+		RetryBackoffMs:    o.RetryBackoffMs,
+		DlqAfterN:         o.DLQAfterN,
+		NumShards:         o.NumShards,
+		BootstrapFromHead: o.BootstrapFromHead,
+	}
+	return c.pb.RegisterReaction(ctx, r)
+}
+
+// DeregisterReaction marks the reaction `deleted=true`. Returns whether the
+// server flipped the bit (false on unknown id).
+func (c *Client) DeregisterReaction(ctx context.Context, reactionID string) (bool, error) {
+	resp, err := c.pb.DeregisterReaction(ctx, &pb.DeregisterReactionRequest{ReactionId: reactionID})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetDeregistered(), nil
+}
+
+// ListReactions returns every active reaction. Pass an empty pattern to list
+// all reactions; otherwise an exact-match on `subject_pattern` is applied.
+func (c *Client) ListReactions(ctx context.Context, subjectPattern string) ([]*pb.Reaction, error) {
+	resp, err := c.pb.ListReactions(ctx, &pb.ListReactionsRequest{SubjectPattern: subjectPattern})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetReactions(), nil
+}
+
+// ClaimTasksOpts is the option-struct form of the ClaimTasks RPC.
+//
+// Defaults applied client-side: LeaseMs <=0 → 60_000, Max <=0 → 16. Shard <0
+// asks the server for tasks from any shard.
+type ClaimTasksOpts struct {
+	ReactionID string
+	Shard      int32 // <0 = any
+	Owner      string
+	LeaseMs    int64 // <=0 = 60_000
+	Max        int32 // <=0 = 16
+	NowMs      int64 // 0 = server time
+}
+
+// ClaimTasks atomically leases up to `Max` pending tasks for the dispatcher.
+func (c *Client) ClaimTasks(ctx context.Context, o ClaimTasksOpts) ([]*pb.Task, error) {
+	if o.LeaseMs <= 0 {
+		o.LeaseMs = 60_000
+	}
+	if o.Max <= 0 {
+		o.Max = 16
+	}
+	resp, err := c.pb.ClaimTasks(ctx, &pb.ClaimTasksRequest{
+		ReactionId: o.ReactionID,
+		Shard:      o.Shard,
+		Owner:      o.Owner,
+		LeaseMs:    o.LeaseMs,
+		Max:        o.Max,
+		NowMs:      o.NowMs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetTasks(), nil
+}
+
+// CompleteTask marks the task as DONE (success ack from the handler).
+func (c *Client) CompleteTask(ctx context.Context, taskID, owner string) (*pb.Task, error) {
+	resp, err := c.pb.CompleteTask(ctx, &pb.CompleteTaskRequest{TaskId: taskID, Owner: owner})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetTask(), nil
+}
+
+// NackTask reports a failed attempt. Set `permanent=true` to push it straight
+// to DLQ; otherwise the server will re-lease until `dlq_after_n` is reached.
+func (c *Client) NackTask(ctx context.Context, taskID, owner, errMsg string, permanent bool) (*pb.Task, error) {
+	resp, err := c.pb.NackTask(ctx, &pb.NackTaskRequest{
+		TaskId: taskID, Owner: owner, Error: errMsg, Permanent: permanent,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetTask(), nil
+}
+
+// ListTasks returns tasks filtered by reaction and status (useful for
+// observability and DLQ inspection).
+func (c *Client) ListTasks(ctx context.Context, reactionID string, status pb.TaskStatus, limit int32) ([]*pb.Task, error) {
+	resp, err := c.pb.ListTasks(ctx, &pb.ListTasksRequest{
+		ReactionId: reactionID, Status: status, Limit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetTasks(), nil
+}
+
+// SubscribeBySubject opens a streaming WAL tail filtered by subject pattern
+// and an optional CEL predicate, cursored on `global_seq`. Iterate with
+// .Recv() until io.EOF.
+func (c *Client) SubscribeBySubject(ctx context.Context, subjectPattern, predicateCEL string, fromGlobalSeq int64) (grpc.ServerStreamingClient[pb.EventEntry], error) {
+	return c.pb.SubscribeBySubject(ctx, &pb.SubscribeBySubjectRequest{
+		SubjectPattern: subjectPattern,
+		PredicateCel:   predicateCEL,
+		FromGlobalSeq:  fromGlobalSeq,
+	})
 }
 
 // ──── ADK SessionService shim ───────────────────────────────────────────────
