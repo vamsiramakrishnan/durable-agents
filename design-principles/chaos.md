@@ -353,7 +353,7 @@ runtime.
 | 3     | LDFI + Reliability Surface R(k,ε,λ) + DeepSnapshot                            | done   |
 | 4     | Agent-layer chaos: `model_proxy`, `mcp_proxy` — stdlib forward-proxy          | done   |
 | 2.5   | Madsim DST foundation — virtualised time, deterministic scheduling, seeded RNG | done   |
-| 2.6   | Store bridge: sim-only `MemRunStore` (or `madsim-tokio` shim) so store tests run under `cfg(madsim)` |        |
+| 2.6   | Store bridge: sim-only `MemRunStore` so real `TapeService` tests run under `cfg(madsim)` | done   |
 | 3.5   | Porcupine-style linearizability checker for the lease primitive              |        |
 | 5     | `tape chaos` CLI + Chaos Mesh manifests (pod-kill, net-delay, time-skew, soak workflow) | done |
 | 6     | Mirror the SDK surface to Go / TypeScript / Java                             |        |

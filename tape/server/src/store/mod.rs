@@ -30,6 +30,8 @@
 //! harmless.
 
 pub mod bigtable;
+#[cfg(any(test, feature = "sim"))]
+pub mod mem;
 pub mod sql;
 
 use std::sync::Arc;
