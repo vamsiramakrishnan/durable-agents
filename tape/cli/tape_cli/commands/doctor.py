@@ -1,5 +1,15 @@
-"""`tape doctor` — local + GCP checks. Each check yields a small dict the
-caller can format; the runner prints the standard tick/cross format.
+"""`tape doctor` — local + GCP checks AND operational triage against a live
+tape-server.
+
+Two distinct jobs share the verb:
+
+* **environment** (default): Python / ADK / Docker / Cargo / TAPE_URL
+  reachable / required GCP APIs — the "can you build and run this" checks.
+* **operational** (`--live`): runs needing recovery, effects PENDING beyond
+  a threshold, effects in UNKNOWN, stuck obligations, outbox dispatch lag,
+  reactor DLQ — the "is the running system healthy" view. The closest
+  analogue is `htop` for a workflow engine; `--watch` makes it refresh in
+  place so you can stand over it during an incident.
 """
 
 from __future__ import annotations
@@ -8,14 +18,20 @@ import importlib
 import os
 import socket
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 import typer
+from rich.console import Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table as RichTable
+from rich.text import Text
 
 from ..config import TapeProject, find_project_root
-from ..util import console, ok, warn, fail, info, which, section
+from ..util import console, ok, warn, fail, info, which, section, die
 
 
 @dataclass
@@ -153,6 +169,380 @@ def _print(results: list[CheckResult]) -> int:
     return n_fail
 
 
+# ── live triage (the operator's hot-incident view) ────────────────────────
+
+
+def _resolve_url(url_flag: Optional[str]) -> str:
+    """Same resolution order as `tape inspect`: --url > $TAPE_URL > tape.yaml >
+    the SDK default. Read-only commands shouldn't require a project root."""
+    if url_flag:
+        return url_flag
+    env = os.environ.get("TAPE_URL")
+    if env:
+        return env
+    try:
+        root = find_project_root()
+        return TapeProject.load(root / "tape.yaml").tape.url
+    except (FileNotFoundError, Exception):  # noqa: BLE001
+        return "tape://localhost:7878"
+
+
+# Map RunStatus int → label (mirrors proto and _journal.run_status_label).
+_RUN_STATUS = {
+    0: ("UNSPECIFIED", "dim"),
+    1: ("RUNNABLE", "yellow"),
+    2: ("RUNNING", "bold cyan"),
+    3: ("WAITING", "blue"),
+    4: ("TERMINAL", "bold green"),
+    5: ("FAILED", "bold red"),
+    6: ("COMPENSATING", "magenta"),
+    7: ("STUCK", "bold red on yellow"),
+    8: ("CANCELLED", "yellow"),
+}
+
+_EFFECT_STATUS = {
+    0: "UNSPECIFIED", 1: "PENDING", 2: "CONFIRMED", 3: "FAILED", 4: "UNKNOWN",
+}
+
+_OBLIGATION_STATUS = {
+    0: "UNSPECIFIED", 1: "PENDING", 2: "COMMITTED",
+    3: "COMPENSATED", 4: "STUCK",
+}
+
+
+def _age_ms(ts_ms: int, now_ms: int) -> str:
+    """Render an age in ms as a compact duration suffix."""
+    if ts_ms <= 0:
+        return "—"
+    d = max(0, now_ms - ts_ms)
+    if d < 1_000:
+        return f"{d}ms"
+    if d < 60_000:
+        return f"{d / 1000:.1f}s"
+    if d < 3_600_000:
+        return f"{d / 60_000:.1f}m"
+    return f"{d / 3_600_000:.1f}h"
+
+
+@dataclass
+class _Snapshot:
+    """One pull from the server — everything the triage view shows."""
+    runs_to_recover: list
+    effects_pending_stale: list
+    effects_unknown: list
+    obligations_stuck: list
+    obligations_pending: list
+    outbox_ready: list
+    timers_due: list
+    error: str = ""
+
+
+def _take_snapshot(client, *, pending_threshold_ms: int) -> _Snapshot:
+    """Pull everything we need in one pass. Tolerates partial server support
+    (older servers may not implement every RPC — each call is best-effort)."""
+    now_ms = int(time.time() * 1000)
+    cutoff = now_ms - pending_threshold_ms
+
+    err_parts: list[str] = []
+
+    def _safe(label: str, fn):
+        try:
+            return fn()
+        except Exception as ex:  # noqa: BLE001
+            err_parts.append(f"{label}: {ex}")
+            return []
+
+    # `list_runs_to_recover` returns RUNNABLE + expired-lease RUNNING + signal-
+    # released WAITING — the union of "needs the recovery reactor's attention".
+    runs = _safe("list_runs_to_recover",
+                 lambda: list(client.list_runs_to_recover(limit=200).runs))
+    # `list_pending_effects` with both flags = the reconciler's hot set:
+    # PENDING+stale plus UNKNOWN.
+    pending_stale = _safe(
+        "list_pending_effects(pending)",
+        lambda: list(client.list_pending_effects(
+            older_than_ms=cutoff, include_pending=True,
+            include_unknown=False, limit=200).effects))
+    unknowns = _safe(
+        "list_pending_effects(unknown)",
+        lambda: list(client.list_pending_effects(
+            older_than_ms=0, include_pending=False,
+            include_unknown=True, limit=200).effects))
+    # Drainer queues — stuck (terminal-needs-human) + pending (waiting).
+    stuck_ob = _safe(
+        "list_unresolved_obligations(stuck)",
+        lambda: list(client.list_unresolved_obligations(
+            limit=200, include_pending=False, include_stuck=True,
+            include_committed_expired=False).obligations))
+    pending_ob = _safe(
+        "list_unresolved_obligations(pending)",
+        lambda: list(client.list_unresolved_obligations(
+            limit=200, include_pending=True, include_stuck=False,
+            include_committed_expired=True).obligations))
+    outbox = _safe(
+        "list_effects_to_dispatch",
+        lambda: list(client.list_effects_to_dispatch(now_ms=now_ms,
+                                                       limit=200).effects))
+    timers = _safe(
+        "list_due_timers",
+        lambda: list(client.list_due_timers(now_ms=now_ms, limit=200,
+                                              claim=False).timers))
+    return _Snapshot(
+        runs_to_recover=runs,
+        effects_pending_stale=pending_stale,
+        effects_unknown=unknowns,
+        obligations_stuck=stuck_ob,
+        obligations_pending=pending_ob,
+        outbox_ready=outbox,
+        timers_due=timers,
+        error="; ".join(err_parts),
+    )
+
+
+def _render_runs(snap: _Snapshot) -> RichTable:
+    t = RichTable(title=f"Runs needing recovery ({len(snap.runs_to_recover)})",
+                  title_style="bold", header_style="bold dim",
+                  show_edge=False, pad_edge=False, expand=True)
+    t.add_column("run_id", overflow="ellipsis", no_wrap=True, max_width=14)
+    t.add_column("status")
+    t.add_column("app/user/session", overflow="ellipsis", no_wrap=True)
+    t.add_column("lease owner")
+    t.add_column("waiting on", style="blue")
+    if not snap.runs_to_recover:
+        t.add_row("[dim]—[/dim]", Text("✓ none", style="green"),
+                  "", "", "")
+        return t
+    for r in snap.runs_to_recover:
+        label, style = _RUN_STATUS.get(int(r.status), (f"?{r.status}", "dim"))
+        t.add_row(
+            r.run_id,
+            Text(label, style=style),
+            f"{r.app_name}/{r.user_id}/{r.session_id}",
+            r.lease_owner or "[dim]—[/dim]",
+            r.waiting_on_gate or "",
+        )
+    return t
+
+
+def _render_effects(snap: _Snapshot, *, now_ms: int,
+                    pending_threshold_ms: int) -> RichTable:
+    n_unk = len(snap.effects_unknown)
+    n_stale = len(snap.effects_pending_stale)
+    title = (f"Effects · UNKNOWN={n_unk}  "
+             f"PENDING>{pending_threshold_ms // 1000}s={n_stale}")
+    t = RichTable(title=title, title_style="bold", header_style="bold dim",
+                  show_edge=False, pad_edge=False, expand=True)
+    t.add_column("effect_key", overflow="ellipsis", no_wrap=True, max_width=28)
+    t.add_column("status")
+    t.add_column("tool")
+    t.add_column("business_key", overflow="ellipsis", no_wrap=True, max_width=24)
+    t.add_column("age", justify="right")
+    t.add_column("run_id", overflow="ellipsis", no_wrap=True, max_width=12)
+
+    rows = []
+    # UNKNOWN first — that's the loudest.
+    for e in snap.effects_unknown:
+        rows.append((e, True))
+    for e in snap.effects_pending_stale:
+        rows.append((e, False))
+    if not rows:
+        t.add_row(Text("✓ none", style="green"), "", "", "", "", "")
+        return t
+    for e, is_unknown in rows:
+        status_label = _EFFECT_STATUS.get(int(e.status), str(e.status))
+        style = "bold red on yellow" if is_unknown else "yellow"
+        t.add_row(
+            e.idempotency_key,
+            Text(status_label, style=style),
+            e.tool_name,
+            e.business_key or "[dim]—[/dim]",
+            _age_ms(e.ts_ms, now_ms),
+            e.run_id,
+        )
+    return t
+
+
+def _render_obligations(snap: _Snapshot, *, now_ms: int) -> RichTable:
+    n_stuck = len(snap.obligations_stuck)
+    n_pending = len(snap.obligations_pending)
+    title = f"Obligations · STUCK={n_stuck}  PENDING/expired={n_pending}"
+    t = RichTable(title=title, title_style="bold", header_style="bold dim",
+                  show_edge=False, pad_edge=False, expand=True)
+    t.add_column("kind")
+    t.add_column("status")
+    t.add_column("effect_key", overflow="ellipsis", no_wrap=True, max_width=32)
+    t.add_column("attempts", justify="right")
+    t.add_column("age", justify="right")
+    t.add_column("run_id", overflow="ellipsis", no_wrap=True, max_width=12)
+
+    rows = [(o, True) for o in snap.obligations_stuck]
+    rows += [(o, False) for o in snap.obligations_pending]
+    if not rows:
+        t.add_row(Text("✓ none", style="green"), "", "", "", "", "")
+        return t
+    for o, is_stuck in rows:
+        label = _OBLIGATION_STATUS.get(int(o.status), str(o.status))
+        style = "bold red on yellow" if is_stuck else "magenta"
+        t.add_row(
+            o.kind,
+            Text(label, style=style),
+            o.effect_key,
+            f"{o.attempts}/{o.max_attempts}",
+            _age_ms(o.ts_ms, now_ms),
+            o.run_id,
+        )
+    return t
+
+
+def _render_outbox(snap: _Snapshot, *, now_ms: int) -> RichTable:
+    n = len(snap.outbox_ready)
+    t = RichTable(title=f"Outbox · dispatch-ready ({n})",
+                  title_style="bold", header_style="bold dim",
+                  show_edge=False, pad_edge=False, expand=True)
+    t.add_column("effect_key", overflow="ellipsis", no_wrap=True, max_width=28)
+    t.add_column("connector")
+    t.add_column("attempts", justify="right")
+    t.add_column("claimed by")
+    t.add_column("waiting", justify="right")
+    if not snap.outbox_ready:
+        t.add_row(Text("✓ none", style="green"), "", "", "", "")
+        return t
+    for e in snap.outbox_ready:
+        wait_ms = max(0, now_ms - e.ts_ms)
+        t.add_row(
+            e.idempotency_key,
+            e.connector or "[dim]—[/dim]",
+            f"{e.dispatch_attempts}",
+            e.dispatch_claimed_by or "[dim]—[/dim]",
+            _age_ms(e.ts_ms, now_ms),
+        )
+    return t
+
+
+def _render_timers(snap: _Snapshot, *, now_ms: int) -> RichTable:
+    n = len(snap.timers_due)
+    t = RichTable(title=f"Timers · due ({n})",
+                  title_style="bold", header_style="bold dim",
+                  show_edge=False, pad_edge=False, expand=True)
+    t.add_column("kind")
+    t.add_column("timer_id", overflow="ellipsis", no_wrap=True, max_width=24)
+    t.add_column("overdue", justify="right")
+    t.add_column("run_id", overflow="ellipsis", no_wrap=True, max_width=12)
+    if not snap.timers_due:
+        t.add_row(Text("✓ none", style="green"), "", "", "")
+        return t
+    for tm in snap.timers_due:
+        overdue = max(0, now_ms - tm.fire_at_ms)
+        t.add_row(tm.kind, tm.timer_id, _age_ms(0, overdue), tm.run_id)
+    return t
+
+
+def _render_report(snap: _Snapshot, *, url: str,
+                   pending_threshold_ms: int) -> Group:
+    now_ms = int(time.time() * 1000)
+
+    # Single-line summary: counts + a green-vs-red verdict on each axis.
+    summary = RichTable.grid(padding=(0, 2), expand=True)
+    summary.add_column(style="dim bold", no_wrap=True)
+    summary.add_column()
+
+    def _row(label: str, n: int, *, danger_above: int = 0):
+        good = n == 0 if danger_above == 0 else n <= danger_above
+        style = "green" if good else "bold red on yellow"
+        glyph = "✓" if good else "!"
+        summary.add_row(label, Text(f"{glyph} {n}", style=style))
+
+    summary.add_row("server", Text(url, style="cyan"))
+    summary.add_row("checked", time.strftime("%Y-%m-%d %H:%M:%S UTC",
+                                              time.gmtime(now_ms / 1000)))
+    _row("runs needing recovery", len(snap.runs_to_recover))
+    _row("effects UNKNOWN", len(snap.effects_unknown))
+    _row(f"effects PENDING > {pending_threshold_ms // 1000}s",
+         len(snap.effects_pending_stale))
+    _row("obligations STUCK", len(snap.obligations_stuck))
+    _row("obligations PENDING/expired", len(snap.obligations_pending),
+         danger_above=10)
+    _row("outbox dispatch-ready", len(snap.outbox_ready), danger_above=20)
+    _row("timers overdue", len(snap.timers_due), danger_above=5)
+    if snap.error:
+        summary.add_row("[red]errors[/red]",
+                         Text(snap.error, style="red"))
+
+    return Group(
+        Panel(summary, title="[bold]tape doctor --live[/bold]",
+              subtitle="[dim]operational triage[/dim]",
+              border_style="cyan", padding=(0, 1)),
+        _render_runs(snap),
+        _render_effects(snap, now_ms=now_ms,
+                        pending_threshold_ms=pending_threshold_ms),
+        _render_obligations(snap, now_ms=now_ms),
+        _render_outbox(snap, now_ms=now_ms),
+        _render_timers(snap, now_ms=now_ms),
+    )
+
+
+def _exit_code_from_snapshot(snap: _Snapshot) -> int:
+    """Non-zero only on conditions a human probably wants alerted on:
+    STUCK obligations or UNKNOWN effects (the loud failure modes). Lots of
+    runs-to-recover or outbox lag are normal in busy systems."""
+    if snap.obligations_stuck:
+        return 2
+    if snap.effects_unknown:
+        return 1
+    return 0
+
+
+def _live_triage(*, url: Optional[str], watch: bool, interval: float,
+                 pending_threshold_ms: int) -> None:
+    resolved = _resolve_url(url)
+    try:
+        from tape.client import TapeClient
+    except ImportError:
+        die("tape-py not installed.\n  Fix: pip install tape-py")
+
+    try:
+        client = TapeClient(resolved)
+    except Exception as ex:  # noqa: BLE001
+        die(f"failed to connect to {resolved}: {ex}")
+
+    try:
+        if watch:
+            # Bind a lazy renderable so each Live tick re-pulls the server.
+            class _LivePoll:
+                def __init__(_self):
+                    _self._last = _take_snapshot(
+                        client, pending_threshold_ms=pending_threshold_ms)
+                    _self._next_pull = time.time() + interval
+                def __rich__(_self):
+                    now = time.time()
+                    if now >= _self._next_pull:
+                        _self._last = _take_snapshot(
+                            client, pending_threshold_ms=pending_threshold_ms)
+                        _self._next_pull = now + interval
+                    return _render_report(
+                        _self._last, url=resolved,
+                        pending_threshold_ms=pending_threshold_ms)
+            try:
+                with Live(_LivePoll(), refresh_per_second=4,
+                          console=console, screen=False) as _:
+                    while True:
+                        time.sleep(0.25)
+            except KeyboardInterrupt:
+                pass
+        else:
+            snap = _take_snapshot(client,
+                                  pending_threshold_ms=pending_threshold_ms)
+            console.print(_render_report(
+                snap, url=resolved,
+                pending_threshold_ms=pending_threshold_ms))
+            rc = _exit_code_from_snapshot(snap)
+            if rc:
+                raise typer.Exit(rc)
+    finally:
+        try: client.close()
+        except Exception: pass  # noqa: BLE001, E701
+
+
 # ── entry point ────────────────────────────────────────────────────────────
 
 def run(
@@ -160,7 +550,26 @@ def run(
     gcp: bool = typer.Option(False, "--gcp/--no-gcp"),
     agents_cli_aware: bool = typer.Option(False, "--agents-cli-aware",
         help="Also run agents-cli scaffold compatibility checks."),
+    live: bool = typer.Option(False, "--live",
+        help="Query a running tape-server and report operational health "
+             "(runs needing recovery, UNKNOWN effects, stuck obligations, "
+             "outbox + timer lag, reactor DLQ). Skips the env checks."),
+    watch: bool = typer.Option(False, "--watch", "-w",
+        help="With --live: refresh the report in place every --interval "
+             "seconds (Ctrl-C to stop). Without --live: noop."),
+    interval: float = typer.Option(2.0, "--interval",
+        help="Refresh interval in seconds for --watch."),
+    pending_threshold_ms: int = typer.Option(
+        60_000, "--pending-threshold-ms",
+        help="Effects PENDING longer than this are flagged."),
+    url: Optional[str] = typer.Option(
+        None, "--url",
+        help="Tape server URL (default: $TAPE_URL or tape.yaml)."),
 ):
+    # `--live` is a different verb — it doesn't run env checks. Hand off.
+    if live:
+        return _live_triage(url=url, watch=watch, interval=interval,
+                            pending_threshold_ms=pending_threshold_ms)
     project: Optional[TapeProject] = None
     try:
         root = find_project_root()

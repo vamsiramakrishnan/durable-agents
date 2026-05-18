@@ -244,6 +244,11 @@ Usage: tape doctor [OPTIONS]
 | `--local`, `--no-local` | `True` | — |
 | `--gcp`, `--no-gcp` | `False` | — |
 | `--agents-cli-aware` | `False` | Also run agents-cli scaffold compatibility checks. |
+| `--live` | `False` | Query a running tape-server and report operational health (runs needing recovery, UNKNOWN effects, stuck obligations, outbox + timer lag, reactor DLQ). Skips the env checks. |
+| `--watch`, `-w` | `False` | With --live: refresh the report in place every --interval seconds (Ctrl-C to stop). Without --live: noop. |
+| `--interval` | `2.0` | Refresh interval in seconds for --watch. |
+| `--pending-threshold-ms` | `60000` | Effects PENDING longer than this are flagged. |
+| `--url` | — | Tape server URL (default: $TAPE_URL or tape.yaml). |
 
 ### `tape enhance`
 
