@@ -26,6 +26,100 @@ Usage: tape [OPTIONS] COMMAND [ARGS]...
 |---|---|---|
 | `--version` | `False` | Show the version and exit. |
 
+### `tape chaos`
+
+Drive chaos scenarios + replay + LDFI.
+
+```
+Usage: tape chaos COMMAND [ARGS]...
+```
+
+#### `tape chaos derive`
+
+LDFI: derive chaos scenarios from one successful run's lineage.
+
+```
+Usage: tape chaos derive [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--run`, `-r` | — | The baseline run_id. |
+| `--url`, `-u` | — | — |
+| `--max-cut` | `1` | Maximum cut size (1 = singletons; >=2 multiplies). |
+
+#### `tape chaos doctor`
+
+Verify the local chaos surface is wired correctly.
+
+```
+Usage: tape chaos doctor [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--url`, `-u` | — | — |
+
+#### `tape chaos lineage`
+
+Walk one run's lineage DAG and print each node + its breaking failpoint.
+
+```
+Usage: tape chaos lineage [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--run`, `-r` | — | The run_id to walk. |
+| `--url`, `-u` | — | — |
+
+#### `tape chaos replay`
+
+Replay a scenario twice with the same seed and check determinism.
+
+```
+Usage: tape chaos replay [OPTIONS] SCENARIO
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `SCENARIO` | — |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--seed`, `-s` | — | Override the scenario's seed. |
+| `--url`, `-u` | — | — |
+
+#### `tape chaos run`
+
+Run a scenario once and print the report.
+
+```
+Usage: tape chaos run [OPTIONS] SCENARIO
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `SCENARIO` | Path to a scenario .py file. |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--url`, `-u` | — | Tape server URL (default $TAPE_URL). |
+
 ### `tape deploy`
 
 Build & deploy services.
@@ -159,6 +253,33 @@ Usage: tape init [OPTIONS] NAME
 | `--events` | `'none'` | Default events: none \| pubsub. |
 | `--force` | `False` | Overwrite existing files. |
 
+### `tape inspect`
+
+Inspect a run's journal — Textual TUI (default) or rich snapshot / JSONL.
+
+```
+Usage: tape inspect [OPTIONS] [RUN_ID]
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `RUN_ID` | Run id to inspect. Omit to list recoverable runs. |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--print`, `-P` | `False` | Print a rich snapshot and exit (no Textual app). |
+| `--raw` | `False` | JSONL — one JournalEntry per line. Implies streaming. |
+| `--summary` | `False` | Stats only — counts by status, duration. Exits 1 on UNKNOWN. |
+| `--follow`, `-f`, `--no-follow`, `-F` | `True` | With --raw: keep streaming after drain. Default: yes. |
+| `--from-seq`, `-s` | `0` | Start streaming from this seq (0 => from the beginning). |
+| `--limit`, `-n` | — | Stop after this many entries (used with --raw / --print). |
+| `--list`, `-l` | `False` | List recoverable runs (same as `tape inspect` with no args). |
+| `--url` | — | Override the tape server URL. Default: $TAPE_URL or tape.yaml. |
+
 ### `tape logs`
 
 Tail Cloud Logging for the deployed services.
@@ -232,4 +353,26 @@ Usage: tape status [OPTIONS]
 | Flag | Default | Help |
 |---|---|---|
 | `--limit`, `-n` | `20` | — |
+
+### `tape tail`
+
+Tail the journal across all runs (cross-run live stream).
+
+```
+Usage: tape tail [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--subject`, `-s` | `''` | Subject pattern, e.g. '/tape/effect/**'. Supports * (one segment) and ** (rest). |
+| `--kind`, `-k` | `''` | Legacy filter (decision\|effect\|obligation\|gate\|value\|run\|event). |
+| `--run`, `-r` | `''` | Restrict to one run id. |
+| `--predicate`, `-p` | `''` | Server-side CEL predicate on the event (see tape-event-bus.md). |
+| `--from-global-seq`, `-g` | `0` | Resume from this global_seq (0 => from earliest). |
+| `--from-ts-ms` | `0` | Legacy SubscribeEvents-style ts-cursor (only used when no subject). |
+| `--limit`, `-n` | — | Stop after this many entries. |
+| `--raw` | `False` | Emit JSONL — one EventEntry per line, no formatting. |
+| `--url` | — | Override the tape server URL. Default: $TAPE_URL or tape.yaml. |
 

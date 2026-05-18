@@ -10,6 +10,8 @@ Subcommands::
     tape deploy gcp              build & deploy Tape server + reactors + agent
     tape logs                    tail Cloud Logging for tape-* services
     tape status                  show runs, effects, obligations, reactor lag
+    tape inspect <run-id>        Textual TUI — journal timeline + detail pane
+    tape tail                    cross-run live event stream (`tail -f` for the runtime)
     tape destroy gcp             tear down provisioned GCP infra
     tape migrate                 run store migrations
 """
@@ -30,6 +32,8 @@ from .commands import status as status_cmd
 from .commands import destroy as destroy_cmd
 from .commands import migrate as migrate_cmd
 from .commands import chaos as chaos_cmd
+from .commands import inspect as inspect_cmd
+from .commands import tail as tail_cmd
 
 console = Console()
 
@@ -69,6 +73,9 @@ app.command(name="doctor", help="Diagnose local and GCP setup.")(doctor_cmd.run)
 app.command(name="logs", help="Tail Cloud Logging for the deployed services.")(logs_cmd.run)
 app.command(name="status", help="Show runs / effects / obligations / reactor lag.")(status_cmd.run)
 app.command(name="migrate", help="Run schema migrations for the configured store.")(migrate_cmd.run)
+app.command(name="tail", help="Tail the journal across all runs (cross-run live stream).")(tail_cmd.run)
+app.command(name="inspect",
+            help="Inspect a run's journal — Textual TUI (default) or rich snapshot / JSONL.")(inspect_cmd.run)
 
 # `tape provision gcp ...` / `tape deploy gcp ...` / `tape destroy gcp ...` are
 # subcommand groups so we can add other clouds later (or none).

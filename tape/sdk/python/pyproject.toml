@@ -19,7 +19,7 @@ dependencies = [
 # `hypothesis` powers the property-based stateful runner in
 # tape/tests/test_chaos_stateful.py — see Phase 5.5 in
 # design-principles/chaos.md. Skipped at runtime if absent.
-dev = ["grpcio-tools>=1.60", "pytest>=7", "hypothesis>=6.100"]
+dev = ["grpcio-tools>=1.60", "pytest>=7", "pytest-asyncio>=0.23", "hypothesis>=6.100"]
 # Pub/Sub connector (used by tape.connectors.pubsub.PubSubConnector); the
 # import is lazy, so most users don't need it. Install with `pip install
 # tape-py[gcp-pubsub]` to publish effects via Pub/Sub from the outbox reactor.

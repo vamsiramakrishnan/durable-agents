@@ -196,8 +196,15 @@ class TapeClient:
     def list_runs_to_recover(self, *, limit=100, now_ms=0):
         return self.stub.ListRunsToRecover(pb.ListRunsToRecoverRequest(limit=limit, now_ms=now_ms))
 
-    def subscribe_run(self, *, run_id, from_seq=0):
-        return self.stub.SubscribeRun(pb.SubscribeRunRequest(run_id=run_id, from_seq=from_seq))
+    def subscribe_run(self, *, run_id, from_seq=0, timeout=None):
+        """Stream this run's journal from `from_seq` onward. Pass `timeout=` to
+        bound the call (the iterator will surface DEADLINE_EXCEEDED when the
+        deadline passes — that's how `tape inspect --no-follow` drains the
+        existing journal and stops, instead of waiting forever for new entries)."""
+        req = pb.SubscribeRunRequest(run_id=run_id, from_seq=from_seq)
+        if timeout is not None:
+            return self.stub.SubscribeRun(req, timeout=timeout)
+        return self.stub.SubscribeRun(req)
 
     # ── decision ledger ─────────────────────────────────────────────────────
 
