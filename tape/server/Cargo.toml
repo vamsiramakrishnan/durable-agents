@@ -53,7 +53,7 @@ bigtable_rs = { version = "0.3", default-features = false, features = ["tonic-tl
 googleapis-tonic-google-bigtable-v2 = "0.36"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"
 
 # Deterministic simulation testing — Phase 2.5 of TapeChaos. Madsim provides
 # a tokio-compatible deterministic runtime with virtualised time and seeded
