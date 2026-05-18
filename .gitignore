@@ -32,6 +32,17 @@ tape/sdk/java/.mvn/
 # Docs site
 site/
 
+# DevEx artifacts (root-level)
+.env
+bin/
+dist/
+tape.db
+tape.db-wal
+tape.db-shm
+
+# mise
+.mise.local.toml
+
 # Generator outputs that should NOT be committed.
 # The handwritten landing pages (index.md / api.md placeholders) stay tracked
 # so `mkdocs serve` works for a fresh checkout; CI overwrites them at build

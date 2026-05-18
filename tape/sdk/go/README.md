@@ -235,3 +235,15 @@ The full `TapePlugin` / `TapeSessionService` for the Go port of ADK —
 mechanical work once that port settles; the Python adapter
 [`tape/sdk/python/tape/adk/`](../python/tape/adk/) is the reference, and the
 values returned by `NewDurableApp(...)` are what its constructor will read.
+
+## Parity
+
+The Python SDK is the reference; this SDK aims for **idiom parity** (not
+verbatim parity). See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md) for
+the live scorecard. Notable open gaps for Go: G1 (packaged
+`cmd/tape-outbox` daemon), G2 (`WebhookSink` / `PubSubSink`).
+
+## Contribute
+
+`make sdk-test-go` runs the round-trip test (spawns the Rust `tape-server`
+in-memory). See [`../../../CLAUDE.md`](../../../CLAUDE.md).

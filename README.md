@@ -9,6 +9,38 @@ one.
 
 ---
 
+## Get started in one command
+
+```bash
+git clone https://github.com/vamsiramakrishnan/durable-agents && cd durable-agents
+./setup.sh                  # mise + rust/python/node/go/java/just + build server + install SDKs
+make demo                   # treasury example end-to-end
+make demo-resume            # kill mid-wire, recover, prove ONE wire
+```
+
+Or, install just the prebuilt binary + Python CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vamsiramakrishnan/durable-agents/main/install.sh | sh
+```
+
+Once installed:
+
+```bash
+tape init my-agent          # scaffold a durable ADK agent
+tape dev                    # server + reactors + agent (sqlite)
+tape doctor                 # tick/cross diagnostic
+```
+
+`make help` lists every common task. See [`CLAUDE.md`](CLAUDE.md) for the
+repo orientation, [`SDK_PARITY.md`](SDK_PARITY.md) for the
+Python/TypeScript/Go/Java parity matrix, and [`tape/README.md`](tape/README.md)
+for the architecture.
+
+---
+
+---
+
 ## The thesis, in one breath
 
 When an LLM is the orchestrator of an agent that *acts*, every tool call

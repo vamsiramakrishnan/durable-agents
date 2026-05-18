@@ -174,3 +174,15 @@ returned by `DurableApp.wire(...)` are what its constructor will read). And the
 higher-level reactor helpers (`RecoverOnce` / `ReconcileOnce` /
 `FireDueTimersOnce` / `RunReactors`) — pattern-port from the Go SDK in this
 folder.
+
+## Parity
+
+The Python SDK is the reference; this SDK aims for **idiom parity** (not
+verbatim parity). See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md) for
+the live scorecard. Notable open gaps for Java: G1 (`TapeOutbox` CLI), G2
+(`WebhookSink` / `PubSubSink`), G4 (`TapePlugin` for the Java ADK).
+
+## Contribute
+
+`make sdk-test-java` runs the round-trip smoke test (spawns the Rust
+`tape-server` in-memory). See [`../../../CLAUDE.md`](../../../CLAUDE.md).

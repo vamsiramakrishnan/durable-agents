@@ -1,0 +1,162 @@
+name: release
+
+# Triggered when a vX.Y.Z tag is pushed.
+#
+# Cross-builds tape-server for {linux, darwin, windows} × {x86_64, aarch64}
+# and uploads the archives to the GitHub Release that the tag created.
+# `install.sh` fetches these.
+#
+# Python (tape-py / tape-cli), npm (tape-ts), and Maven (tape-java) publishing
+# happen in their own jobs guarded on the same tag. They're optional — flip
+# `if: false` to `if: true` once you have credentials set in repo secrets:
+#
+#   PYPI_API_TOKEN, NPM_TOKEN, MAVEN_USERNAME + MAVEN_PASSWORD + GPG_PRIVATE_KEY
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # uploading release assets
+
+jobs:
+  # ───────────────────────────────────────────────────────────────
+  # tape-server — cross-platform Rust binaries
+  # ───────────────────────────────────────────────────────────────
+  server:
+    name: tape-server (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: tar.gz }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu, ext: tar.gz, cross: true }
+          - { os: macos-latest,   target: x86_64-apple-darwin,       ext: tar.gz }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      ext: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: zip,    bin_suffix: .exe }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          REF="${GITHUB_REF#refs/tags/}"
+          VER="${REF#v}"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=${REF}"      >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (aarch64-linux)
+        if: matrix.cross == true
+        run: cargo install cross --locked
+
+      - name: Build (cargo)
+        if: matrix.cross != true
+        working-directory: tape/server
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross — aarch64-linux)
+        if: matrix.cross == true
+        working-directory: tape/server
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Package
+        id: pkg
+        shell: bash
+        working-directory: tape/server
+        run: |
+          BIN="tape-server${{ matrix.bin_suffix }}"
+          OUT="tape-server_${{ steps.ver.outputs.version }}_${{ matrix.target }}"
+          mkdir -p "dist/${OUT}"
+          cp "target/${{ matrix.target }}/release/${BIN}" "dist/${OUT}/${BIN}"
+          cp ../../LICENSE  "dist/${OUT}/LICENSE" || true
+          cp README.md      "dist/${OUT}/README.md" || true
+          cd dist
+          if [[ "${{ matrix.ext }}" == "zip" ]]; then
+            7z a "${OUT}.zip" "${OUT}" >/dev/null
+            echo "asset=tape/server/dist/${OUT}.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar -czf "${OUT}.tar.gz" "${OUT}"
+            echo "asset=tape/server/dist/${OUT}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pkg.outputs.asset }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+
+  # ───────────────────────────────────────────────────────────────
+  # tape-py + tape-cli — PyPI
+  # ───────────────────────────────────────────────────────────────
+  python:
+    name: tape-py + tape-cli → PyPI
+    runs-on: ubuntu-latest
+    if: false   # flip to `true` once PYPI_API_TOKEN is set
+    needs: [server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -U pip build twine
+      - run: |
+          for pkg in tape/sdk/python tape/cli; do
+            (cd "$pkg" && python -m build)
+          done
+      - run: |
+          twine upload tape/sdk/python/dist/* tape/cli/dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  # ───────────────────────────────────────────────────────────────
+  # tape-ts — npm
+  # ───────────────────────────────────────────────────────────────
+  npm:
+    name: tape-ts → npm
+    runs-on: ubuntu-latest
+    if: false   # flip to `true` once NPM_TOKEN is set
+    needs: [server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", registry-url: "https://registry.npmjs.org" }
+      - working-directory: tape/sdk/typescript
+        run: npm ci && npm run build && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ───────────────────────────────────────────────────────────────
+  # tape-java — Maven Central
+  # ───────────────────────────────────────────────────────────────
+  maven:
+    name: tape-java → Maven Central
+    runs-on: ubuntu-latest
+    if: false   # flip to `true` once MAVEN credentials are set
+    needs: [server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          server-id: ossrh
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - working-directory: tape/sdk/java
+        run: mvn -B -P release deploy
+        env:
+          MAVEN_USERNAME:    ${{ secrets.MAVEN_USERNAME }}
+          MAVEN_PASSWORD:    ${{ secrets.MAVEN_PASSWORD }}
+          GPG_PASSPHRASE:    ${{ secrets.GPG_PASSPHRASE }}

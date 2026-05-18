@@ -179,3 +179,15 @@ npm run regen-proto   # cp ../../proto/tape.proto -> ./proto/tape.proto
 
 The proto is loaded at runtime by `@grpc/proto-loader` (no codegen step). The
 local copy in `./proto/` is what ships in the npm package.
+
+## Parity
+
+The Python SDK is the reference; this SDK aims for **idiom parity** (not
+verbatim parity). See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md) for
+the live scorecard. Notable open gaps for TS: G1 (packaged `tape-outbox-ts`
+daemon), G2 (`WebhookSink` / `PubSubSink`).
+
+## Contribute
+
+`make sdk-test-ts` runs the round-trip test (spawns the Rust `tape-server`
+in-memory). See [`../../../CLAUDE.md`](../../../CLAUDE.md).

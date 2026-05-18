@@ -49,3 +49,15 @@ To regenerate from `../../proto/tape.proto`:
 ```bash
 ./regen_protos.sh
 ```
+
+## Parity
+
+`tape-py` is the **reference** SDK — every primitive lands here first, then
+in TypeScript / Go / Java. See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md)
+for the live scorecard across all four languages.
+
+## Contribute
+
+`make sdk-test-python` runs this SDK's round-trip tests. New primitives go
+through `tape/proto/tape.proto` → server → here → other three SDKs (in that
+order). See [`../../../CLAUDE.md`](../../../CLAUDE.md).
