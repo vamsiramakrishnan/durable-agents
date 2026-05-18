@@ -214,6 +214,7 @@ nav:
           - effect & outbox_tool: reference/python/effect.md
           - Connectors: reference/python/connectors.md
           - Reactors: reference/python/reactors.md
+          - Sinks: reference/python/sinks.md
           - Observability: reference/python/obs.md
           - Tenancy: reference/python/tenancy.md
           - Client: reference/python/client.md

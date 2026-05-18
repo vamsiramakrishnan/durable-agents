@@ -312,7 +312,7 @@ it."*
 ## 5. The contract — `tape.proto`
 
 The wire protocol is gRPC. The full definition lives in
-[`../tape/proto/tape.proto`](../tape/proto/tape.proto); the shape:
+[`tape/proto/tape.proto`](https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/proto/tape.proto); the shape:
 
 ```protobuf
 service Tape {
@@ -556,7 +556,7 @@ and tracked per-language.
 
 ## 8. Worked example — the treasury agent, Tape-backed
 
-The full example is in [`../tape/examples/treasury/`](../tape/examples/treasury/).
+The full example is in [`tape/examples/treasury/`](https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/examples/treasury).
 The shape of it, side by side with the treatise's "before":
 
 **Before (treatise §II "#### ADK")** — `execute_sweep` is ~25 lines of

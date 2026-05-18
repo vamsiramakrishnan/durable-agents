@@ -7,6 +7,7 @@ on:
       - "tape/docs/**"
       - "tape/sdk/**"
       - "tape/cli/**"
+      - "tape/proto/**"
       - "design-principles/**"
       - "scripts/docs/**"
       - "mkdocs.yml"
@@ -15,6 +16,18 @@ on:
       - "README.md"
       - "tape/README.md"
       - "index.html"
+  # PRs touching the docs build the site as a smoke test (no deploy).
+  pull_request:
+    paths:
+      - "tape/docs/**"
+      - "tape/sdk/**"
+      - "tape/cli/**"
+      - "tape/proto/**"
+      - "design-principles/**"
+      - "scripts/docs/**"
+      - "mkdocs.yml"
+      - "docs/requirements.txt"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -41,7 +54,7 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version: "1.25" }
       - uses: actions/setup-node@v4
-        with: { node-version: "20", cache: "npm", cache-dependency-path: "tape/sdk/typescript/package-lock.json" }
+        with: { node-version: "22", cache: "npm", cache-dependency-path: "tape/sdk/typescript/package-lock.json" }
       - uses: actions/setup-java@v4
         with: { distribution: "temurin", java-version: "21", cache: "maven" }
 
@@ -85,16 +98,24 @@ jobs:
         continue-on-error: true
 
       # ── Build the site ─────────────────────────────────────────────────
+      # `--strict` turns broken links + missing-target warnings into build
+      # failures, so a doc-rot regression fails CI loudly instead of
+      # silently shipping. If a known-stale link is in an external page you
+      # don't control, prefer a GitHub blob URL over a relative repo path.
       - name: mkdocs build
-        run: mkdocs build --site-dir ./site
+        run: mkdocs build --strict --site-dir ./site
 
-      # ── Upload as a Pages artifact ─────────────────────────────────────
+      # ── Upload as a Pages artifact (push to main only — PR builds are smoke tests) ─
       - uses: actions/upload-pages-artifact@v3
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         with:
           path: ./site
 
   deploy:
     needs: build
+    # Pages only deploys from `main`. PR builds run the strict mkdocs build
+    # as a smoke test but don't touch the live site.
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

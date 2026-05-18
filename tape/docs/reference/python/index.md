@@ -27,6 +27,7 @@ All API pages below are generated from the SDK's own Google-style docstrings via
 - [**`@tape.effect` and `@tape.outbox_tool`**](effect.md) — annotate tool bodies.
 - [**Connectors**](connectors.md) — capability connectors (HTTP, Pub/Sub).
 - [**Reactors**](reactors.md) — recovery, reconciler, outbox, timers, compensation.
+- [**Sinks**](sinks.md) — `LogSink`, `WebhookSink`, `PubSubSink` for WAL fan-out.
 - [**Observability**](obs.md) — structured logs + OTel span names.
 - [**Tenancy**](tenancy.md) — single / trusted-multi-app / hard-multi-tenant.
 - [**Client**](client.md) — the gRPC client and re-exported status enums.
