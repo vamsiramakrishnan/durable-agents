@@ -120,6 +120,30 @@ Usage: tape chaos run [OPTIONS] SCENARIO
 |---|---|---|
 | `--url`, `-u` | — | Tape server URL (default $TAPE_URL). |
 
+### `tape demo`
+
+Theatrical, self-contained demos (the 'show me durability' command).
+
+```
+Usage: tape demo COMMAND [ARGS]...
+```
+
+#### `tape demo crash-resume`
+
+Crash an agent mid-effect, recover, prove exactly-one wire.
+
+```
+Usage: tape demo crash-resume [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--pause`, `-p` | `0.6` | Pause between phases (seconds). Lower = faster demo. |
+| `--keep` | `False` | Don't tear down the server / ledger when the demo finishes (so you can `tape inspect`). |
+| `--server-binary` | — | Path to a built `tape-server` (default: auto-locate in the repo). |
+
 ### `tape deploy`
 
 Build & deploy services.
@@ -278,6 +302,7 @@ Usage: tape inspect [OPTIONS] [RUN_ID]
 | `--from-seq`, `-s` | `0` | Start streaming from this seq (0 => from the beginning). |
 | `--limit`, `-n` | — | Stop after this many entries (used with --raw / --print). |
 | `--list`, `-l` | `False` | List recoverable runs (same as `tape inspect` with no args). |
+| `--replay` | `False` | Launch directly into the side-by-side replay-diff screen (FIRST RUN vs REPLAY for every journal entry). |
 | `--url` | — | Override the tape server URL. Default: $TAPE_URL or tape.yaml. |
 
 ### `tape logs`

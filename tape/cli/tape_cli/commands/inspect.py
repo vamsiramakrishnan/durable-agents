@@ -321,7 +321,8 @@ def _ls(url: str, limit: int) -> None:
 # ── the Textual launcher ───────────────────────────────────────────────────
 
 
-def _launch_tui(client, run_id: str, *, url: str, from_seq: int) -> None:
+def _launch_tui(client, run_id: str, *, url: str, from_seq: int,
+                start_in_replay: bool = False) -> None:
     """Spin up the Textual inspector app. Imported lazily so that the
     non-interactive modes (--print, --summary, --raw, ls) don't pay the
     Textual import cost or require it to be installed in CI-like environments."""
@@ -339,7 +340,8 @@ def _launch_tui(client, run_id: str, *, url: str, from_seq: int) -> None:
         if ex.code() == grpc.StatusCode.NOT_FOUND:
             die(f"no such run: {run_id}")
         die(f"failed to get run: {ex.code().name} {ex.details()}")
-    TapeInspectorApp(client, run_id, url=url, from_seq=from_seq).run()
+    TapeInspectorApp(client, run_id, url=url, from_seq=from_seq,
+                     start_in_replay=start_in_replay).run()
 
 
 # ── the typer command ──────────────────────────────────────────────────────
@@ -375,6 +377,10 @@ def run(
     list_runs: bool = typer.Option(
         False, "--list", "-l",
         help="List recoverable runs (same as `tape inspect` with no args)."),
+    replay: bool = typer.Option(
+        False, "--replay",
+        help="Launch directly into the side-by-side replay-diff screen "
+             "(FIRST RUN vs REPLAY for every journal entry)."),
     url: Optional[str] = typer.Option(
         None, "--url",
         help="Override the tape server URL. Default: $TAPE_URL or tape.yaml."),
@@ -416,7 +422,8 @@ def run(
             _do_print(client, run_id, from_seq=from_seq, limit=limit,
                       url=resolved_url)
         else:
-            _launch_tui(client, run_id, url=resolved_url, from_seq=from_seq)
+            _launch_tui(client, run_id, url=resolved_url, from_seq=from_seq,
+                        start_in_replay=replay)
     finally:
         try:
             client.close()

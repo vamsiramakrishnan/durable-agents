@@ -88,6 +88,40 @@ When the server closes the stream (the run reached TERMINAL / FAILED /
 STUCK), the header shows a dim "stream closed" note and the TUI stays open
 so you can scroll back through the timeline. Press `q` to exit.
 
+### The replay diff (`R`)
+
+Replay is the hardest concept in a durable runtime. People read "the SDK
+reads the journal instead of re-calling the model" and nod, but nodding
+isn't understanding. Press **`R`** in the Inspector (or launch with
+`tape inspect <id> --replay`) and you get a side-by-side teaching screen:
+
+```
+┌─────────────────── REPLAY IS READS, NOT WRITES ──────────────────────┐
+│ Every external action on the left becomes a journal read on the right.│
+└───────────────────────────────────────────────────────────────────────┘
+┌─── FIRST RUN ─────────────────────┬─── REPLAY ───────────────────────┐
+│ seq  +t   call          what       │ seq  +t   call    what          │
+│  1  +0ms  write         BeginRun  │  1  +0ms  read    BeginRun       │
+│              minted fresh run_id   │             returns existing     │
+│  2  +8ms  model call    Record... │  2  +8ms  read    GetDecision     │
+│              called gemini-2.0     │             reads recorded resp  │
+│              persisted response    │             without calling model│
+│  3  +16ms external call CompleteEff│  3  +16ms read    BeginEffect     │
+│              tool returned         │             short-circuits on    │
+│              status=CONFIRMED      │             CONFIRMED — no tool  │
+└────────────────────────────────────┴────────────────────────────────────┘
+[escape] back to timeline   [home/end] jump
+```
+
+Move the cursor on either side — the other follows. Every "external call"
+on the left has a corresponding "read" on the right. The whole replay
+contract in one screen: re-driving an agent is safe because the runtime
+**memoizes**. One wire, one model call, one signal — no matter how many
+times the agent crashes and resumes.
+
+The 60-second crash-resume demo (`tape demo crash-resume`) is the matching
+in-vivo proof.
+
 ---
 
 ## Non-interactive modes
@@ -211,11 +245,6 @@ is the loudest situation in the runtime.
 
 ## What it doesn't do (yet)
 
-* **Replay diff visualizer.** Today the Inspector shows the connect-time
-  boundary between history and live entries, but it doesn't yet diff a fresh
-  run against a replayed one (priority 7 of the roadmap). The pieces are
-  there: the journal is the same, the connect cursor is recorded; we just
-  haven't built the side-by-side view.
 * **A web UI.** The terminal is the source of truth right now (priority 10);
   a browser-based equivalent will share the same gRPC contract.
 * **A richer `ls`.** `tape inspect` (no args) shows runs needing recovery —

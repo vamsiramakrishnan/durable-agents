@@ -306,6 +306,89 @@ def test_decoder_resilient_to_bad_payload():
         assert d.type == "effect"
 
 
+# ── replay-pair decoder tests (the FIRST RUN / REPLAY mapping) ─────────────
+
+
+def test_replay_pair_decision():
+    """A decision entry maps to RecordDecision (first) and GetDecision (replay).
+    The replay side must say it does NOT call the model — that's the whole point."""
+    from tape_cli.commands._replay import replay_pair
+
+    p = replay_pair("decision",
+                    '{"model":"gemini-2.0","decision_index":0,"rationale":"x"}')
+    assert "RecordDecision" in p.first_run
+    assert "GetDecision" in p.replay
+    assert "without calling the model" in p.replay.lower()
+    assert p.is_read_only
+
+
+def test_replay_pair_effect_statuses():
+    """Each effect status (pending / confirmed / failed / unknown) maps to a
+    distinct first-run / replay pair; the replay column must never re-call
+    the tool. UNKNOWN must mention the reconciler."""
+    from tape_cli.commands._replay import replay_pair
+
+    pend = replay_pair("effect",
+                       '{"status":"pending","tool":"bank.wire"}')
+    assert "PENDING" in pend.first_run
+    assert "PENDING" in pend.replay
+
+    conf = replay_pair("effect",
+                       '{"status":"confirmed","tool":"bank.wire"}')
+    assert "short-circuits" in conf.replay.lower()
+    assert "without calling the tool" in conf.replay.lower()
+
+    fail = replay_pair("effect",
+                       '{"status":"failed","tool":"bank.wire"}')
+    assert "short-circuits" in fail.replay.lower()
+
+    unk = replay_pair("effect",
+                      '{"status":"unknown","tool":"bank.wire"}')
+    assert "reconciler" in unk.replay.lower()
+
+
+def test_replay_pair_gate_lifecycle():
+    """Gates: waiting → AwaitSignal first / re-park on replay;
+    released → SendSignal first / read recorded resolution on replay."""
+    from tape_cli.commands._replay import replay_pair
+
+    w = replay_pair("gate", '{"gate":"cfo_approval","status":"waiting"}')
+    assert "AwaitSignal" in w.first_run
+
+    r = replay_pair("gate", '{"gate":"cfo_approval","status":"released"}')
+    assert "SendSignal" in r.first_run
+    assert "without parking" in r.replay.lower()
+
+
+def test_replay_pair_run_lifecycle():
+    """Run begin: BeginRun (fresh) → BeginRun (resumed=true).
+    Run terminal: EndRun → no replay (terminal is terminal)."""
+    from tape_cli.commands._replay import replay_pair
+
+    started = replay_pair("run", '{"status":"running"}')
+    assert "BeginRun" in started.first_run
+    assert "resumed=true" in started.replay.lower()
+
+    ended = replay_pair("run", '{"status":"terminal"}')
+    assert "EndRun" in ended.first_run
+    assert "terminal" in ended.replay.lower()
+
+
+def test_replay_pair_obligation_value_timer():
+    """Smoke test the remaining primitives."""
+    from tape_cli.commands._replay import replay_pair
+
+    ob = replay_pair("obligation", '{"kind":"reverse_wire"}')
+    assert "RegisterCompensation" in ob.first_run
+
+    v = replay_pair("value", '{"value":{"namespace":"x","key":"y","version":3}}')
+    assert "WriteValue" in v.first_run
+    assert "GetValue" in v.replay
+
+    tm = replay_pair("timer", '{"kind":"redrive"}')
+    assert "SetTimer" in tm.first_run
+
+
 # ── Textual app headless tests ─────────────────────────────────────────────
 
 
@@ -380,5 +463,75 @@ async def test_textual_app_boots_and_filters(seeded_run):
             await pilot.pause(0.3)
             assert app.search_query == ""
             assert table.row_count == initial_rows
+    finally:
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_replay_screen_pushes_and_syncs_cursor(seeded_run):
+    """Press `R` in the inspector → ReplayScreen lands on top of the stack,
+    with one row per journal entry on each side. Moving the cursor on one
+    side moves the cursor on the other (synchronized scrolling)."""
+    pytest.importorskip("textual")
+    from tape.client import TapeClient
+    from tape_cli.commands._inspector_app import TapeInspectorApp
+    from textual.widgets import DataTable
+
+    client = TapeClient(seeded_run["url"])
+    try:
+        app = TapeInspectorApp(client, seeded_run["run_id"],
+                               url=seeded_run["url"])
+        async with app.run_test(size=(220, 60)) as pilot:
+            await pilot.pause(1.5)
+            n_entries = len(app.entries)
+            assert n_entries >= 5
+
+            # Open the replay diff via the binding.
+            await pilot.press("R")
+            await pilot.pause(0.5)
+            screen = app.screen
+            assert type(screen).__name__ == "ReplayScreen"
+
+            # Both DataTables have exactly one row per journaled entry.
+            first = screen.query_one("#first-run-table", DataTable)
+            rep = screen.query_one("#replay-table", DataTable)
+            assert first.row_count == n_entries
+            assert rep.row_count == n_entries
+
+            # Cursor sync: move down on the left, the right tracks.
+            first.focus()
+            await pilot.press("down")
+            await pilot.pause(0.15)
+            await pilot.press("down")
+            await pilot.pause(0.15)
+            assert first.cursor_row == rep.cursor_row
+            assert first.cursor_row >= 2
+
+            # `escape` pops back to the timeline screen.
+            await pilot.press("escape")
+            await pilot.pause(0.3)
+            assert type(app.screen).__name__ != "ReplayScreen"
+    finally:
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_replay_screen_direct_launch_via_flag(seeded_run):
+    """`tape inspect <id> --replay` (start_in_replay=True) should land on
+    the replay screen automatically once the journal is drained."""
+    pytest.importorskip("textual")
+    from tape.client import TapeClient
+    from tape_cli.commands._inspector_app import TapeInspectorApp
+
+    client = TapeClient(seeded_run["url"])
+    try:
+        app = TapeInspectorApp(client, seeded_run["run_id"],
+                               url=seeded_run["url"],
+                               start_in_replay=True)
+        async with app.run_test(size=(220, 60)) as pilot:
+            # Wait long enough for the stream worker to drain + the
+            # _maybe_push_replay tick to land us on the screen.
+            await pilot.pause(2.5)
+            assert type(app.screen).__name__ == "ReplayScreen"
     finally:
         client.close()

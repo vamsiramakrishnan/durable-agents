@@ -12,6 +12,7 @@ Subcommands::
     tape status                  show runs, effects, obligations, reactor lag
     tape inspect <run-id>        Textual TUI — journal timeline + detail pane
     tape tail                    cross-run live event stream (`tail -f` for the runtime)
+    tape demo crash-resume       theatrical, self-contained crash + recovery demo
     tape destroy gcp             tear down provisioned GCP infra
     tape migrate                 run store migrations
 """
@@ -34,6 +35,7 @@ from .commands import migrate as migrate_cmd
 from .commands import chaos as chaos_cmd
 from .commands import inspect as inspect_cmd
 from .commands import tail as tail_cmd
+from .commands import demo as demo_cmd
 
 console = Console()
 
@@ -83,6 +85,8 @@ app.add_typer(provision_cmd.app, name="provision", help="Render & apply infrastr
 app.add_typer(deploy_cmd.app, name="deploy", help="Build & deploy services.")
 app.add_typer(destroy_cmd.app, name="destroy", help="Tear down provisioned infra.")
 app.add_typer(chaos_cmd.app, name="chaos", help="Drive chaos scenarios + replay + LDFI.")
+app.add_typer(demo_cmd.app, name="demo",
+              help="Theatrical, self-contained demos (the 'show me durability' command).")
 
 
 if __name__ == "__main__":

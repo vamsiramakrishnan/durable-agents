@@ -308,6 +308,7 @@ class TapeInspectorApp(App):
         Binding("v", "filter_kind('value')", "Values"),
         Binding("slash", "focus_search", "Search"),
         Binding("escape", "blur_search", "", show=False),
+        Binding("R", "open_replay", "Replay diff"),
         Binding("r", "dump_raw", "Raw"),
         Binding("c", "copy_json", "Copy"),
         Binding("end", "scroll_end", "End", show=False),
@@ -321,12 +322,14 @@ class TapeInspectorApp(App):
     filter_kind: reactive[str] = reactive("")
     search_query: reactive[str] = reactive("")
 
-    def __init__(self, client, run_id: str, *, url: str, from_seq: int = 0):
+    def __init__(self, client, run_id: str, *, url: str, from_seq: int = 0,
+                 start_in_replay: bool = False):
         super().__init__()
         self.client = client
         self.run_id = run_id
         self.url = url
         self.from_seq = from_seq
+        self.start_in_replay = start_in_replay
 
         # Journal state — owned by the UI thread, but appended via messages.
         self.entries: list = []                 # ordered by arrival (== by seq)
@@ -387,6 +390,12 @@ class TapeInspectorApp(App):
         # would otherwise capture every letter the moment the app starts.
         self.query_one("#search", Input).can_focus = False
         self.query_one(DataTable).focus()
+
+        # If the user asked to land directly in the replay diff (via
+        # `tape inspect <id> --replay`), push the screen as soon as we've
+        # drained a usable number of entries.
+        if self.start_in_replay:
+            self.call_later(self._maybe_push_replay)
 
     async def on_unmount(self) -> None:
         self._poll_stop.set()
@@ -662,6 +671,26 @@ class TapeInspectorApp(App):
             table.scroll_home(animate=False)
         except Exception:  # noqa: BLE001
             pass
+
+    def action_open_replay(self) -> None:
+        """Push the replay-diff screen on top of the timeline. Press `escape`
+        (or `q`, or `R` again) to come back."""
+        from ._replay import ReplayScreen
+        if not self.entries:
+            self.notify("no journal entries yet — nothing to replay",
+                        severity="warning", timeout=2)
+            return
+        self.push_screen(ReplayScreen(self.run_id, self.entries))
+
+    def _maybe_push_replay(self) -> None:
+        """Used by --replay direct launch: wait briefly for the stream to
+        populate, then push the replay screen. Falls back gracefully if no
+        entries ever arrive."""
+        # Give the stream worker a beat to flush the existing journal.
+        if not self.entries:
+            self.set_timer(0.5, self._maybe_push_replay)
+            return
+        self.action_open_replay()
 
 
 __all__ = ["TapeInspectorApp"]

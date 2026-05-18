@@ -189,6 +189,7 @@ nav:
   - How-to guides:
       - how-to/index.md
       - Inspect the journal (TUI): how-to/inspect.md
+      - The 60-second demo (crash → recover): how-to/demo.md
       - Wire a non-idempotent upstream: non-idempotent-upstreams.md
       - Configure reactors: reactors.md
       - Pick a storage backend: stores.md
