@@ -3,6 +3,15 @@
 The TypeScript / Node SDK for [Tape](../../../design-principles/tape.md) — a
 durable-execution substrate for ADK agents.
 
+|                                                            |
+|------------------------------------------------------------|
+| **Install** · `npm install tape-ts` *(or, from a clone: `cd tape/sdk/typescript && npm install`)* |
+| **30-second example** · the snippet below ↓                |
+| **Reference** · <https://vamsiramakrishnan.github.io/durable-agents/reference/typescript/> |
+| **What's wired** · `TapeClient` + every RPC, `@effect`, `outboxTool`, `durableApp`, connectors, **outbox dispatcher** (`tape-outbox-ts`), **sinks** (Log/Webhook/PubSub) |
+| **Parity** · idiom parity with Python · see [`SDK_PARITY.md`](../../../SDK_PARITY.md) |
+| **Contribute** · `make sdk-test-ts` · `make sdk-parity` · [`CLAUDE.md`](../../../CLAUDE.md) |
+
 ```bash
 cd tape/sdk/typescript
 npm install

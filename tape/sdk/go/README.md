@@ -3,6 +3,15 @@
 The Go SDK for [Tape](../../../design-principles/tape.md) — a durable-execution
 substrate for ADK agents.
 
+|                                                            |
+|------------------------------------------------------------|
+| **Install** · `go get github.com/vamsiramakrishnan/durable-agents/tape/sdk/go` |
+| **30-second example** · the snippet below ↓                |
+| **Reference** · <https://vamsiramakrishnan.github.io/durable-agents/reference/go/> |
+| **What's wired** · `TapeClient` + every RPC, `@effect`-style helpers, `NewDurableApp`, `NewOutboxTool`, connectors (Log/HTTP/PubSub/CloudTasks), **outbox dispatcher** (`cmd/tape-outbox`), **sinks** (Log/Webhook/PubSub) |
+| **Parity** · idiom parity with Python · see [`SDK_PARITY.md`](../../../SDK_PARITY.md) |
+| **Contribute** · `make sdk-test-go` · `make sdk-parity` · [`CLAUDE.md`](../../../CLAUDE.md) |
+
 ```bash
 cd tape/sdk/go
 PATH=/tmp/gobin:$PATH ./regen.sh     # regenerate ./tapepb from ./tape.proto (needs protoc + protoc-gen-go + protoc-gen-go-grpc)

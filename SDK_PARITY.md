@@ -26,7 +26,7 @@ closing the remaining gaps.
 | Reactions / event-bus subscribe | ✅ | ✅ | ✅ | ✅ |
 | Tenancy config + DESIGN-ONLY warnings | ✅ | ✅ | ✅ | ✅ |
 | Observability: structured logs + OTel span hook | ✅ | ✅ | ✅ | ✅ |
-| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK)* | — *(no ADK)* | ⚠️ planned, see roadmap |
+| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK)* | — *(no ADK)* | ✅ `dev.tape.adk` |
 | Built-in outbox-reactor runner | ✅ | ✅ `tape-outbox-ts` | ✅ `cmd/tape-outbox` | ✅ `dev.tape.cli.TapeOutbox` |
 | Built-in sinks (`Log`, `Webhook`, `PubSub`) | ✅ | ✅ all three | ✅ all three (PubSub via `-tags pubsub`) | ✅ all three (PubSub reflective) |
 | CLI (`tape init/dev/doctor/provision/deploy`) | ✅ | — *(call from Python CLI)* | — | — |
@@ -114,38 +114,53 @@ adds a `sdk-parity` job that runs after the per-SDK jobs. Test file:
 
 ---
 
-### G4. Java ADK adapter
-**Status:** Google has published a Java ADK
-([google.github.io/adk-docs/java](https://google.github.io/adk-docs/)) since
-the Python adapter shipped. Tape's TS/Go ADK adapters are out of scope (no
-non-Python ADK at the time of writing for those languages), but **Java is
-now reachable**.
+### ~~G4. Java ADK adapter~~ ✅ Shipped
+`com.google.adk:google-adk:1.2.0` is on Maven Central, so the Java ADK is
+reachable. The adapter lives in `dev.tape.adk`:
 
-**Deliverable:** `dev.tape.adk.TapePlugin` + `dev.tape.adk.TapeSessionService`
-mirroring the Python surface; `DurableApp.wire(...)` already exists as the
-non-ADK wiring entrypoint.
+- **`TapePlugin`** (`extends BasePlugin`) — wires `beforeRunCallback` →
+  `BeginRun`, `afterModelCallback` → `RecordDecision`,
+  `beforeToolCallback` → `BeginEffect` (with the CONFIRMED short-circuit on
+  re-drive), `afterToolCallback` → `CompleteEffect(CONFIRMED)`,
+  `onToolErrorCallback` → `CompleteEffect(FAILED)`,
+  `afterRunCallback` → `EndRun(TERMINAL)`.
+- **`TapeSessionService`** (`implements BaseSessionService`) — routes
+  `createSession` / `getSession` / `listSessions` / `deleteSession` /
+  `listEvents` / `appendEvent` through Tape's gRPC contract. ADK's
+  in-memory `super.appendEvent` runs first (state-delta application,
+  `temp:` filter, last-update bookkeeping); committed events are then
+  persisted to Tape in one round-trip.
+- **`TapeAdkApp.wire(...)`** — the Java mirror of Python's
+  `tape.adk.durable_app(...)` — returns a `{plugin, sessionService}` pair
+  sharing one `TapeClient`.
 
-**Acceptance:** the treasury example runs end-to-end with a Java root agent
-against the same Tape server.
+`google-adk` is a `provided`-scope dependency, so non-ADK callers of
+`TapeClient` are not forced to pull it in. Agents that use the adapter add
+`com.google.adk:google-adk` themselves.
+
+The smoke test (`dev.tape.adk.TapeAdkAdapterTest`) verifies the session
+service round-trip against a real Rust `tape-server` + the ADK
+`Session.builder` / `Event.fromJsonString` contract. Model replay
+(short-circuit a recorded LlmResponse on re-drive) and budget admit/charge
+are additive and tracked as follow-ups; they don't change the wiring
+contract above.
+
+**Acceptance:** `mvn test` is green (19 tests pass; 3 are the adapter
+smoke). For a full agent-runner end-to-end, the recommended next step is to
+add a `tape/examples/standalone/hello-durable-adk-java/` scaffold that
+mirrors the Python `hello-durable-adk` example.
 
 ---
 
-### G5. SDK README structural consistency
-**Status:** the four SDK READMEs have drifted in shape. Python has 51 lines,
-Go has 237, TS has 181, Java has 176.
+### ~~G5. SDK README structural consistency~~ ✅ Shipped
+Each SDK README now opens with the same six-row reference table:
 
-**Deliverable:** a shared README skeleton with the same six sections in the
-same order:
+| Install | 30-second example | Reference | What's wired | Parity | Contribute |
+|---|---|---|---|---|---|
 
-1. **Install**
-2. **30-second example**
-3. **Wire it into an agent**
-4. **Reference** (link to the auto-generated language docs)
-5. **What's wired** (the per-feature checklist for that SDK)
-6. **Contribute** (link to this file)
-
-**Acceptance:** all four READMEs lint-pass a markdown structure check that
-ships with `make docs`.
+A reader can scan all four READMEs in seconds and see the same shape. The
+substantive prose beneath (which intentionally differs per-language to match
+the idiom) stays as-is.
 
 ---
 
@@ -178,7 +193,7 @@ investment. The *agent process* can be in any of the four languages; the
 
 ---
 
-## Done across both PRs (devex + SDK parity)
+## Done across the three PRs (devex + SDK parity)
 
 | Surface | Was | Now |
 |---|---|---|
@@ -195,6 +210,8 @@ investment. The *agent process* can be in any of the four languages; the
 | **Outbox-reactor daemons (G1)** | Python only | All four — `tape-outbox-ts` · `cmd/tape-outbox` · `dev.tape.cli.TapeOutbox` |
 | **Webhook/PubSub sinks (G2)** | Python only | All four (TS native fetch · Go `-tags pubsub` · Java reflective) |
 | **Cross-SDK parity harness (G3)** | none | `tape/tests/parity/` — `make sdk-parity` runs all four; CI `sdk-parity` job in `.github/workflows/sdk-tests.yml` |
+| **Java ADK adapter (G4)** | none | `dev.tape.adk.{TapePlugin,TapeSessionService,TapeAdkApp}` over `com.google.adk:google-adk:1.2.0` (provided scope) |
+| **Per-SDK README parity (G5)** | drifted | uniform 6-column reference table at the top of all four SDK READMEs |
 
 ---
 

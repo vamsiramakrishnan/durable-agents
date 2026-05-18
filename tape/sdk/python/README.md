@@ -3,6 +3,15 @@
 The Python SDK and ADK adapter for [Tape](../../../design-principles/tape.md) —
 a durable-execution substrate for ADK agents.
 
+|                                                            |
+|------------------------------------------------------------|
+| **Install** · `pip install -e .` *(or, with dev extras: `pip install -e '.[dev]'`)* |
+| **30-second example** · the two-line wiring below ↓        |
+| **Reference** · <https://vamsiramakrishnan.github.io/durable-agents/reference/python/> |
+| **What's wired** · everything — ADK plugin, reactors, sinks, connectors, outbox |
+| **Parity** · the reference SDK · see [`SDK_PARITY.md`](../../../SDK_PARITY.md) |
+| **Contribute** · `make sdk-test-python` · `make sdk-parity` · [`CLAUDE.md`](../../../CLAUDE.md) |
+
 ```bash
 pip install -e .              # from this directory
 # or, with the dev extras (protoc plugins, pytest):

@@ -3,6 +3,15 @@
 The Java SDK for [Tape](../../../design-principles/tape.md) — a durable-execution
 substrate for ADK agents.
 
+|                                                            |
+|------------------------------------------------------------|
+| **Install** · Maven artifact `dev.tape:tape:0.1.0` *(or, from a clone: `cd tape/sdk/java && mvn install`)* |
+| **30-second example** · the snippet below ↓                |
+| **Reference** · <https://vamsiramakrishnan.github.io/durable-agents/reference/java/javadoc/> |
+| **What's wired** · `TapeClient` + every RPC, `DurableApp.wire`, `OutboxTool`, connectors (Log/HTTP/PubSub/CloudTasks), **outbox dispatcher** (`dev.tape.cli.TapeOutbox`), **sinks** (Log/Webhook/PubSub), **ADK adapter** (`dev.tape.adk.TapePlugin` + `TapeSessionService`) |
+| **Parity** · idiom parity with Python · see [`SDK_PARITY.md`](../../../SDK_PARITY.md) |
+| **Contribute** · `make sdk-test-java` · `make sdk-parity` · [`CLAUDE.md`](../../../CLAUDE.md) |
+
 ```bash
 cd tape/sdk/java
 mvn test         # generates the gRPC stubs from src/main/proto/tape.proto via the
@@ -165,26 +174,47 @@ Tenancy.Config t = new Tenancy.Config(Tenancy.Mode.HARD_MULTI_TENANT, "x");
 t.warnIfHardButUnenforced().forEach(System.err::println);
 ```
 
-### Still a scaffold
+### ADK adapter
 
-A full `TapePlugin` / `TapeSessionService` for the Java ADK port — mechanical
-work on top of the wired client (the Python adapter in
-[`../python/tape/adk/`](../python/tape/adk/) is the reference, and the values
-returned by `DurableApp.wire(...)` are what its constructor will read). And the
-higher-level reactor helpers (`RecoverOnce` / `ReconcileOnce` /
-`FireDueTimersOnce` / `RunReactors`) — pattern-port from the Go SDK in this
-folder.
+`dev.tape.adk.TapePlugin` (extends `com.google.adk.plugins.BasePlugin`) and
+`dev.tape.adk.TapeSessionService` (implements
+`com.google.adk.sessions.BaseSessionService`) wire Tape into an ADK runner the
+same way Python does:
+
+```java
+TapeClient client = new TapeClient("tape://localhost:7878");
+Runner runner = Runner.builder(...)
+    .plugins(List.of(new TapePlugin(client)))
+    .sessionService(new TapeSessionService(client))
+    .build();
+```
+
+Or, the bundled shortcut:
+
+```java
+try (TapeAdkApp app = TapeAdkApp.wire(new DurableApp.Config().name("treasury"))) {
+  Runner runner = Runner.builder(...)
+      .plugins(List.of(app.plugin()))
+      .sessionService(app.sessionService())
+      .build();
+}
+```
+
+`google-adk` is a `provided`-scope dependency, so non-ADK callers of
+`TapeClient` aren't forced to take it on; agents that use the adapter pull
+`com.google.adk:google-adk` in themselves.
+
+Higher-level reactor helpers (`RecoverOnce` / `ReconcileOnce` /
+`FireDueTimersOnce` / `RunReactors`) are pattern-portable from the Go SDK in
+this folder.
 
 ## Parity
 
 The Python SDK is the reference; this SDK aims for **idiom parity** (not
 verbatim parity). See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md) for
-the live scorecard. G1 (outbox daemon), G2 (Webhook/PubSub sinks), and G3
-(cross-SDK parity harness) are now green — the Java dispatcher is
-`dev.tape.cli.TapeOutbox` + `dev.tape.reactors.OutboxReactor`; the sinks live
-in `dev.tape.sinks` (the `PubSubSink` is reflective so
-`google-cloud-pubsub` stays a runtime-optional dependency). The remaining
-gap is G4 (`TapePlugin` for the Java ADK).
+the live scorecard. G1 (outbox daemon), G2 (Webhook/PubSub sinks), G3
+(cross-SDK parity harness), and G4 (ADK adapter) are all green — see the
+"What's wired" row above for the concrete classes.
 
 ## Contribute
 
