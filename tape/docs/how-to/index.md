@@ -4,45 +4,60 @@ Each how-to is a recipe for one task. They assume you've read the
 [**Concepts**](../concepts/index.md) (or are happy looking things up as
 you go).
 
-<div class="tape-hub" markdown>
+If you'd rather follow a curated thread instead of browsing a hub, pick a
+**[Reading path](../paths/index.md)** — Beginner / Operator / Systems —
+each one threads through the how-tos in the order that makes sense for
+that persona.
 
-- [**Wire a non-idempotent upstream**](../non-idempotent-upstreams.md)
-  Wires, payments, one-shot side effects. The outbox pattern, end-to-end.
+## See it / run it
 
-- [**Configure reactors**](../reactors.md)
-  Enable, disable, scale, swap polling for event-driven.
+- [**Inspect the journal (TUI)**](inspect.md) — `tape inspect <run-id>`
+  with the Textual app, replay diff, JSONL pipe-to-jq modes.
 
-- [**Pick a storage backend**](../stores.md)
-  SQLite, Postgres, AlloyDB, Bigtable, Spanner. Trade-offs and operating
-  notes.
+- [**Triage a live system**](triage.md) — `tape doctor --live`, the
+  operator-dashboard view; exit codes that flip on UNKNOWN / STUCK.
 
-- [**Add observability**](../observability.md)
-  Structured logs, OTel spans, log-based metrics, the bundled
-  dashboard.
+- [**The 60-second demos**](demo.md) — `tape demo crash-resume` and
+  `tape demo unknown-reconcile`. Self-contained, no setup, exits 0 only
+  on exactly-once.
 
-- [**Configure tenancy**](../tenancy.md)
-  Single, trusted-multi-app, hard-multi-tenant — what each mode means
-  today.
+## Build it
 
-- [**Cancel & timeout patterns**](cancel-timeout.md)
-  `tape.cancel_run`, gates with `gate_timeout`, `tape.heartbeat`,
-  cooperative cancellation.
+- [**Wire a non-idempotent upstream**](../non-idempotent-upstreams.md) —
+  wires, payments, one-shot side effects. The outbox pattern end-to-end.
 
-- [**Write a custom connector**](custom-connector.md)
-  Implement `EffectConnector` — `dispatch`, `observe`, `compensate`.
+- [**Write a custom connector**](custom-connector.md) — implement
+  `EffectConnector`: `dispatch` / `observe` / `compensate`.
 
-- [**Run the outbox dispatcher in any language**](outbox-daemon.md)
-  `tape-outbox-ts`, `cmd/tape-outbox`, `dev.tape.cli.TapeOutbox` —
-  one dispatch loop, one safety contract, four languages.
+- [**Cancel & timeout patterns**](cancel-timeout.md) —
+  `tape.cancel_run`, gate timeouts, heartbeats, cooperative cancellation.
 
-- [**Fan the journal out (sinks)**](sinks.md)
-  `LogSink` / `WebhookSink` / `PubSubSink` in every SDK —
-  exactly-once-effective delivery with consumer-side dedup.
+- [**Fan the journal out (sinks)**](sinks.md) — `LogSink` /
+  `WebhookSink` / `PubSubSink` in every SDK; exactly-once-effective
+  delivery with consumer-side dedup.
 
-- [**Cross-SDK parity harness**](cross-sdk-parity.md)
-  One scenario, four languages, identical journal projection on every PR.
+## Run it
 
-</div>
+- [**Configure reactors**](../reactors.md) — enable, disable, scale,
+  swap polling for event-driven.
+
+- [**Run the outbox dispatcher (any language)**](outbox-daemon.md) —
+  `tape-outbox-ts`, `cmd/tape-outbox`, `dev.tape.cli.TapeOutbox`; one
+  dispatch loop, one safety contract, four languages.
+
+- [**Pick a storage backend**](../stores.md) — SQLite / Postgres /
+  AlloyDB / Bigtable / Spanner; trade-offs + operating notes.
+
+- [**Add observability**](../observability.md) — structured logs, OTel
+  spans, log-based metrics, the bundled dashboard.
+
+- [**Configure tenancy**](../tenancy.md) — single, trusted-multi-app,
+  hard-multi-tenant.
+
+## Test it
+
+- [**Cross-SDK parity harness**](cross-sdk-parity.md) — one scenario,
+  four languages, identical journal projection on every PR.
 
 ## How to read these
 

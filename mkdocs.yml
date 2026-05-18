@@ -162,6 +162,12 @@ extra_css:
 nav:
   - Home: index.md
 
+  - Reading paths:
+      - paths/index.md
+      - Beginner — "I want to see what this is": paths/beginner.md
+      - Operator — "I have to run this in production": paths/operator.md
+      - Systems — "I want to understand the model": paths/systems.md
+
   - Start here:
       - start/index.md
       - Install: start/install.md
