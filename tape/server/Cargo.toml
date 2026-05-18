@@ -50,7 +50,7 @@ tokio-postgres = "0.7"
 futures-util = "0.3"
 # Cloud Bigtable backend (ring TLS — lighter to build; the emulator path is plaintext).
 bigtable_rs = { version = "0.3", default-features = false, features = ["tonic-tls-ring"] }
-googleapis-tonic-google-bigtable-v2 = "0.36"
+googleapis-tonic-google-bigtable-v2 = "0.38"
 
 [build-dependencies]
 tonic-build = "0.12"
