@@ -61,11 +61,29 @@ resolve_version() {
         VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
             | grep '"tag_name"' | head -n1 | cut -d'"' -f4 || true)
         if [[ -z "$VERSION" ]]; then
-            warn "No published releases yet for ${REPO}."
-            warn "Fall back to:  ./setup.sh  (builds from source)"
-            INSTALL_SERVER=0
+            no_release_fallback
         fi
     fi
+}
+
+no_release_fallback() {
+    cat <<EOF >&2
+${YELLOW}[!]${NC}  No published GitHub Release for ${REPO} yet.
+
+    The curl-pipe installer fetches prebuilt binaries; until the maintainer
+    cuts a tag, the install path is to build from source from a clone:
+
+        git clone https://github.com/${REPO}
+        cd durable-agents
+        ./setup.sh && make demo
+
+    Or pin a specific version explicitly when one exists:
+
+        curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh \\
+            | sh -s -- --version v0.1.0
+
+EOF
+    exit 0
 }
 
 # ─── Server binary ─────────────────────────────────────────

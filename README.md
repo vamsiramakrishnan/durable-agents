@@ -1,5 +1,10 @@
 # Durable Agents — *Tape*
 
+[![sdk-tests](https://github.com/vamsiramakrishnan/durable-agents/actions/workflows/sdk-tests.yml/badge.svg)](https://github.com/vamsiramakrishnan/durable-agents/actions/workflows/sdk-tests.yml)
+[![docs](https://github.com/vamsiramakrishnan/durable-agents/actions/workflows/docs.yml/badge.svg)](https://vamsiramakrishnan.github.io/durable-agents/)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/vamsiramakrishnan/durable-agents)
+
 A durable-execution substrate for agents that act. The full docs are at
 **<https://vamsiramakrishnan.github.io/durable-agents/>**.
 
@@ -14,17 +19,24 @@ one.
 ```bash
 git clone https://github.com/vamsiramakrishnan/durable-agents && cd durable-agents
 ./setup.sh                  # mise + rust/python/node/go/java/just + build server + install SDKs
+make doctor                 # tick/cross diagnostic — toolchain, server, SDK round-trip
 make demo                   # treasury example end-to-end
 make demo-resume            # kill mid-wire, recover, prove ONE wire
 ```
 
-Or, install just the prebuilt binary + Python CLI:
+Or try every SDK against a fresh server in one go:
+
+```bash
+make quickstart-all         # the same 20-line scenario in Python · TypeScript · Go · Java
+```
+
+Or, once a release is cut, install the prebuilt binary + Python CLI:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vamsiramakrishnan/durable-agents/main/install.sh | sh
 ```
 
-Once installed:
+After install:
 
 ```bash
 tape init my-agent          # scaffold a durable ADK agent
@@ -32,10 +44,13 @@ tape dev                    # server + reactors + agent (sqlite)
 tape doctor                 # tick/cross diagnostic
 ```
 
+Zero-setup option — **[open in Codespaces](https://codespaces.new/vamsiramakrishnan/durable-agents)** for a ready-to-go dev environment with every toolchain pre-installed.
+
 `make help` lists every common task. See [`CLAUDE.md`](CLAUDE.md) for the
 repo orientation, [`SDK_PARITY.md`](SDK_PARITY.md) for the
-Python/TypeScript/Go/Java parity matrix, and [`tape/README.md`](tape/README.md)
-for the architecture.
+Python/TypeScript/Go/Java parity matrix, [`examples/`](examples/) for the
+20-line per-language scenario, and [`tape/README.md`](tape/README.md) for the
+architecture.
 
 ---
 

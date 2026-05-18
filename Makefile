@@ -14,10 +14,11 @@
 # Every recipe documents itself for `make help`. Add `## <text>` to expose.
 
 .PHONY: help \
-        setup install deps \
+        setup install deps doctor status logs \
         build build-server build-python build-ts build-go build-java \
         test test-server test-python \
-        sdk-test-all sdk-test-python sdk-test-ts sdk-test-go sdk-test-java \
+        sdk-test-all sdk-test-python sdk-test-ts sdk-test-go sdk-test-java sdk-parity \
+        quickstart-all quickstart-python quickstart-ts quickstart-go quickstart-java \
         dev serve demo demo-resume \
         docker-up docker-down docker-clean \
         docs docs-serve docs-clean \
@@ -56,6 +57,35 @@ setup: ## One-command bootstrap (mise + tools + build + SDKs + CLI)
 deps: ## Show installed tool versions (run `make setup` if missing)
 	@command -v mise >/dev/null 2>&1 && mise ls --current || \
 	    echo "mise not installed. Run: make setup"
+
+doctor: ## Tick/cross diagnostic — toolchain, server, SDK round-trip
+	@bash scripts/doctor.sh
+
+status: ## Show running Tape services + their URLs
+	@printf "\n\033[1mTape — local services\033[0m\n\n"
+	@if command -v docker >/dev/null 2>&1 && docker compose ps 2>/dev/null | grep -q tape-server; then \
+	    echo "  docker compose stack:"; docker compose ps --format "    {{.Service}}\t{{.State}}\t{{.Ports}}" 2>/dev/null; \
+	else \
+	    echo "  docker compose: not running"; \
+	fi
+	@if command -v lsof >/dev/null 2>&1 && lsof -iTCP:7878 -sTCP:LISTEN -P -n 2>/dev/null | tail -n +2 | head -1 | grep -q .; then \
+	    PID=$$(lsof -iTCP:7878 -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR==2 {print $$2}'); \
+	    echo ""; echo "  tape-server: listening on $(TAPE_LISTEN)  (pid $$PID)"; \
+	elif command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":7878 "; then \
+	    echo ""; echo "  tape-server: listening on $(TAPE_LISTEN)"; \
+	else \
+	    echo ""; echo "  tape-server: not listening on $(TAPE_LISTEN)"; \
+	fi
+	@printf "\n  TAPE_URL    %s\n  TAPE_STORE  %s\n\n" "$(TAPE_URL)" "$(TAPE_STORE)"
+
+logs: ## Tail the running tape-server (docker compose or local foreground)
+	@if command -v docker >/dev/null 2>&1 && docker compose ps 2>/dev/null | grep -q tape-server; then \
+	    docker compose logs -f tape-server; \
+	else \
+	    echo "No docker compose stack running. Start one with: make docker-up"; \
+	    echo "Or run the server in the foreground: make serve"; \
+	    exit 1; \
+	fi
 
 install: build-server build-python ## Build server + install Python SDK and CLI editable
 	pip install -e $(SDK_PYTHON)
@@ -97,6 +127,28 @@ sdk-test-all: sdk-test-python sdk-test-ts sdk-test-go sdk-test-java ## Run every
 sdk-parity: build-server build-python ## Cross-SDK outbox parity (drives the same scenario through Python/TS/Go/Java)
 	cd $(SDK_TS) && npm install --silent
 	PYTHONPATH=$(SDK_PYTHON) python -m pytest $(TESTS_DIR)/parity -v
+
+# ─── Quickstart (the 20-line example, one per language) ─────────────
+
+quickstart-all: quickstart-python quickstart-ts quickstart-go quickstart-java ## Run every quickstart against the same fresh server
+
+quickstart-python: build-server ## Quickstart: Python — begin run, fire one effect, print the journal
+	@PYTHONPATH=$(SDK_PYTHON) ./scripts/quickstart-run.sh python "python examples/quickstart.py"
+
+quickstart-ts: build-server ## Quickstart: TypeScript
+	@command -v node >/dev/null 2>&1 || { echo "node not on PATH — install Node 22+ (./setup.sh)"; exit 1; }
+	@cd $(SDK_TS) && npm install --silent
+	@./scripts/quickstart-run.sh typescript "node --experimental-strip-types --no-warnings examples/quickstart.ts"
+
+quickstart-go: build-server ## Quickstart: Go
+	@command -v go >/dev/null 2>&1 || { echo "go not on PATH — install Go 1.25 (./setup.sh)"; exit 1; }
+	@./scripts/quickstart-run.sh go "cd $(SDK_GO) && go run ../../../examples/quickstart.go"
+
+quickstart-java: build-server ## Quickstart: Java
+	@command -v mvn >/dev/null 2>&1 || { echo "mvn not on PATH — install Maven (./setup.sh)"; exit 1; }
+	@cd $(SDK_JAVA) && mvn -q -DskipTests package
+	@cd $(SDK_JAVA) && mvn -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt -Dmdep.includeScope=runtime
+	@./scripts/quickstart-run.sh java "bash scripts/run-java-quickstart.sh"
 
 sdk-test-python: ## Python SDK round-trip tests
 	cd $(SDK_PYTHON) && python -m pytest -q || \

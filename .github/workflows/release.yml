@@ -98,10 +98,13 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   # tape-py + tape-cli — PyPI
   # ───────────────────────────────────────────────────────────────
+  # Activates automatically when the repo variable `PUBLISH_PYPI` is set to
+  # `true` (Settings → Secrets and variables → Actions → Variables). The
+  # secret `PYPI_API_TOKEN` must also be set. See RELEASING.md.
   python:
     name: tape-py + tape-cli → PyPI
     runs-on: ubuntu-latest
-    if: false   # flip to `true` once PYPI_API_TOKEN is set
+    if: ${{ vars.PUBLISH_PYPI == 'true' }}
     needs: [server]
     steps:
       - uses: actions/checkout@v4
@@ -121,10 +124,12 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   # tape-ts — npm
   # ───────────────────────────────────────────────────────────────
+  # Activates automatically when `vars.PUBLISH_NPM == 'true'` and the
+  # `NPM_TOKEN` secret is set. See RELEASING.md.
   npm:
     name: tape-ts → npm
     runs-on: ubuntu-latest
-    if: false   # flip to `true` once NPM_TOKEN is set
+    if: ${{ vars.PUBLISH_NPM == 'true' }}
     needs: [server]
     steps:
       - uses: actions/checkout@v4
@@ -138,10 +143,13 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   # tape-java — Maven Central
   # ───────────────────────────────────────────────────────────────
+  # Activates automatically when `vars.PUBLISH_MAVEN == 'true'` and the
+  # MAVEN_USERNAME / MAVEN_PASSWORD / GPG_PRIVATE_KEY / GPG_PASSPHRASE
+  # secrets are set. See RELEASING.md.
   maven:
     name: tape-java → Maven Central
     runs-on: ubuntu-latest
-    if: false   # flip to `true` once MAVEN credentials are set
+    if: ${{ vars.PUBLISH_MAVEN == 'true' }}
     needs: [server]
     steps:
       - uses: actions/checkout@v4

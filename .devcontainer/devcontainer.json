@@ -1,0 +1,56 @@
+{
+    "name": "Tape — durable-execution substrate",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+
+    "features": {
+        "ghcr.io/devcontainers/features/rust:1": { "version": "1.83" },
+        "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+        "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+        "ghcr.io/devcontainers/features/go:1": { "version": "1.25" },
+        "ghcr.io/devcontainers/features/java:1": {
+            "version": "21",
+            "installMaven": true,
+            "mavenVersion": "3.9.9"
+        },
+        "ghcr.io/devcontainers/features/common-utils:2": {},
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    },
+
+    "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler && bash ./setup.sh --skip-build && cd tape/server && cargo build && cd ../.. && pip install -e tape/sdk/python -e tape/cli",
+
+    "postAttachCommand": "make doctor || true",
+
+    "forwardPorts": [7878, 5432, 8000],
+    "portsAttributes": {
+        "7878": { "label": "tape-server (gRPC)" },
+        "5432": { "label": "postgres" },
+        "8000": { "label": "mkdocs site" }
+    },
+
+    "remoteEnv": {
+        "TAPE_URL":    "tape://127.0.0.1:7878",
+        "TAPE_LISTEN": "127.0.0.1:7878",
+        "TAPE_STORE":  "sqlite:./tape.db",
+        "RUST_LOG":    "tape_server=info"
+    },
+
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "ms-python.python",
+                "golang.go",
+                "redhat.java",
+                "esbenp.prettier-vscode",
+                "editorconfig.editorconfig",
+                "zxh404.vscode-proto3",
+                "tamasfe.even-better-toml"
+            ],
+            "settings": {
+                "editor.formatOnSave": true,
+                "files.insertFinalNewline": true,
+                "files.trimTrailingWhitespace": true
+            }
+        }
+    }
+}

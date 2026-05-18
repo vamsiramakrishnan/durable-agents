@@ -1,0 +1,33 @@
+# Pre-commit — a light, language-agnostic baseline of hygiene checks.
+#
+# Install:        pip install pre-commit && pre-commit install
+# Run on demand:  pre-commit run --all-files
+#
+# Language-specific formatters (ruff, gofmt, prettier, spotless) are NOT in
+# this config by design — they belong in each SDK's own tooling so the four
+# languages stay decoupled. See CONTRIBUTING.md for the per-language commands.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'    # Markdown uses trailing-spaces for line breaks.
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=512']
+        exclude: '^design-principles/.*\.svg$'    # the treatise figures are intentionally large.
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+      - id: check-yaml
+        exclude: '^tape/sdk/java/.*'              # Maven plugins emit non-standard YAML in target/.
+      - id: check-json
+      - id: check-toml
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: '\.(json|yaml|yml)$'
+        exclude: '^(tape/sdk/typescript/package-lock\.json|tape/sdk/java/target/.*)$'

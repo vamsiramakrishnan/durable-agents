@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a primitive, SDK affordance, or operational surface.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The user-facing pain. Skip the "how" for a moment — describe the situation today.
+    validations: { required: true }
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: Proposed shape
+      description: Concrete sketch of the API or behaviour. Code samples welcome.
+    validations: { required: true }
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where does this live?
+      options:
+        - "Wire protocol (proto + server + all SDKs)"
+        - "Server only"
+        - "All four SDKs"
+        - "Single SDK (which one?)"
+        - "CLI / devex"
+        - "Docs / examples"
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Why isn't an existing primitive enough? What would you have to do instead?
+
+  - type: textarea
+    id: parity
+    attributes:
+      label: Parity impact
+      description: If this is SDK-touching, what's the minimum to ship vs. what could land later? (See SDK_PARITY.md.)
