@@ -84,6 +84,17 @@ from .lineage import (
     run_all as ldfi_run_all,
 )
 from .reliability import ReliabilitySurface, Recorder, score
+# Phase 4 — agent-layer proxies. Imported lazily-named (`chaos.proxy.delay`)
+# to avoid clashing with `chaos.delay`, which is the *server-failpoint*
+# delay (different layer). Use `chaos.model_proxy(...)` / `chaos.mcp_proxy(...)`
+# to construct.
+from . import proxies as proxy   # noqa: F401  — chaos.proxy.delay/inject_status/...
+from .proxies import (
+    ChaosProxy,
+    ProxyFault,
+    model_proxy,
+    mcp_proxy,
+)
 
 __all__ = [
     "Fault",
@@ -125,4 +136,10 @@ __all__ = [
     "ReliabilitySurface",
     "Recorder",
     "score",
+    # phase 4 — agent-layer chaos proxies
+    "ChaosProxy",
+    "ProxyFault",
+    "model_proxy",
+    "mcp_proxy",
+    "proxy",      # namespace: chaos.proxy.delay, .inject_status, .tool_shadow, ...
 ]

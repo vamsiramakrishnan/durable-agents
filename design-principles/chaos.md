@@ -351,9 +351,9 @@ runtime.
 | 1     | `tape.chaos` Python SDK: scenarios, invariants, connector shim                | done   |
 | 2     | Deterministic replay + single-thread DST harness                              | done   |
 | 3     | LDFI + Reliability Surface R(k,ε,λ) + DeepSnapshot                            | done   |
+| 4     | Agent-layer chaos: `model_proxy`, `mcp_proxy` — stdlib forward-proxy          | done   |
 | 2.5   | Full madsim DST — virtualised time + network + process                       |        |
 | 3.5   | Porcupine-style linearizability checker for the lease primitive              |        |
-| 4     | Agent-layer chaos: `model_chaos_proxy`, `mcp_chaos_proxy`                    |        |
 | 5     | Chaos Mesh / Cilium manifests; `tape chaos` CLI                               |        |
 | 6     | Mirror the SDK surface to Go / TypeScript / Java                             |        |
 
