@@ -143,18 +143,25 @@ the *what*.
 
 | You want to... | Run | Or read |
 |---|---|---|
-| First-time setup on a clean clone | `./setup.sh` | This file |
+| First-time setup on a clean clone | `./setup.sh` | `tape/docs/start/install.md` |
+| Verify the environment is healthy | `make doctor` | `scripts/doctor.sh` |
+| Run the 20-line scenario in every SDK | `make quickstart-all` | `examples/README.md` |
 | Run the treasury demo | `make demo` | `tape/justfile` |
 | Prove kill-and-resume works | `make demo-resume` | `tape/examples/treasury/` |
 | Run every SDK's smoke test | `make sdk-test-all` | `SDK_PARITY.md` |
+| Run the cross-SDK parity harness | `make sdk-parity` | `tape/docs/how-to/cross-sdk-parity.md` |
 | Run the Rust + Python integration tests | `make test` | `tape/tests/` |
 | Stand up a Postgres-backed Tape server | `make docker-up` | `docker-compose.yml` |
+| See running services + their URLs | `make status` | n/a |
+| Tail the tape-server logs | `make logs` | n/a |
 | Build the docs site locally | `make docs-serve` | `tape/docs/` |
+| Try without installing anything | [Open in Codespaces](https://codespaces.new/vamsiramakrishnan/durable-agents) | `.devcontainer/devcontainer.json` |
+| Cut a release | follow `RELEASING.md` | `.github/workflows/release.yml` |
 | Regenerate Python gRPC stubs | `cd tape && just codegen-py` | `tape/sdk/python/regen_protos.sh` |
 | Add a new RPC | edit `tape/proto/tape.proto` → server → all 4 SDKs | `tape/server/src/grpc.rs` |
-| Add a new connector | follow `tape/sdk/python/tape/connectors/http.py` | `tape/docs/how-to/non-idempotent-upstreams.md` |
-| Add a new sink | follow `tape/sdk/python/tape/sinks.py` | `SDK_PARITY.md` G2 |
-| Add a new docs page | drop it under `tape/docs/`, link from `mkdocs.yml` | `mkdocs.yml` |
+| Add a new connector | follow `tape/sdk/python/tape/connectors/http.py` | `tape/docs/how-to/custom-connector.md` |
+| Add a new sink | follow `tape/sdk/python/tape/sinks.py` | `tape/docs/how-to/sinks.md` |
+| Add a new docs page | drop it under `tape/docs/`, link from `mkdocs.yml` + the section's `index.md` | `mkdocs.yml` |
 
 ---
 

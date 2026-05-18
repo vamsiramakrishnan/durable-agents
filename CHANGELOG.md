@@ -33,5 +33,12 @@ this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added — Documentation
 - **`SDK_PARITY.md`** — live four-language scorecard with G1–G7 roadmap and status.
+- **`tape/docs/start/install.md`** — rewritten around the fast-path (`./setup.sh`), the zero-setup path (Codespaces / devcontainer), and the granular per-SDK path. Documents the difference between `make doctor` (repo-scoped) and `tape doctor` (project-scoped).
+- **`tape/docs/how-to/outbox-daemon.md`** — the new TS / Go / Java dispatcher CLIs, with a flag-by-flag table.
+- **`tape/docs/how-to/sinks.md`** — `LogSink` / `WebhookSink` / `PubSubSink` in every SDK, with the Webhook + Pub/Sub contracts.
+- **`tape/docs/how-to/cross-sdk-parity.md`** — what the harness asserts, how to run it locally, how to add a new scenario.
+- **`tape/docs/adk.md`** — added a `## Java` section covering `TapePlugin`, `TapeSessionService`, `TapeAdkApp.wire(...)`, the callback → RPC mapping, and the G4 status caveat (model replay + budget are follow-ups).
+- **`mkdocs.yml`** and **`tape/docs/how-to/index.md`** — wired the three new how-to pages into the nav.
+- **`CLAUDE.md`** — refreshed the "Common tasks" lookup table to cover `make doctor`, `make quickstart-all`, `make status`, `make logs`, and the Codespaces entrypoint.
 
 [Unreleased]: https://github.com/vamsiramakrishnan/durable-agents/compare/main...HEAD

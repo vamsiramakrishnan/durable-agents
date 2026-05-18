@@ -195,6 +195,9 @@ nav:
       - Configure tenancy: tenancy.md
       - Cancel & timeout patterns: how-to/cancel-timeout.md
       - Write a custom connector: how-to/custom-connector.md
+      - Run the outbox dispatcher (any language): how-to/outbox-daemon.md
+      - Fan the journal out (sinks): how-to/sinks.md
+      - Cross-SDK parity harness: how-to/cross-sdk-parity.md
 
   - Deploy:
       - deploy/index.md
