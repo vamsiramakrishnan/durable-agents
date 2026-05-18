@@ -246,6 +246,7 @@ nav:
       - Tape spec: design/tape.md
       - Event bus: design/tape-event-bus.md
       - Parity matrix: design/parity.md
+      - Failure modes & how they're proved: design/failure-modes.md
       - Chaos & failure testing: design/chaos.md
 
   - Help:

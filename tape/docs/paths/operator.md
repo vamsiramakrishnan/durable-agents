@@ -84,6 +84,12 @@ tape tail --run <run-id>            # watch what reactors do next
 The system's failure modes — and what happens automatically when each
 fires:
 
+→ **[Failure modes & how they're proved](../design/failure-modes.md)** —
+the catalogue: agent crashes, UNKNOWN, lease takeover, split-brain,
+STUCK obligations, gate timeouts. Each scenario is "what happens, in
+order, and which test asserts it". The first doc to send a new
+operator.
+
 → **[UNKNOWN — the third outcome](../concepts/unknown.md)** — what
 happens when an ack is lost; the reconciler's job; when to compensate
 

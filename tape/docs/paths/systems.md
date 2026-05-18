@@ -101,13 +101,19 @@ Tape from "Temporal but for agents".
 
 ---
 
-## 6 · Chaos & failure (20 min)
+## 6 · Failure modes & chaos (30 min)
 
-How we test that the contract actually holds:
+The most useful document for "do I trust this with money":
+
+→ **[Failure modes & how they're proved](../design/failure-modes.md)** —
+every scenario in the runtime's life: agent crashes mid-effect, UNKNOWN
+on the wire, two dispatchers race, compensation goes STUCK, gate
+timeout. Question / runtime response / test that proves it. Borrowed
+from Jepsen's format.
 
 → **[Chaos & failure testing](../design/chaos.md)** — LDFI-style fault
 injection, the deterministic-replay madsim runner, the cross-SDK parity
-harness
+harness — the framework the failure-modes doc cites
 
 → **[Cross-SDK parity (how-to)](../how-to/cross-sdk-parity.md)** — one
 scenario, four languages, identical journal projection on every PR
