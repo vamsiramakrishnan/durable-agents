@@ -34,21 +34,28 @@ impl Tape for TapeService {
     async fn begin_run(&self, req: Request<BeginRunRequest>) -> Result<Response<BeginRunResponse>, Status> {
         let r = req.into_inner();
         let ttl = if r.lease_ttl_ms > 0 { r.lease_ttl_ms } else { DEFAULT_LEASE_MS };
-        Ok(Response::new(self.store
+        fail::fail_point!("tape::begin_run::pre_db", |a| Err(Status::internal(format!("chaos: tape::begin_run::pre_db {}", a.unwrap_or_default()))));
+        let resp = self.store
             .begin_run(&r.app_name, &r.user_id, &r.session_id, &r.invocation_id, &r.lease_owner, ttl)
-            .await.map_err(db)?))
+            .await.map_err(db)?;
+        fail::fail_point!("tape::begin_run::post_db", |a| Err(Status::internal(format!("chaos: tape::begin_run::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(resp))
     }
     async fn resume_run(&self, req: Request<ResumeRunRequest>) -> Result<Response<ResumeRunResponse>, Status> {
         let r = req.into_inner();
         let ttl = if r.lease_ttl_ms > 0 { r.lease_ttl_ms } else { DEFAULT_LEASE_MS };
+        fail::fail_point!("tape::resume_run::pre_db", |a| Err(Status::internal(format!("chaos: tape::resume_run::pre_db {}", a.unwrap_or_default()))));
         let run = self.store.resume_run(&r.run_id, &r.lease_owner, ttl).await.map_err(db)?
             .ok_or_else(|| Status::not_found("no such run"))?;
+        fail::fail_point!("tape::resume_run::post_db", |a| Err(Status::internal(format!("chaos: tape::resume_run::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(ResumeRunResponse { run: Some(run) }))
     }
     async fn end_run(&self, req: Request<EndRunRequest>) -> Result<Response<EndRunResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::end_run::pre_db", |a| Err(Status::internal(format!("chaos: tape::end_run::pre_db {}", a.unwrap_or_default()))));
         let run = self.store.end_run(&r.run_id, r.status, &r.detail_json).await.map_err(db)?
             .ok_or_else(|| Status::not_found("no such run"))?;
+        fail::fail_point!("tape::end_run::post_db", |a| Err(Status::internal(format!("chaos: tape::end_run::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(EndRunResponse { run: Some(run) }))
     }
     async fn get_run(&self, req: Request<GetRunRequest>) -> Result<Response<RunState>, Status> {
@@ -88,24 +95,34 @@ impl Tape for TapeService {
     // ── decisions ───────────────────────────────────────────────────────────
     async fn record_decision(&self, req: Request<RecordDecisionRequest>) -> Result<Response<DecisionRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store
+        fail::fail_point!("tape::record_decision::pre_db", |a| Err(Status::internal(format!("chaos: tape::record_decision::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store
             .record_decision(&r.run_id, r.decision_index, &r.model, &r.request_json, &r.response_json, &r.rationale, &r.policy_version)
-            .await.map_err(db)?))
+            .await.map_err(db)?;
+        fail::fail_point!("tape::record_decision::post_db", |a| Err(Status::internal(format!("chaos: tape::record_decision::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
     async fn get_decision(&self, req: Request<GetDecisionRequest>) -> Result<Response<GetDecisionResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::get_decision::pre_db", |a| Err(Status::internal(format!("chaos: tape::get_decision::pre_db {}", a.unwrap_or_default()))));
         let d = self.store.get_decision(&r.run_id, r.decision_index).await.map_err(db)?;
+        fail::fail_point!("tape::get_decision::post_db", |a| Err(Status::internal(format!("chaos: tape::get_decision::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(GetDecisionResponse { found: d.is_some(), decision: d }))
     }
 
     // ── effects ─────────────────────────────────────────────────────────────
     async fn begin_effect(&self, req: Request<BeginEffectRequest>) -> Result<Response<BeginEffectResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::begin_effect::pre_db", |a| Err(Status::internal(format!("chaos: tape::begin_effect::pre_db {}", a.unwrap_or_default()))));
         let e = self.store.begin_effect(
             &r.run_id, r.decision_index, &r.tool_name, r.call_index,
             &r.request_json, &r.custom_key,
             r.semantics, r.dispatch_mode, &r.business_key, &r.connector,
         ).await.map_err(db)?;
+        // The headline injection site: the intent has been durably written,
+        // the response has not been sent — exactly the window that resume
+        // is supposed to survive (`design-principles/tape.md §6.5`).
+        fail::fail_point!("tape::begin_effect::post_db", |a| Err(Status::internal(format!("chaos: tape::begin_effect::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(BeginEffectResponse {
             seq: e.seq, idempotency_key: e.idempotency_key, status: e.status,
             response_json: e.response_json, error_json: e.error_json,
@@ -113,8 +130,11 @@ impl Tape for TapeService {
     }
     async fn complete_effect(&self, req: Request<CompleteEffectRequest>) -> Result<Response<EffectRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store.complete_effect(&r.run_id, &r.idempotency_key, r.status, &r.response_json, &r.error_json).await.map_err(db)?
-            .ok_or_else(|| Status::failed_precondition("complete_effect before begin_effect"))?))
+        fail::fail_point!("tape::complete_effect::pre_db", |a| Err(Status::internal(format!("chaos: tape::complete_effect::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store.complete_effect(&r.run_id, &r.idempotency_key, r.status, &r.response_json, &r.error_json).await.map_err(db)?
+            .ok_or_else(|| Status::failed_precondition("complete_effect before begin_effect"))?;
+        fail::fail_point!("tape::complete_effect::post_db", |a| Err(Status::internal(format!("chaos: tape::complete_effect::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
     async fn get_effect(&self, req: Request<GetEffectRequest>) -> Result<Response<GetEffectResponse>, Status> {
         let r = req.into_inner();
@@ -123,8 +143,11 @@ impl Tape for TapeService {
     }
     async fn reconcile_effect(&self, req: Request<ReconcileEffectRequest>) -> Result<Response<EffectRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store.reconcile_effect(&r.run_id, &r.idempotency_key, r.resolved_status, &r.response_json, &r.error_json).await.map_err(db)?
-            .ok_or_else(|| Status::not_found("no such effect"))?))
+        fail::fail_point!("tape::reconcile_effect::pre_db", |a| Err(Status::internal(format!("chaos: tape::reconcile_effect::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store.reconcile_effect(&r.run_id, &r.idempotency_key, r.resolved_status, &r.response_json, &r.error_json).await.map_err(db)?
+            .ok_or_else(|| Status::not_found("no such effect"))?;
+        fail::fail_point!("tape::reconcile_effect::post_db", |a| Err(Status::internal(format!("chaos: tape::reconcile_effect::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
 
     // ── outbox dispatch ─────────────────────────────────────────────────────
@@ -140,36 +163,47 @@ impl Tape for TapeService {
     async fn claim_effect_dispatch(&self, req: Request<ClaimEffectDispatchRequest>)
         -> Result<Response<ClaimEffectDispatchResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::claim_effect_dispatch::pre_db", |a| Err(Status::internal(format!("chaos: tape::claim_effect_dispatch::pre_db {}", a.unwrap_or_default()))));
         let (acquired, eff) = self.store
             .claim_effect_dispatch(&r.run_id, &r.idempotency_key, &r.claimer, r.lease_ttl_ms, now_ms())
             .await.map_err(db)?;
+        fail::fail_point!("tape::claim_effect_dispatch::post_db", |a| Err(Status::internal(format!("chaos: tape::claim_effect_dispatch::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(ClaimEffectDispatchResponse { acquired, effect: eff }))
     }
     async fn record_dispatch_attempt(&self, req: Request<RecordDispatchAttemptRequest>)
         -> Result<Response<EffectRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store
+        fail::fail_point!("tape::record_dispatch_attempt::pre_db", |a| Err(Status::internal(format!("chaos: tape::record_dispatch_attempt::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store
             .record_dispatch_attempt(&r.run_id, &r.idempotency_key, &r.error, r.next_dispatch_at_ms)
             .await.map_err(db)?
-            .ok_or_else(|| Status::not_found("no such effect"))?))
+            .ok_or_else(|| Status::not_found("no such effect"))?;
+        fail::fail_point!("tape::record_dispatch_attempt::post_db", |a| Err(Status::internal(format!("chaos: tape::record_dispatch_attempt::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
     async fn record_external_observation(&self, req: Request<RecordExternalObservationRequest>)
         -> Result<Response<EffectRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store
+        fail::fail_point!("tape::record_external_observation::pre_db", |a| Err(Status::internal(format!("chaos: tape::record_external_observation::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store
             .record_external_observation(&r.run_id, &r.idempotency_key, r.resolution,
                 &r.external_ref, &r.response_json, &r.error_json, &r.compensate_on_duplicate_kind)
             .await.map_err(db)?
-            .ok_or_else(|| Status::not_found("no such effect"))?))
+            .ok_or_else(|| Status::not_found("no such effect"))?;
+        fail::fail_point!("tape::record_external_observation::post_db", |a| Err(Status::internal(format!("chaos: tape::record_external_observation::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
 
     // ── obligations ─────────────────────────────────────────────────────────
     async fn register_compensation(&self, req: Request<RegisterCompensationRequest>) -> Result<Response<ObligationRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store
+        fail::fail_point!("tape::register_compensation::pre_db", |a| Err(Status::internal(format!("chaos: tape::register_compensation::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store
             .register_compensation(&r.run_id, &r.effect_key, &r.kind, &r.payload_json,
                                    &r.compensator_ref, r.max_attempts)
-            .await.map_err(db)?))
+            .await.map_err(db)?;
+        fail::fail_point!("tape::register_compensation::post_db", |a| Err(Status::internal(format!("chaos: tape::register_compensation::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
     async fn list_obligations(&self, req: Request<ListObligationsRequest>) -> Result<Response<ListObligationsResponse>, Status> {
         let r = req.into_inner();
@@ -194,22 +228,30 @@ impl Tape for TapeService {
     }
     async fn claim_obligation(&self, req: Request<ClaimObligationRequest>) -> Result<Response<ClaimObligationResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::claim_obligation::pre_db", |a| Err(Status::internal(format!("chaos: tape::claim_obligation::pre_db {}", a.unwrap_or_default()))));
         let (acquired, ob) = self.store
             .claim_obligation(&r.run_id, r.obligation_seq, &r.claimer, r.lease_ttl_ms, now_ms())
             .await.map_err(db)?;
+        fail::fail_point!("tape::claim_obligation::post_db", |a| Err(Status::internal(format!("chaos: tape::claim_obligation::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(ClaimObligationResponse { acquired, obligation: ob }))
     }
     async fn record_obligation_attempt(&self, req: Request<RecordObligationAttemptRequest>) -> Result<Response<ObligationRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store
+        fail::fail_point!("tape::record_obligation_attempt::pre_db", |a| Err(Status::internal(format!("chaos: tape::record_obligation_attempt::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store
             .record_obligation_attempt(&r.run_id, r.obligation_seq, &r.error, r.next_attempt_at_ms)
             .await.map_err(db)?
-            .ok_or_else(|| Status::not_found("no such obligation"))?))
+            .ok_or_else(|| Status::not_found("no such obligation"))?;
+        fail::fail_point!("tape::record_obligation_attempt::post_db", |a| Err(Status::internal(format!("chaos: tape::record_obligation_attempt::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
     async fn resolve_obligation(&self, req: Request<ResolveObligationRequest>) -> Result<Response<ObligationRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store.resolve_obligation(&r.run_id, r.obligation_seq, r.status, &r.result_json).await.map_err(db)?
-            .ok_or_else(|| Status::not_found("no such obligation"))?))
+        fail::fail_point!("tape::resolve_obligation::pre_db", |a| Err(Status::internal(format!("chaos: tape::resolve_obligation::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store.resolve_obligation(&r.run_id, r.obligation_seq, r.status, &r.result_json).await.map_err(db)?
+            .ok_or_else(|| Status::not_found("no such obligation"))?;
+        fail::fail_point!("tape::resolve_obligation::post_db", |a| Err(Status::internal(format!("chaos: tape::resolve_obligation::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
 
     // ── budget ──────────────────────────────────────────────────────────────
@@ -239,12 +281,16 @@ impl Tape for TapeService {
     // ── gates / signals ─────────────────────────────────────────────────────
     async fn await_signal(&self, req: Request<AwaitSignalRequest>) -> Result<Response<AwaitSignalResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::await_signal::pre_db", |a| Err(Status::internal(format!("chaos: tape::await_signal::pre_db {}", a.unwrap_or_default()))));
         let (delivered, resolution) = self.store.await_signal(&r.run_id, &r.gate_name, &r.payload_json).await.map_err(db)?;
+        fail::fail_point!("tape::await_signal::post_db", |a| Err(Status::internal(format!("chaos: tape::await_signal::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(AwaitSignalResponse { delivered, resolution_json: resolution }))
     }
     async fn send_signal(&self, req: Request<SendSignalRequest>) -> Result<Response<SendSignalResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::send_signal::pre_db", |a| Err(Status::internal(format!("chaos: tape::send_signal::pre_db {}", a.unwrap_or_default()))));
         let (run_id, status) = self.store.send_signal(&r.run_id, &r.app_name, &r.user_id, &r.session_id, &r.gate_name, &r.resolution_json).await.map_err(db)?;
+        fail::fail_point!("tape::send_signal::post_db", |a| Err(Status::internal(format!("chaos: tape::send_signal::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(SendSignalResponse { accepted: true, run_id, run_status: status }))
     }
 
@@ -269,7 +315,9 @@ impl Tape for TapeService {
     async fn append_event(&self, req: Request<AppendEventRequest>) -> Result<Response<AppendEventResponse>, Status> {
         let r = req.into_inner();
         let ev = r.event.ok_or_else(|| Status::invalid_argument("append_event: missing event"))?;
+        fail::fail_point!("tape::append_event::pre_db", |a| Err(Status::internal(format!("chaos: tape::append_event::pre_db {}", a.unwrap_or_default()))));
         let (event, last_update) = self.store.append_event(&r.app_name, &r.user_id, &r.session_id, ev, &r.state_delta_json).await.map_err(db)?;
+        fail::fail_point!("tape::append_event::post_db", |a| Err(Status::internal(format!("chaos: tape::append_event::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(AppendEventResponse { event: Some(event), last_update_time_ms: last_update }))
     }
 
@@ -285,23 +333,35 @@ impl Tape for TapeService {
     // ── timers ──────────────────────────────────────────────────────────────
     async fn set_timer(&self, req: Request<SetTimerRequest>) -> Result<Response<TimerRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store.set_timer(&r.run_id, &r.timer_id, r.fire_at_ms, &r.kind, &r.payload_json).await.map_err(db)?))
+        fail::fail_point!("tape::set_timer::pre_db", |a| Err(Status::internal(format!("chaos: tape::set_timer::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store.set_timer(&r.run_id, &r.timer_id, r.fire_at_ms, &r.kind, &r.payload_json).await.map_err(db)?;
+        fail::fail_point!("tape::set_timer::post_db", |a| Err(Status::internal(format!("chaos: tape::set_timer::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
     async fn cancel_timer(&self, req: Request<CancelTimerRequest>) -> Result<Response<CancelTimerResponse>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(CancelTimerResponse { cancelled: self.store.cancel_timer(&r.run_id, &r.timer_id).await.map_err(db)? }))
+        fail::fail_point!("tape::cancel_timer::pre_db", |a| Err(Status::internal(format!("chaos: tape::cancel_timer::pre_db {}", a.unwrap_or_default()))));
+        let cancelled = self.store.cancel_timer(&r.run_id, &r.timer_id).await.map_err(db)?;
+        fail::fail_point!("tape::cancel_timer::post_db", |a| Err(Status::internal(format!("chaos: tape::cancel_timer::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(CancelTimerResponse { cancelled }))
     }
     async fn list_due_timers(&self, req: Request<ListDueTimersRequest>) -> Result<Response<ListDueTimersResponse>, Status> {
         let r = req.into_inner();
         let now = if r.now_ms > 0 { r.now_ms } else { now_ms() };
         let limit = if r.limit > 0 { r.limit } else { 200 };
-        Ok(Response::new(ListDueTimersResponse { timers: self.store.list_due_timers(now, limit, r.claim).await.map_err(db)? }))
+        fail::fail_point!("tape::list_due_timers::pre_db", |a| Err(Status::internal(format!("chaos: tape::list_due_timers::pre_db {}", a.unwrap_or_default()))));
+        let timers = self.store.list_due_timers(now, limit, r.claim).await.map_err(db)?;
+        fail::fail_point!("tape::list_due_timers::post_db", |a| Err(Status::internal(format!("chaos: tape::list_due_timers::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(ListDueTimersResponse { timers }))
     }
 
     // ── reactive key-value store ────────────────────────────────────────────
     async fn write_value(&self, req: Request<WriteValueRequest>) -> Result<Response<ValueRecord>, Status> {
         let r = req.into_inner();
-        Ok(Response::new(self.store.write_value(&r.namespace, &r.key, &r.value_json, r.if_version, &r.writer).await.map_err(db)?))
+        fail::fail_point!("tape::write_value::pre_db", |a| Err(Status::internal(format!("chaos: tape::write_value::pre_db {}", a.unwrap_or_default()))));
+        let rec = self.store.write_value(&r.namespace, &r.key, &r.value_json, r.if_version, &r.writer).await.map_err(db)?;
+        fail::fail_point!("tape::write_value::post_db", |a| Err(Status::internal(format!("chaos: tape::write_value::post_db {}", a.unwrap_or_default()))));
+        Ok(Response::new(rec))
     }
     async fn get_value(&self, req: Request<GetValueRequest>) -> Result<Response<GetValueResponse>, Status> {
         let r = req.into_inner();
@@ -310,7 +370,9 @@ impl Tape for TapeService {
     }
     async fn delete_value(&self, req: Request<DeleteValueRequest>) -> Result<Response<DeleteValueResponse>, Status> {
         let r = req.into_inner();
+        fail::fail_point!("tape::delete_value::pre_db", |a| Err(Status::internal(format!("chaos: tape::delete_value::pre_db {}", a.unwrap_or_default()))));
         let (deleted, version) = self.store.delete_value(&r.namespace, &r.key).await.map_err(db)?;
+        fail::fail_point!("tape::delete_value::post_db", |a| Err(Status::internal(format!("chaos: tape::delete_value::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(DeleteValueResponse { deleted, version }))
     }
 

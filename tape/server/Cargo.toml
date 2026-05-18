@@ -9,8 +9,16 @@ license = "Apache-2.0"
 name = "tape-server"
 path = "src/main.rs"
 
+[features]
+default = []
+# `chaos` turns the `fail::fail_point!` sites in `service.rs` from no-ops
+# into active injection points. See `design-principles/chaos.md` and
+# `server/src/chaos.rs`. Zero-cost when off — the macro compiles to nothing.
+chaos = ["fail/failpoints"]
+
 [dependencies]
 tonic = "0.12"
+fail = { version = "0.5", default-features = false }
 prost = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
