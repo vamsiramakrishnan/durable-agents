@@ -79,6 +79,59 @@ def test_demo_help_does_not_need_server():
     assert "Crash an agent mid-effect" in proc.stdout
 
 
+@pytest.mark.skipif(not _has_server(),
+                    reason="tape-server binary not built (cargo build)")
+def test_demo_unknown_reconcile_runs_to_completion_and_exits_zero():
+    """The full UNKNOWN → CONFIRMED loop end-to-end. Exits 0 iff the bank
+    ledger ends with exactly one wire AND the journal traversed UNKNOWN
+    on the way (which we can't directly assert, but we can confirm the
+    headline + 'UNKNOWN' renders in the captured output)."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(SDK_PY), str(CLI),
+                                          env.get("PYTHONPATH", "")])
+    env["COLUMNS"] = "200"
+    proc = subprocess.run(
+        [sys.executable, "-m", "tape_cli.main", "demo", "unknown-reconcile",
+         "--pause", "0.05",
+         "--server-binary", str(SERVER_BIN)],
+        env=env, capture_output=True, text=True, timeout=60)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, (
+        f"demo exited {proc.returncode}; output:\n{out[-3000:]}")
+    # The loud-failure status (UNKNOWN) must appear in the journal column
+    # — that's the WHOLE point of this scenario.
+    assert "unknown" in out.lower(), out[-2000:]
+    # The headline confirms the resolution succeeded.
+    assert "UNKNOWN survived" in out, out[-2000:]
+    # The bank ledger title.
+    assert "bank ledger" in out.lower()
+
+
+def test_filebank_business_key_dedup(tmp_path):
+    """The non-idempotent bank's contract: dedupe on business_key. Two
+    `wire_by_business_key` calls with the same key return the same wire_id."""
+    sys.path.insert(0, str(CLI))
+    from tape_cli.commands.demo import FileBank
+
+    bank = FileBank(tmp_path / "bank.json")
+    w1 = bank.wire_by_business_key(business_key="acct-1:2m:2026-05-18",
+                                   amount_minor=2_000_000,
+                                   account_id="acct-1")
+    w2 = bank.wire_by_business_key(business_key="acct-1:2m:2026-05-18",
+                                   amount_minor=2_000_000,
+                                   account_id="acct-1")
+    assert w1["wire_id"] == w2["wire_id"]
+    assert len(bank.all_wires()) == 1
+
+    # `find_by_business_key` is the connector's observe() — looks up the
+    # bank's view of the operation. Returns the same record.
+    found = bank.find_by_business_key("acct-1:2m:2026-05-18")
+    assert found is not None
+    assert found["wire_id"] == w1["wire_id"]
+    # A miss returns None — that's the "ABSENT" resolution.
+    assert bank.find_by_business_key("nope:1:2026-01-01") is None
+
+
 # ── unit tests on the inline fake bank ───────────────────────────────────
 
 

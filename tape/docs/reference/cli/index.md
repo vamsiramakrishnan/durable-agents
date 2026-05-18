@@ -144,6 +144,22 @@ Usage: tape demo crash-resume [OPTIONS]
 | `--keep` | `False` | Don't tear down the server / ledger when the demo finishes (so you can `tape inspect`). |
 | `--server-binary` | — | Path to a built `tape-server` (default: auto-locate in the repo). |
 
+#### `tape demo unknown-reconcile`
+
+Non-idempotent + OUTBOX + UNKNOWN + reconciler — the full ambiguity loop.
+
+```
+Usage: tape demo unknown-reconcile [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--pause`, `-p` | `0.7` | Pause between phases (seconds). UNKNOWN is the loudest signal in the runtime — slowing this down a notch is fine. |
+| `--keep` | `False` | Don't tear down the server / ledger when the demo finishes. |
+| `--server-binary` | — | Path to a built `tape-server` (default: auto-locate). |
+
 ### `tape deploy`
 
 Build & deploy services.

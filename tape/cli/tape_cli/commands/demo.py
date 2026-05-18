@@ -127,6 +127,40 @@ class FileBank:
         self._write(data)
         return rec
 
+    def wire_by_business_key(self, *, business_key: str, amount_minor: int,
+                             account_id: str) -> dict:
+        """The non-idempotent bank's contract: dedupe on business_key (NOT on
+        our run-derived idempotency_key, which the upstream wouldn't know
+        about). If a wire with this business_key already lives in the ledger,
+        return that record; otherwise mint a fresh wire_id and store it.
+
+        This is what makes the outbox + reconciler path safe: the bank's own
+        ledger is the source of truth, and the reconciler observes it via
+        business_key to decide whether to re-issue or short-circuit."""
+        data = self._read()
+        for rec in data.values():
+            if rec.get("business_key") == business_key:
+                return rec
+        rec = {
+            "wire_id": f"wire-{len(data) + 1:04d}",
+            "amount_minor": amount_minor,
+            "account_id": account_id,
+            "business_key": business_key,
+        }
+        # Key the row by business_key — that's the bank's natural dedup key
+        # for non-idempotent operations.
+        data[business_key] = rec
+        self._write(data)
+        return rec
+
+    def find_by_business_key(self, business_key: str) -> Optional[dict]:
+        """The connector's observe() — the bank's view of a logical operation,
+        looked up by the key the counterparty would use to dedupe."""
+        for rec in self._read().values():
+            if rec.get("business_key") == business_key:
+                return rec
+        return None
+
     def all_wires(self) -> list[dict]:
         return list(self._read().values())
 
@@ -418,9 +452,16 @@ class _DemoUI:
     PHASE_DONE = "done"
     PHASE_FAIL = "fail"
 
-    def __init__(self, *, url: str, ledger_path: Path, run_id: Optional[str] = None):
+    def __init__(self, *, url: str, ledger_path: Path,
+                 title: str = "demo",
+                 default_subtitle: str = "self-contained · exits 0 iff exactly-one wire",
+                 ledger_ok_suffix: str = "— exactly once",
+                 run_id: Optional[str] = None):
         self.url = url
         self.ledger_path = ledger_path
+        self.title = title
+        self.default_subtitle = default_subtitle
+        self.ledger_ok_suffix = ledger_ok_suffix
         self.run_id = run_id
         self.phases: list[dict] = []
         self.entries: deque = deque(maxlen=200)
@@ -543,8 +584,8 @@ class _DemoUI:
                 row.append("\n  ")
                 row.append_text(Text.from_markup(p["detail"], style="dim"))
             t.add_row(glyph, row)
-        subtitle = headline or "self-contained · ~60 sec · exits 0 iff exactly-one wire"
-        return Panel(t, title="[bold]demo crash-resume[/bold]",
+        subtitle = headline or self.default_subtitle
+        return Panel(t, title=f"[bold]{self.title}[/bold]",
                      subtitle=f"[dim]{subtitle}[/dim]",
                      border_style="cyan", padding=(0, 1))
 
@@ -613,8 +654,7 @@ class _DemoUI:
         subtitle_style = ("bold green" if n_forward == 1
                           else "bold red" if n_forward > 1 else "dim")
         subtitle = (f"{n_forward} forward wire{'s' if n_forward != 1 else ''} on disk"
-                    + ("  — exactly once, even though the agent crashed"
-                       if n_forward == 1 else ""))
+                    + (f"  {self.ledger_ok_suffix}" if n_forward == 1 else ""))
         return Panel(body, title="[bold]bank ledger[/bold] [dim](file-backed)[/dim]",
                      subtitle=Text(subtitle, style=subtitle_style),
                      border_style="green", padding=(0, 1))
@@ -690,7 +730,10 @@ def crash_resume(
     os.environ[INVOCATION_ID_ENV] = invocation_id
     os.environ[SESSION_ID_ENV] = session_id
 
-    ui = _DemoUI(url=url, ledger_path=ledger_path)
+    ui = _DemoUI(url=url, ledger_path=ledger_path,
+                 title="demo crash-resume",
+                 default_subtitle="idempotent + inline · agent crashes mid-effect, replay completes it",
+                 ledger_ok_suffix="— exactly once, even though the agent crashed")
     ui.add_phases(
         "tape-server up",
         "decision recorded",
@@ -808,6 +851,294 @@ def crash_resume(
             ok(f"keeping workdir: {workdir}")
             ok(f"server still up: {url}  (pid {server_proc.pid})")
             ok(f"inspect with:  tape inspect <run-id> --url {url}")
+
+    raise typer.Exit(exit_code)
+
+
+# ── unknown-reconcile scenario ─────────────────────────────────────────────
+#
+# Where crash-resume covers the **idempotent + inline** path (the agent crashes
+# mid-effect, the journal still says PENDING, the re-drive observes the bank's
+# own ledger and completes), this demo covers the harder, unique-to-Tape path:
+# **non-idempotent + outbox + UNKNOWN + reconciler**.
+#
+# The agent never touches the bank. It writes an *intent* row (`BeginEffect`
+# with semantics=NON_IDEMPOTENT, dispatch_mode=OUTBOX, business_key="…"). A
+# dedicated outbox dispatcher claims the row under a CAS lease, calls the
+# bank, and reports the result. We then simulate the network glitch that
+# loses the ack: the wire LANDS on disk but the dispatcher's `dispatch()`
+# returns `UNKNOWN`. The server transitions the effect to UNKNOWN (the
+# loudest status in the runtime — "may have happened, may not"). A
+# reconciler tick queries the bank by business_key, sees the wire, and
+# calls `RecordExternalObservation(CONFIRMED, external_ref=wire_id)`. The
+# effect flips to CONFIRMED. Exactly one wire on disk.
+#
+# This is the scenario the roadmap calls out specifically — "crash after
+# dispatch before ACK · show UNKNOWN · show reconciliation" — and the path
+# that distinguishes Tape's contract from "just retry harder".
+
+
+def _run_unknown_reconcile_scenario(*, url: str, ledger_path: Path,
+                                    ui: "_DemoUI",
+                                    pause_s: float) -> tuple[str, int]:
+    """The full in-process scenario. Returns (run_id, exit_code)."""
+    from tape.client import TapeClient
+    from tape._gen.tape_pb2 import (
+        EFFECT_DISPATCH_MODE_OUTBOX,
+        EFFECT_RESOLUTION_CONFIRMED,
+        EFFECT_SEMANTICS_NON_IDEMPOTENT,
+    )
+
+    invocation_id = f"unknown-{uuid.uuid4().hex[:10]}"
+    session_id = f"sess-{uuid.uuid4().hex[:6]}"
+    business_key = "acct-1:2000000:2026-05-18"
+    bank = FileBank(ledger_path)
+
+    with TapeClient(url) as c:
+        # ── Phase: agent records decision + journals an OUTBOX intent ──────
+        ui.start_phase(1); time.sleep(pause_s)
+        r = c.begin_run(
+            app_name="treasury-demo-unknown", user_id="cfo",
+            session_id=session_id, invocation_id=invocation_id,
+            lease_owner=f"demo-pid-{os.getpid()}", lease_ttl_ms=30_000)
+        run_id = r.run_id
+        ui.attach_run(run_id)
+        # Give the streamer a beat to subscribe before we start writing.
+        time.sleep(0.15)
+
+        c.record_decision(
+            run_id=run_id, decision_index=0, model="demo/oracle",
+            request_json='{"q":"close the book"}',
+            response_json='{"call":"execute_sweep","amount":2000000}',
+            rationale="excess USD; sweep to MMF")
+        ui.finish_phase(1, detail="decision#0 (model=demo/oracle) recorded")
+        time.sleep(pause_s)
+
+        ui.start_phase(2); time.sleep(pause_s)
+        eff = c.begin_effect(
+            run_id=run_id, decision_index=0,
+            tool_name="bank.wire", call_index=0,
+            request_json=json.dumps({"account_id": "acct-1",
+                                     "amount_minor": 2_000_000}),
+            semantics=EFFECT_SEMANTICS_NON_IDEMPOTENT,
+            dispatch_mode=EFFECT_DISPATCH_MODE_OUTBOX,
+            business_key=business_key,
+            connector="bank.wire")
+        ui.finish_phase(2,
+                        detail=f"effect#0 PENDING — intent only; bank NOT yet called  "
+                               f"(business_key={business_key})")
+        time.sleep(pause_s)
+
+        # ── Phase: outbox dispatcher (in-process, one tick) ────────────────
+        ui.start_phase(3); time.sleep(pause_s)
+        # CAS lease so a peer dispatcher can't double-fire.
+        claim = c.claim_effect_dispatch(
+            run_id=run_id, idempotency_key=eff.idempotency_key,
+            claimer="demo-dispatcher", lease_ttl_ms=30_000)
+        if not claim.acquired:
+            ui.finish_phase(3, ok=False,
+                            detail="couldn't acquire dispatch lease")
+            return run_id, 2
+        ui.finish_phase(3, detail=f"lease acquired by demo-dispatcher")
+        time.sleep(pause_s)
+
+        # The dispatcher calls the bank. The wire DOES land — the bank's
+        # ledger gains a row keyed by business_key. In a real connector this
+        # is an HTTPS POST; here it's a file write.
+        ui.start_phase(4); time.sleep(pause_s)
+        wire_record = bank.wire_by_business_key(
+            business_key=business_key, amount_minor=2_000_000,
+            account_id="acct-1")
+        ui.finish_phase(4,
+                        detail=f"bank ledger now has {wire_record['wire_id']} "
+                               f"keyed by business_key")
+        time.sleep(pause_s)
+
+        # SIMULATE: the wire landed but the network glitched on the way back.
+        # The dispatcher reports the dispatch as UNKNOWN — passing
+        # next_dispatch_at_ms=0 tells the server "do NOT re-dispatch; this
+        # is for the reconciler now".
+        ui.start_phase(5); time.sleep(pause_s)
+        c.record_dispatch_attempt(
+            run_id=run_id, idempotency_key=eff.idempotency_key,
+            error="simulated lost ack (network glitch after wire landed)",
+            next_dispatch_at_ms=0)
+        ui.finish_phase(5,
+                        detail="record_dispatch_attempt(next_dispatch_at_ms=0) — "
+                               "the server transitions PENDING → UNKNOWN")
+        time.sleep(pause_s * 1.5)
+
+        # ── Phase: reconciler (in-process, one tick) ───────────────────────
+        ui.start_phase(6); time.sleep(pause_s)
+        pending = c.list_pending_effects(
+            include_pending=False, include_unknown=True, limit=10)
+        unknown_effs = [e for e in pending.effects
+                        if e.run_id == run_id
+                        and e.idempotency_key == eff.idempotency_key]
+        if not unknown_effs:
+            ui.finish_phase(6, ok=False,
+                            detail="server didn't report the UNKNOWN — flake or version skew")
+            return run_id, 2
+        ui.finish_phase(6, detail=f"found 1 UNKNOWN effect via list_pending_effects")
+        time.sleep(pause_s)
+
+        ui.start_phase(7); time.sleep(pause_s)
+        # The reconciler's observe() — ask the bank by business_key.
+        observed = bank.find_by_business_key(business_key)
+        if observed is None:
+            # Would never happen in this demo (we just wrote it) but the
+            # connector contract handles "ABSENT" — in real life we'd need
+            # human approval to re-issue.
+            ui.finish_phase(7, ok=False,
+                            detail="bank says ABSENT — needs human approval")
+            return run_id, 2
+        ui.finish_phase(7,
+                        detail=f"bank.observe(business_key) → CONFIRMED, "
+                               f"external_ref={observed['wire_id']}")
+        time.sleep(pause_s)
+
+        ui.start_phase(8); time.sleep(pause_s)
+        c.record_external_observation(
+            run_id=run_id, idempotency_key=eff.idempotency_key,
+            resolution=EFFECT_RESOLUTION_CONFIRMED,
+            external_ref=observed["wire_id"],
+            response_json=json.dumps({"wire_id": observed["wire_id"]}))
+        ui.finish_phase(8,
+                        detail="record_external_observation(CONFIRMED) — "
+                               "the server transitions UNKNOWN → CONFIRMED")
+        time.sleep(pause_s)
+
+        c.end_run(run_id=run_id)
+
+    # ── Verify ─────────────────────────────────────────────────────────────
+    ui.start_phase(9); time.sleep(pause_s)
+    wires = ui.bank_wires()
+    if len(wires) == 1:
+        ui.finish_phase(9, detail=f"bank ledger: 1 wire ({wires[0]['wire_id']})")
+        ui.set_headline(
+            f"[bold green]✓ exactly one wire — UNKNOWN survived.[/bold green]  "
+            f"`tape inspect {run_id}` to explore.")
+        return run_id, 0
+    ui.finish_phase(9, ok=False,
+                    detail=f"bank ledger has {len(wires)} wires — expected 1")
+    ui.set_headline(
+        f"[bold red]✗ demo FAILED: {len(wires)} wires (expected 1)[/bold red]")
+    return run_id, 1
+
+
+@app.command(name="unknown-reconcile",
+             help="Non-idempotent + OUTBOX + UNKNOWN + reconciler — the full ambiguity loop.")
+def unknown_reconcile(
+    pause_s: float = typer.Option(
+        0.7, "--pause", "-p",
+        help="Pause between phases (seconds). UNKNOWN is the loudest signal "
+             "in the runtime — slowing this down a notch is fine."),
+    keep_after: bool = typer.Option(
+        False, "--keep",
+        help="Don't tear down the server / ledger when the demo finishes."),
+    server_binary: Optional[str] = typer.Option(
+        None, "--server-binary",
+        help="Path to a built `tape-server` (default: auto-locate)."),
+):
+    """The roadmap calls this scenario out by name: 'crash after dispatch
+    before ACK · show UNKNOWN · show reconciliation'.
+
+    What you see, phase by phase:
+
+      1. tape-server up
+      2. agent records decision + opens a NON_IDEMPOTENT/OUTBOX effect.
+         CRUCIALLY the agent never touches the bank — only the intent
+         is journaled. (status = PENDING)
+      3. outbox dispatcher claims the dispatch slot under a CAS lease
+      4. dispatcher calls the bank — the wire LANDS on disk
+      5. simulated network glitch loses the ack; dispatcher reports
+         next_dispatch_at_ms=0 → server transitions PENDING → UNKNOWN
+      6. reconciler lists pending/unknown effects, finds ours
+      7. reconciler observes the bank by business_key — wire IS there
+      8. record_external_observation(CONFIRMED, external_ref) →
+         server transitions UNKNOWN → CONFIRMED
+      9. verify: bank ledger has exactly one wire
+
+    Exits 0 iff exactly one wire on disk. UNKNOWN status is rendered in
+    bold red on yellow — the loudest badge in the runtime.
+    """
+    binary = server_binary or _find_server_binary()
+    if not binary:
+        die("no tape-server binary found.\n"
+            "  Build with: `cd tape/server && cargo build`")
+
+    workdir = Path(tempfile.mkdtemp(prefix="tape-demo-unknown-"))
+    db_path = workdir / "tape.db"
+    ledger_path = workdir / "bank.json"
+    port = _free_port()
+    url = f"tape://127.0.0.1:{port}"
+
+    info(f"[dim]workdir: {workdir}[/dim]")
+    info(f"[dim]server : {binary}[/dim]")
+    info(f"[dim]url    : {url}[/dim]\n")
+
+    server_proc = subprocess.Popen(
+        [binary, "--listen", f"127.0.0.1:{port}",
+         "--store", f"sqlite:{db_path}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not _wait_until_listening(port):
+        server_proc.terminate()
+        die(f"tape-server didn't come up on :{port}")
+
+    ui = _DemoUI(url=url, ledger_path=ledger_path,
+                 title="demo unknown-reconcile",
+                 default_subtitle="NON-IDEMPOTENT + OUTBOX · ack lost on the wire · reconciler resolves UNKNOWN",
+                 ledger_ok_suffix="— UNKNOWN survived, exactly one wire")
+    ui.add_phases(
+        "tape-server up",
+        "agent: record decision",
+        "agent: open OUTBOX effect (NON-IDEMPOTENT) → PENDING (no bank call)",
+        "outbox dispatcher: claim dispatch lease (CAS)",
+        "dispatcher → bank.wire: wire LANDS keyed by business_key",
+        "ack lost (network glitch) — record_dispatch_attempt → UNKNOWN",
+        "reconciler: list pending/unknown effects, find ours",
+        "reconciler: observe(business_key) → bank says CONFIRMED",
+        "RecordExternalObservation(CONFIRMED) — effect → CONFIRMED",
+        "verify: exactly ONE wire on disk",
+    )
+    ui.finish_phase(0, detail=f"listening on 127.0.0.1:{port}")
+
+    exit_code = 0
+    run_id = ""
+
+    try:
+        with Live(ui.render, refresh_per_second=8, console=console,
+                  screen=False) as live:
+            class _R:
+                def __rich__(_self): return ui.render()
+            live.update(_R())
+
+            # The whole scenario runs in this process — no crash needed
+            # because the failure we're modelling is a *network glitch*,
+            # not a process death.
+            try:
+                run_id, exit_code = _run_unknown_reconcile_scenario(
+                    url=url, ledger_path=ledger_path, ui=ui, pause_s=pause_s)
+            except Exception as ex:  # noqa: BLE001
+                warn(f"scenario crashed: {ex}")
+                exit_code = 2
+
+            # Hold the final frame so the user can read it.
+            time.sleep(pause_s * 3)
+    finally:
+        ui.stop()
+        if not keep_after:
+            with suppress(Exception):
+                server_proc.terminate()
+                server_proc.wait(timeout=3)
+            with suppress(Exception):
+                import shutil
+                shutil.rmtree(workdir, ignore_errors=True)
+        else:
+            ok(f"keeping workdir: {workdir}")
+            ok(f"server still up: {url}  (pid {server_proc.pid})")
+            if run_id:
+                ok(f"inspect with:  tape inspect {run_id} --url {url}")
 
     raise typer.Exit(exit_code)
 

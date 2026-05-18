@@ -1,11 +1,24 @@
-# The 60-second demo
+# The 60-second demos
 
-If you've read "durable execution" five times and still aren't sure what it
-buys you, run this:
+Two scenarios, two failure modes, one terminal:
 
 ```bash
-tape demo crash-resume
+tape demo crash-resume        # idempotent + inline · agent crashes mid-effect
+tape demo unknown-reconcile   # NON-idempotent + outbox · ack lost · reconciler resolves UNKNOWN
 ```
+
+Both spin up their own server, walk through phases, end with **exactly one
+wire** on disk, and exit 0 if and only if exactly-once held. Pick the one
+that matches the failure you can't sleep on:
+
+| Scenario | When it bites you | What you watch |
+|---|---|---|
+| `crash-resume` | the process dies mid-tool — OOM, SIGTERM, deploy roll-over | journal stays `PENDING`; recovery re-drives, reads the bank's own ledger, completes |
+| `unknown-reconcile` | the bank call lands but the *ack* is lost — network glitch, timeout, intermediate-proxy crash | effect → `UNKNOWN` (bold red on yellow); reconciler observes the bank by `business_key`; flips to `CONFIRMED` |
+
+---
+
+## `tape demo crash-resume`
 
 It spins up a fresh `tape-server` on a free port, walks through nine phases
 of a simulated treasury agent, **actually crashes** the agent mid-effect
@@ -103,3 +116,56 @@ tape demo crash-resume --pause 1.5     # theatrical
 
 The demo's exit code doesn't depend on the pause — it's always 0 iff
 exactly one wire lands.
+
+---
+
+## `tape demo unknown-reconcile`
+
+The harder scenario. Here the agent doesn't crash — the **bank call lands,
+but the acknowledgement is lost on the way back**. The dispatcher has no
+way to know whether the wire happened. This is the failure mode that breaks
+"just retry" — a blind retry would double-wire.
+
+Tape's contract handles it explicitly: the effect transitions to **UNKNOWN**
+(rendered in bold red on yellow — the loudest signal in the runtime), the
+outbox loop refuses to re-dispatch, and the **reconciler** asks the
+counterparty (via the connector's `observe()` method, keyed by the
+`business_key`) what really happened. The bank's own ledger is the source
+of truth; the journal flips to `CONFIRMED` only when the counterparty
+agrees that the operation landed.
+
+What you see, phase by phase:
+
+```
+✓ tape-server up
+✓ agent: record decision
+✓ agent: open OUTBOX effect (NON-IDEMPOTENT) → PENDING (no bank call yet)
+✓ outbox dispatcher: claim dispatch lease (CAS)
+✓ dispatcher → bank.wire: wire LANDS keyed by business_key
+✓ ack lost (network glitch) — record_dispatch_attempt → UNKNOWN
+✓ reconciler: list pending/unknown effects, find ours
+✓ reconciler: observe(business_key) → bank says CONFIRMED
+✓ RecordExternalObservation(CONFIRMED) — effect → CONFIRMED
+✓ verify: exactly ONE wire on disk
+```
+
+The journal panel shows the effect status transition explicitly:
+`pending → unknown → observed`. Each transition is a distinct journal
+entry — the journal *is* the audit trail for "what did we think was
+happening at this moment".
+
+```bash
+# Default — readable.
+tape demo unknown-reconcile
+
+# Fast for CI.
+tape demo unknown-reconcile --pause 0.05
+
+# Leave the server up so you can poke at it afterwards.
+tape demo unknown-reconcile --keep
+tape inspect <run-id> --url tape://127.0.0.1:<port>
+```
+
+The same exit-code contract applies: `0` iff exactly one wire is on disk.
+The demo is the in-vivo proof that an UNKNOWN doesn't become a duplicate
+wire.
