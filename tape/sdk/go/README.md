@@ -3,6 +3,15 @@
 The Go SDK for [Tape](../../../design-principles/tape.md) — a durable-execution
 substrate for ADK agents.
 
+|                                                            |
+|------------------------------------------------------------|
+| **Install** · `go get github.com/vamsiramakrishnan/durable-agents/tape/sdk/go` |
+| **30-second example** · the snippet below ↓                |
+| **Reference** · <https://vamsiramakrishnan.github.io/durable-agents/reference/go/> |
+| **What's wired** · `TapeClient` + every RPC, `@effect`-style helpers, `NewDurableApp`, `NewOutboxTool`, connectors (Log/HTTP/PubSub/CloudTasks), **outbox dispatcher** (`cmd/tape-outbox`), **sinks** (Log/Webhook/PubSub) |
+| **Parity** · idiom parity with Python · see [`SDK_PARITY.md`](../../../SDK_PARITY.md) |
+| **Contribute** · `make sdk-test-go` · `make sdk-parity` · [`CLAUDE.md`](../../../CLAUDE.md) |
+
 ```bash
 cd tape/sdk/go
 PATH=/tmp/gobin:$PATH ./regen.sh     # regenerate ./tapepb from ./tape.proto (needs protoc + protoc-gen-go + protoc-gen-go-grpc)
@@ -235,3 +244,20 @@ The full `TapePlugin` / `TapeSessionService` for the Go port of ADK —
 mechanical work once that port settles; the Python adapter
 [`tape/sdk/python/tape/adk/`](../python/tape/adk/) is the reference, and the
 values returned by `NewDurableApp(...)` are what its constructor will read.
+
+## Parity
+
+The Python SDK is the reference; this SDK aims for **idiom parity** (not
+verbatim parity). See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md) for
+the live scorecard. G1 (outbox daemon), G2 (Webhook/PubSub sinks), and G3
+(cross-SDK parity harness) are now green — the Go dispatcher is
+`./cmd/tape-outbox` and `outbox_dispatcher.go`; the sinks live in
+`./sinks/` (the `PubSubSink` follows the same `-tags pubsub` pattern as the
+Pub/Sub connector).
+
+## Contribute
+
+`make sdk-test-go` runs the round-trip test; `make sdk-parity` runs the
+cross-SDK parity harness (drives the same scenario through Python/TS/Go/Java
+and asserts identical journal state). See
+[`../../../CLAUDE.md`](../../../CLAUDE.md).

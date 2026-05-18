@@ -1,0 +1,44 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: One paragraph — the actual behaviour, the expected behaviour, and why the difference matters.
+    validations: { required: true }
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How do we reproduce it?
+      description: The smallest possible repro. Code, config, the exact commands. If it's a multi-SDK issue, say which SDK(s).
+      render: shell
+    validations: { required: true }
+
+  - type: input
+    id: version
+    attributes:
+      label: Tape version / commit
+      description: Output of `tape --version`, or the git commit you're on.
+    validations: { required: true }
+
+  - type: dropdown
+    id: store
+    attributes:
+      label: Store backend
+      options: [SQLite, Postgres, AlloyDB, Bigtable, "in-memory (tests)"]
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server logs (RUST_LOG=tape_server=debug) and/or the SDK's stderr.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Tape doctor output (`make doctor`), or anything that helps us bisect.

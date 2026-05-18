@@ -452,4 +452,15 @@ public final class TapeClient implements AutoCloseable {
                 .setAppName(app).setUserId(user).setSessionId(session).setEvent(event)
                 .setStateDeltaJson(stateDeltaJson == null ? "{}" : stateDeltaJson).build());
     }
+
+    public ListSessionsResponse listSessions(String app, String user) {
+        return stub.listSessions(ListSessionsRequest.newBuilder()
+                .setAppName(app == null ? "" : app)
+                .setUserId(user == null ? "" : user).build());
+    }
+
+    public DeleteSessionResponse deleteSession(String app, String user, String session) {
+        return stub.deleteSession(DeleteSessionRequest.newBuilder()
+                .setAppName(app).setUserId(user).setSessionId(session).build());
+    }
 }

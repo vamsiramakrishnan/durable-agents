@@ -1,0 +1,59 @@
+# EditorConfig — https://editorconfig.org
+# One shared formatting baseline across the four SDKs + the Rust server + the
+# docs site. Most editors pick this up natively; for VS Code install the
+# "EditorConfig for VS Code" extension.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# ── language conventions ────────────────────────────────────────────────────
+
+[*.{py,pyi}]
+indent_size = 4
+max_line_length = 100
+
+[*.rs]
+indent_size = 4
+max_line_length = 100
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+[*.{java,kt,kts}]
+indent_size = 4
+max_line_length = 100
+
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_size = 2
+max_line_length = 100
+
+[*.{md,mdx}]
+trim_trailing_whitespace = false   # Markdown uses trailing-spaces for line breaks.
+max_line_length = 80
+
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+[justfile]
+indent_style = space
+indent_size = 4
+
+# ── workflow conventions ────────────────────────────────────────────────────
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{toml,json}]
+indent_size = 2
+
+[*.proto]
+indent_size = 2

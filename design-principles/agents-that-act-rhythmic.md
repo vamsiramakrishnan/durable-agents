@@ -54,7 +54,7 @@
 
 10/ The chatbot was forgiven for forgetting. The agent will not be.
 
-![Answer vs Act — the chatbot's failure remains in language; the agent's failure crosses into systems that do not know they are inside a conversation.](01_answer_vs_act.png)
+![Answer vs Act — the chatbot's failure remains in language; the agent's failure crosses into systems that do not know they are inside a conversation.](01_answer_vs_act.svg)
 
 ---
 
@@ -80,7 +80,7 @@ Three concrete cases. The first two as prose, briefly, to establish the shape. T
 
 8/ A shopping agent is four promises in a row, each to a different system. Two charges and one shipment is worse than no shipment at all.
 
-![Retry vs Resume — retry repeats the story; resume remembers the story.](02_retry_vs_resume.png)
+![Retry vs Resume — retry repeats the story; resume remembers the story.](02_retry_vs_resume.svg)
 
 ### The travel agent
 
@@ -100,7 +100,7 @@ Three concrete cases. The first two as prose, briefly, to establish the shape. T
 
 8/ The hard part of travel is not booking. It is unbooking. Any travel agent that can commit but cannot roll back is a travel agent that should not be authorised to commit.
 
-![A travel agent is not finished when it can book. It is finished when it knows what to do after half a trip exists.](05_travel_partial_commit.png)
+![A travel agent is not finished when it can book. It is finished when it knows what to do after half a trip exists.](05_travel_partial_commit.svg)
 
 ### The treasury agent — a walk through one day
 
@@ -358,7 +358,7 @@ def durable_kickoff(crew, run_date: str):
 
 8/ The kickoff wrapper is the orchestrator the framework declined to be. Twelve lines. They are the difference between a treasury that closes once and a treasury that closes twice.
 
-![Audit Spine — logs are written for operators; journals are written for disputes. When the dispute arrives, order matters.](09_audit_spine.png)
+![Audit Spine — logs are written for operators; journals are written for disputes. When the dispute arrives, order matters.](09_audit_spine.svg)
 
 #### What the three frameworks share
 
@@ -441,7 +441,7 @@ async def agent(goal: str) -> State:
 
 3/ The first function is a graph. The second is a loop with a coin flip in the middle. The first can be reasoned about by induction. The second cannot.
 
-![Graph vs Trajectory — classical orchestration is authored; agent orchestration is discovered.](06_graph_vs_trajectory.png)
+![Graph vs Trajectory — classical orchestration is authored; agent orchestration is discovered.](06_graph_vs_trajectory.svg)
 
 4/ Four consequences follow.
 
@@ -455,7 +455,7 @@ async def agent(goal: str) -> State:
 
 9/ These are not problems classical patterns solve. They are problems classical patterns assume away.
 
-![The Three Ledgers — state is not enough. An acting system must remember why, what, and what is owed.](03_three_ledgers.png)
+![The Three Ledgers — state is not enough. An acting system must remember why, what, and what is owed.](03_three_ledgers.svg)
 
 ---
 
@@ -553,7 +553,7 @@ A short tour. Six classes of agent. Six places the inherited toolkit runs out.
 
 2/ The objection is right and incomplete. Five specific ways. Each is best shown in code.
 
-![The Idempotency Gap — the merchant can be correct, the agent can be correct, and the workflow can still be ambiguous.](07_idempotency_gap.png)
+![The Idempotency Gap — the merchant can be correct, the agent can be correct, and the workflow can still be ambiguous.](07_idempotency_gap.svg)
 
 #### ① Fresh UUID per attempt is not idempotency. It is a guarantee of duplication.
 
@@ -716,13 +716,13 @@ class TreasuryEOD:
 
 12/ The ceiling is still being built. Reasoning provenance. Action-space gates. Multi-agent coordination through journaled state. Budget as a first-class workflow construct. Verification at consumption. Replay semantics tuned per agent class. The runtimes are converging on these. None has the full set yet.
 
-![Replay Is Not One Thing — good runtimes declare what replay means before the crash teaches them.](10_replay_semantics.png)
+![Replay Is Not One Thing — good runtimes declare what replay means before the crash teaches them.](10_replay_semantics.svg)
 
 13/ None of this is solved by Postgres plus Kafka plus a saga library. None of it is a problem Postgres plus Kafka plus a saga library was designed for. The classical toolkit handles the plumbing. What sits above the plumbing is genuinely new work.
 
 14/ The shape of the stack, when the dust settles, looks like this.
 
-![Layered Architecture — composition belongs above; consequence belongs below. The agent framework composes behaviour. The durable runtime preserves consequence.](08_architecture_layers.png)
+![Layered Architecture — composition belongs above; consequence belongs below. The agent framework composes behaviour. The durable runtime preserves consequence.](08_architecture_layers.svg)
 
 ---
 
@@ -776,7 +776,7 @@ class TreasuryEOD:
 
 ## X. Floor and Ceiling
 
-![The Floor and the Ceiling — microservice patterns solve the floor; LLM orchestration creates the ceiling. Both are right; they describe different levels.](04_floor_and_ceiling.png)
+![The Floor and the Ceiling — microservice patterns solve the floor; LLM orchestration creates the ceiling. Both are right; they describe different levels.](04_floor_and_ceiling.svg)
 
 1/ The deflationary argument — *we already have sagas* — is correct for the I/O layer and incomplete for everything above it.
 

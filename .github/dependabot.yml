@@ -1,0 +1,64 @@
+# Dependabot — keep every ecosystem's deps fresh.
+#
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot
+
+version: 2
+updates:
+  # ── GitHub Actions ──────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # ── Rust (tape-server) ──────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: "/tape/server"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor:
+        update-types: ["minor", "patch"]
+
+  # ── Python — tape-py + tape-cli + docs ──────────────────────
+  - package-ecosystem: pip
+    directory: "/tape/sdk/python"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: pip
+    directory: "/tape/cli"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: pip
+    directory: "/docs"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+
+  # ── TypeScript — tape-ts ─────────────────────────────────────
+  - package-ecosystem: npm
+    directory: "/tape/sdk/typescript"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor:
+        update-types: ["minor", "patch"]
+
+  # ── Go — tape-go ─────────────────────────────────────────────
+  - package-ecosystem: gomod
+    directory: "/tape/sdk/go"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+
+  # ── Java — tape-java ─────────────────────────────────────────
+  - package-ecosystem: maven
+    directory: "/tape/sdk/java"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 5
+
+  # ── Docker — server image ───────────────────────────────────
+  - package-ecosystem: docker
+    directory: "/tape/server"
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 3

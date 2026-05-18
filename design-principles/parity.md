@@ -9,7 +9,7 @@ choices for "make my agent durable" today.
 
 - [§1 Tape vs Temporal](#1-tape-vs-temporal) — feature-parity audit
 - [§2 Tape vs LangGraph durable execution](#2-tape-vs-langgraph-durable-execution) — same layer, different shape
-- [§3 Tape vs Pydantic AI + DBOS](#3-tape-vs-pydantic-ai--dbos-dbosagent) — same conclusion, different framework
+- [§3 Tape vs Pydantic AI + DBOS](#3-tape-vs-pydantic-ai-dbos-dbosagent) — same conclusion, different framework
 
 ## 1. Tape vs Temporal
 
