@@ -240,10 +240,15 @@ values returned by `NewDurableApp(...)` are what its constructor will read.
 
 The Python SDK is the reference; this SDK aims for **idiom parity** (not
 verbatim parity). See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md) for
-the live scorecard. Notable open gaps for Go: G1 (packaged
-`cmd/tape-outbox` daemon), G2 (`WebhookSink` / `PubSubSink`).
+the live scorecard. G1 (outbox daemon), G2 (Webhook/PubSub sinks), and G3
+(cross-SDK parity harness) are now green — the Go dispatcher is
+`./cmd/tape-outbox` and `outbox_dispatcher.go`; the sinks live in
+`./sinks/` (the `PubSubSink` follows the same `-tags pubsub` pattern as the
+Pub/Sub connector).
 
 ## Contribute
 
-`make sdk-test-go` runs the round-trip test (spawns the Rust `tape-server`
-in-memory). See [`../../../CLAUDE.md`](../../../CLAUDE.md).
+`make sdk-test-go` runs the round-trip test; `make sdk-parity` runs the
+cross-SDK parity harness (drives the same scenario through Python/TS/Go/Java
+and asserts identical journal state). See
+[`../../../CLAUDE.md`](../../../CLAUDE.md).

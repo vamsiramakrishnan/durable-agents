@@ -179,10 +179,16 @@ folder.
 
 The Python SDK is the reference; this SDK aims for **idiom parity** (not
 verbatim parity). See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md) for
-the live scorecard. Notable open gaps for Java: G1 (`TapeOutbox` CLI), G2
-(`WebhookSink` / `PubSubSink`), G4 (`TapePlugin` for the Java ADK).
+the live scorecard. G1 (outbox daemon), G2 (Webhook/PubSub sinks), and G3
+(cross-SDK parity harness) are now green — the Java dispatcher is
+`dev.tape.cli.TapeOutbox` + `dev.tape.reactors.OutboxReactor`; the sinks live
+in `dev.tape.sinks` (the `PubSubSink` is reflective so
+`google-cloud-pubsub` stays a runtime-optional dependency). The remaining
+gap is G4 (`TapePlugin` for the Java ADK).
 
 ## Contribute
 
-`make sdk-test-java` runs the round-trip smoke test (spawns the Rust
-`tape-server` in-memory). See [`../../../CLAUDE.md`](../../../CLAUDE.md).
+`make sdk-test-java` runs the round-trip smoke test; `make sdk-parity` runs
+the cross-SDK parity harness (drives the same scenario through
+Python/TS/Go/Java and asserts identical journal state). See
+[`../../../CLAUDE.md`](../../../CLAUDE.md).

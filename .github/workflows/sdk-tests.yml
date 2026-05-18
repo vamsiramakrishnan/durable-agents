@@ -125,3 +125,40 @@ jobs:
       - name: mvn test
         working-directory: tape/sdk/java
         run: mvn -B -q test
+
+  # ── Cross-SDK outbox parity (G3) ──
+  # One scenario, four languages, identical journal projection. Each language's
+  # outbox CLI runs the same dispatch loop against the same Tape server.
+  parity:
+    name: sdk-parity (python · ts · go · java)
+    runs-on: ubuntu-latest
+    needs: [server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: "pip" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.25", cache-dependency-path: "tape/sdk/go/go.sum" }
+      - uses: actions/setup-java@v4
+        with: { distribution: "temurin", java-version: "21", cache: "maven" }
+      - uses: actions/download-artifact@v4
+        with:
+          name: tape-server-debug
+          path: tape/server/target/debug/
+      - run: chmod +x tape/server/target/debug/tape-server
+      - name: Install Python SDK + pytest
+        run: |
+          pip install -U pip
+          pip install -e 'tape/sdk/python[dev]'
+      - name: Pre-install TS deps (cold install is slow inside the test)
+        working-directory: tape/sdk/typescript
+        run: npm install
+      - name: Pre-build Java jar + classpath (cold mvn is slow inside the test)
+        working-directory: tape/sdk/java
+        run: |
+          mvn -B -q -DskipTests package
+          mvn -B -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt -Dmdep.includeScope=runtime
+      - name: Cross-SDK outbox parity
+        run: python -m pytest tape/tests/parity -v

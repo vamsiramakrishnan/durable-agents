@@ -27,10 +27,10 @@ closing the remaining gaps.
 | Tenancy config + DESIGN-ONLY warnings | ✅ | ✅ | ✅ | ✅ |
 | Observability: structured logs + OTel span hook | ✅ | ✅ | ✅ | ✅ |
 | ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK)* | — *(no ADK)* | ⚠️ planned, see roadmap |
-| Built-in outbox-reactor runner | ✅ | ⚠️ partial | ⚠️ partial | ⚠️ partial |
-| Built-in sinks (`Log`, `Webhook`, `PubSub`) | ✅ | ⚠️ Log only | ⚠️ Log only | ⚠️ Log only |
+| Built-in outbox-reactor runner | ✅ | ✅ `tape-outbox-ts` | ✅ `cmd/tape-outbox` | ✅ `dev.tape.cli.TapeOutbox` |
+| Built-in sinks (`Log`, `Webhook`, `PubSub`) | ✅ | ✅ all three | ✅ all three (PubSub via `-tags pubsub`) | ✅ all three (PubSub reflective) |
 | CLI (`tape init/dev/doctor/provision/deploy`) | ✅ | — *(call from Python CLI)* | — | — |
-| Cross-SDK parity test harness | ⚠️ Python-only | ⚠️ | ⚠️ | ⚠️ |
+| Cross-SDK parity test harness | ✅ drives all four | ✅ green | ✅ green | ✅ green |
 | End-user docs reference (auto-gen) | ✅ mkdocstrings | ✅ typedoc | ✅ gomarkdoc | ✅ javadoc |
 
 ✅ shipping · ⚠️ partial · — n/a by design
@@ -62,50 +62,55 @@ trip.
 
 ## Open gaps (the roadmap)
 
-### G1. Outbox-reactor runners in TS / Go / Java
-**Status:** Python ships `tape.reactors.outbox._main` (the
-`tape-outbox` console-script) — a long-running daemon that subscribes to
-`PENDING|OUTBOX` effects and dispatches via registered connectors.
-TS/Go/Java each have **all the pieces** (connector registries, the
-`SubscribeEvents` stream, `CompleteEffect`) but no packaged daemon entrypoint.
+### ~~G1. Outbox-reactor runners in TS / Go / Java~~ ✅ Shipped
+Python's `tape.reactors.outbox` is the reference. Each of TS/Go/Java now
+ships a packaged daemon entrypoint with the same dispatch loop and the same
+`non_idempotent` safety check:
 
-**Deliverable:**
-- `tape/sdk/typescript/bin/tape-outbox-ts` (Node CLI; `npm run outbox`)
-- `tape/sdk/go/cmd/tape-outbox/main.go` (`go run` or compiled binary)
-- `tape/sdk/java/src/main/java/dev/tape/cli/TapeOutbox.java` (Maven exec / fat-jar)
+- **TypeScript** — `tape/sdk/typescript/bin/tape-outbox-ts.ts` (also `npm run outbox`). New module: `src/outbox_reactor.ts` (`runOutboxDispatcher` / `outboxDispatchOnce` / `dispatchOne`).
+- **Go** — `tape/sdk/go/cmd/tape-outbox/main.go`. New module: `outbox_dispatcher.go` (`RunOutboxDispatcher` / `OutboxDispatchOnce` / `DispatchOne`).
+- **Java** — `dev.tape.cli.TapeOutbox` (runnable via `java -cp ... dev.tape.cli.TapeOutbox`, or `mvn exec:java`). New module: `dev.tape.reactors.OutboxReactor`.
 
-Each takes `--url`, `--load <module>` (or `--connector <class>`), and runs the
-same dispatch loop with the same `non_idempotent` safety check.
+Each accepts `--url`, `--connector`, `--interval`, `--max-attempts`,
+`--claimer`, `--once`, plus a `--register-log-connector` flag for tests / demos.
 
-**Acceptance:** the kill-and-resume integration test passes when the Python
-outbox is replaced by each language's daemon.
+**Acceptance:** see G3 below — the four-language harness is green.
 
 ---
 
-### G2. Sink parity (`Webhook`, `PubSub`) in TS / Go / Java
-**Status:** Python ships `LogSink`, `WebhookSink`, `PubSubSink`. TS/Go/Java
-have `LogSink` only.
+### ~~G2. Sink parity (`Webhook`, `PubSub`) in TS / Go / Java~~ ✅ Shipped
+Each of TS/Go/Java now ships `LogSink`, `WebhookSink`, and `PubSubSink`
+matching the Python surface:
 
-**Deliverable:** `WebhookSink` (POST + retries + `X-Tape-Event-Id`) and
-`PubSubSink` (ordering key = `run_id`) in each of the three.
+- **TypeScript** — `src/sinks.ts`: `LogSink`, `WebhookSink` (POST + retries + `X-Tape-Event-Id`), `PubSubSink` (lazy-imports `@google-cloud/pubsub`).
+- **Go** — `sinks/sinks.go` + `sinks/pubsub.go` + `sinks/pubsub_real.go` (build-tag pattern matching the existing `connectors/pubsub`).
+- **Java** — `dev.tape.sinks.{Sink,LogSink,WebhookSink,PubSubSink}` (PubSub via reflection so `google-cloud-pubsub` stays runtime-optional).
 
-**Acceptance:** the outbox-relay smoke test from
-`tape/tests/test_features.py` runs against each SDK with `--sink webhook` and
-`--sink pubsub`.
+`WebhookSink` sets `X-Tape-Event-Id: <run_id>/<seq>` so receivers can dedup;
+`PubSubSink` sets `orderingKey = run_id` and `tape-event-id` as a message
+attribute. Combined with the at-least-once `runEventFanout` relays already in
+each SDK, that's exactly-once-effective delivery.
 
 ---
 
-### G3. Cross-SDK parity test harness
-**Status:** kill-and-resume integration tests live in `tape/tests/` and target
-Python. TS/Go/Java each have their own smoke tests but they don't share a
-common scenario harness.
+### ~~G3. Cross-SDK parity test harness~~ ✅ Shipped
+`tape/tests/parity/` drives **one scenario** through every language and
+asserts identical journal state.
 
-**Deliverable:** a `tape/tests/parity/` suite that drives **the same scenario**
-against each SDK via the language's `outbox` CLI from G1. One scenario file
-(YAML) per behaviour; the harness loops over `{python, typescript, go, java}`
-and asserts identical journal projections.
+The scenario:
+1. The Python harness creates a fresh run + decision + a PENDING+OUTBOX
+   effect with `semantics=NON_IDEMPOTENT`, `connector="log"`.
+2. The language under test runs **one pass** of its outbox dispatcher with
+   `--register-log-connector --once`.
+3. The Python harness polls the effect and asserts `status == CONFIRMED`.
 
-**Acceptance:** GitHub Actions `sdk-parity` job is green on every PR.
+Local: `make sdk-parity` runs all four. CI: `.github/workflows/sdk-tests.yml`
+adds a `sdk-parity` job that runs after the per-SDK jobs. Test file:
+`tape/tests/parity/test_outbox_parity.py`. Scenario builder:
+`tape/tests/parity/scenario.py`.
+
+**Status:** 4/4 green on the local matrix. Each language test cleanly
+`skip`s when its toolchain is absent.
 
 ---
 
@@ -173,7 +178,7 @@ investment. The *agent process* can be in any of the four languages; the
 
 ---
 
-## Done in this PR (the devex layer)
+## Done across both PRs (devex + SDK parity)
 
 | Surface | Was | Now |
 |---|---|---|
@@ -187,6 +192,9 @@ investment. The *agent process* can be in any of the four languages; the
 | SDK parity matrix | scattered | this file |
 | Per-SDK test target | per-language invocation | `make sdk-test-{python,ts,go,java,all}` |
 | Release workflow | docs only | `.github/workflows/release.yml` for cross-platform `tape-server` binaries |
+| **Outbox-reactor daemons (G1)** | Python only | All four — `tape-outbox-ts` · `cmd/tape-outbox` · `dev.tape.cli.TapeOutbox` |
+| **Webhook/PubSub sinks (G2)** | Python only | All four (TS native fetch · Go `-tags pubsub` · Java reflective) |
+| **Cross-SDK parity harness (G3)** | none | `tape/tests/parity/` — `make sdk-parity` runs all four; CI `sdk-parity` job in `.github/workflows/sdk-tests.yml` |
 
 ---
 

@@ -94,6 +94,10 @@ test-python: build-server ## pytest the kill-and-resume + features integration s
 
 sdk-test-all: sdk-test-python sdk-test-ts sdk-test-go sdk-test-java ## Run every SDK's smoke test
 
+sdk-parity: build-server build-python ## Cross-SDK outbox parity (drives the same scenario through Python/TS/Go/Java)
+	cd $(SDK_TS) && npm install --silent
+	PYTHONPATH=$(SDK_PYTHON) python -m pytest $(TESTS_DIR)/parity -v
+
 sdk-test-python: ## Python SDK round-trip tests
 	cd $(SDK_PYTHON) && python -m pytest -q || \
 	    echo "(pytest may need: pip install -e tape/sdk/python[dev])"
