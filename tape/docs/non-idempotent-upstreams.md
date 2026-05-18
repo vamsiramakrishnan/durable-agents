@@ -66,7 +66,7 @@ unavailable or fails, the run becomes STUCK and a human gets paged.
 
 ## The minimal example
 
-[`tape/examples/non_idempotent_bank/`](../examples/non_idempotent_bank/) walks
+[`tape/examples/non_idempotent_bank/`](https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/examples/non_idempotent_bank) walks
 through:
 
   * **Scenario A**: crash *before* dispatch. Outcome: re-dispatch, one wire.

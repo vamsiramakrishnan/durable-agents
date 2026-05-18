@@ -31,6 +31,17 @@ you go).
 - [**Write a custom connector**](custom-connector.md)
   Implement `EffectConnector` — `dispatch`, `observe`, `compensate`.
 
+- [**Run the outbox dispatcher in any language**](outbox-daemon.md)
+  `tape-outbox-ts`, `cmd/tape-outbox`, `dev.tape.cli.TapeOutbox` —
+  one dispatch loop, one safety contract, four languages.
+
+- [**Fan the journal out (sinks)**](sinks.md)
+  `LogSink` / `WebhookSink` / `PubSubSink` in every SDK —
+  exactly-once-effective delivery with consumer-side dedup.
+
+- [**Cross-SDK parity harness**](cross-sdk-parity.md)
+  One scenario, four languages, identical journal projection on every PR.
+
 </div>
 
 ## How to read these

@@ -1,0 +1,28 @@
+# Tape — tool versions managed by mise (https://mise.jdx.dev)
+#
+# Install mise:  curl -fsSL https://mise.run | sh
+# Install tools: mise install
+# Activate:      eval "$(mise activate bash)"  (add to ~/.bashrc / ~/.zshrc)
+#
+# Or just run ./setup.sh — it does both.
+
+[tools]
+# Required for the Rust tape-server.
+rust   = "1.83"
+# The reference SDK + CLI + integration tests.
+python = "3.12"
+# TypeScript SDK + docs generator (typedoc).
+node   = "22"
+# Go SDK + gomarkdoc.
+go     = "1.25"
+# Java SDK (Maven uses this).
+java   = "temurin-21"
+# Recipe runner — `just <recipe>` is the inner loop inside tape/.
+just   = "1.36"
+
+[env]
+# Local-development defaults. Override in .env (or your shell) for non-dev use.
+TAPE_LISTEN = "127.0.0.1:7878"
+TAPE_STORE  = "sqlite:./tape.db"
+TAPE_URL    = "tape://127.0.0.1:7878"
+RUST_LOG    = "tape_server=info"

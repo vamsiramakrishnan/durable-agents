@@ -16,6 +16,14 @@ export {
   type RedriveFn, type RunReactorsOptions,
 } from './reactors.ts';
 export {
+  outboxDispatchOnce, runOutboxDispatcher, dispatchOne,
+  type OutboxReactorOptions, type RunOutboxOptions, type OutboxOutcome,
+} from './outbox_reactor.ts';
+export {
+  LogSink, WebhookSink, PubSubSink, FnSink,
+  type Sink, type WebhookSinkOpts, type PubSubSinkOpts,
+} from './sinks.ts';
+export {
   on, onValueChange, onValueDeleted, onEffectConfirmed, onEffectFailed,
   onEffectUnknown, onDecisionRecorded, onGate, onRun,
   registerAll, runDispatcher, runPubSubBridge,

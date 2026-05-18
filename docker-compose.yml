@@ -1,0 +1,46 @@
+# Tape — local stack. Postgres + the Tape server.
+#
+#   docker compose up --build                       # one Tape replica
+#   docker compose up --build --scale tape-server=3 # three replicas, same Postgres
+#                                                   # (the server is stateless;
+#                                                   #  per-run lease + idempotent
+#                                                   #  RPCs make double-drive
+#                                                   #  harmless)
+#
+# To run against SQLite instead — the default, no Postgres needed — skip this
+# file entirely:  make serve   (or:  cargo run -- --store sqlite:./tape.db).
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-tape}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tape}
+      POSTGRES_DB:       ${POSTGRES_DB:-tape}
+    ports:
+      - "5432:5432"
+    volumes:
+      - tape-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tape}"]
+      interval: 2s
+      timeout:  3s
+      retries:  20
+
+  tape-server:
+    build:
+      context: ./tape
+      dockerfile: server/Dockerfile
+    command: ["tape-server"]
+    environment:
+      TAPE_LISTEN: "0.0.0.0:7878"
+      TAPE_STORE:  "postgres://${POSTGRES_USER:-tape}:${POSTGRES_PASSWORD:-tape}@postgres:5432/${POSTGRES_DB:-tape}"
+      RUST_LOG:    "${RUST_LOG:-tape_server=info}"
+    ports:
+      - "7878:7878"          # with --scale >1, drop this and put a proxy in front
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  tape-pg:

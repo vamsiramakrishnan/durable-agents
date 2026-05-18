@@ -3,6 +3,15 @@
 The Python SDK and ADK adapter for [Tape](../../../design-principles/tape.md) —
 a durable-execution substrate for ADK agents.
 
+|                                                            |
+|------------------------------------------------------------|
+| **Install** · `pip install -e .` *(or, with dev extras: `pip install -e '.[dev]'`)* |
+| **30-second example** · the two-line wiring below ↓        |
+| **Reference** · <https://vamsiramakrishnan.github.io/durable-agents/reference/python/> |
+| **What's wired** · everything — ADK plugin, reactors, sinks, connectors, outbox |
+| **Parity** · the reference SDK · see [`SDK_PARITY.md`](../../../SDK_PARITY.md) |
+| **Contribute** · `make sdk-test-python` · `make sdk-parity` · [`CLAUDE.md`](../../../CLAUDE.md) |
+
 ```bash
 pip install -e .              # from this directory
 # or, with the dev extras (protoc plugins, pytest):
@@ -49,3 +58,19 @@ To regenerate from `../../proto/tape.proto`:
 ```bash
 ./regen_protos.sh
 ```
+
+## Parity
+
+`tape-py` is the **reference** SDK — every primitive lands here first, then
+in TypeScript / Go / Java. See [`../../../SDK_PARITY.md`](../../../SDK_PARITY.md)
+for the live scorecard. The cross-SDK parity harness
+([`../../../tape/tests/parity/`](../../tests/parity/)) drives the same
+outbox-dispatch scenario through all four SDKs and asserts identical journal
+state on every PR.
+
+## Contribute
+
+`make sdk-test-python` runs this SDK's round-trip tests; `make sdk-parity`
+runs the cross-SDK harness. New primitives go through `tape/proto/tape.proto`
+→ server → here → other three SDKs (in that order). See
+[`../../../CLAUDE.md`](../../../CLAUDE.md).

@@ -26,8 +26,11 @@ cat > "$out" <<'HEADER'
 
 HEADER
 
-# Generate per-package and concatenate. Skip the generated protobuf package.
-for pkg in . ./connectors; do
+# Generate per-package and concatenate. Skip the generated protobuf
+# package (./tapepb is mechanical re-export of proto/tape.proto) and the
+# CLI binary package (./cmd/tape-outbox is documented in
+# how-to/outbox-daemon.md, not the API reference).
+for pkg in . ./connectors ./sinks; do
   echo "--> gomarkdoc $pkg"
   gomarkdoc --format github "$pkg" >> "$out"
   echo "" >> "$out"
