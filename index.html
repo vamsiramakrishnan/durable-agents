@@ -2,162 +2,959 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Tape — durable-execution substrate for ADK agents</title>
-  <meta name="description" content="A durable journal underneath your ADK agent. Crash-survival, exactly-once-effective tool calls, and an explicit UNKNOWN outcome — without changing your agent code.">
+  <title>Tape — a durable-execution substrate for ADK agents</title>
+  <meta name="description" content="One append-only journal underneath your ADK agent. Crash-survival, exactly-once-effective tool calls, and an explicit UNKNOWN outcome — without changing your agent code.">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <link rel="canonical" href="https://vamsiramakrishnan.github.io/durable-agents/">
-  <meta property="og:title" content="Tape — durable-execution substrate for ADK agents">
-  <meta property="og:description" content="A durable journal underneath your ADK agent. Journal, recover, dispatch exactly-once.">
+  <link rel="icon" type="image/svg+xml" href="tape/docs/assets/favicon.svg">
+
+  <meta property="og:title" content="Tape — a durable-execution substrate for ADK agents">
+  <meta property="og:description" content="One append-only journal underneath your ADK agent. Journal, recover, dispatch exactly-once.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://vamsiramakrishnan.github.io/durable-agents/">
+  <meta name="twitter:card" content="summary_large_image">
+
   <style>
+    /* ───── Design tokens ─────────────────────────────────────────────── */
     :root {
       color-scheme: light dark;
-      --bg: #0b0d10;
-      --fg: #e7ebef;
-      --muted: #9aa4af;
-      --rule: #1c2127;
+
+      /* Surfaces */
+      --bg: #0a0c10;
+      --bg-elev: #0f1318;
+      --panel: #11161c;
+      --panel-2: #161c24;
+      --code: #0d1218;
+
+      /* Ink */
+      --fg: #e8ecf1;
+      --fg-strong: #ffffff;
+      --muted: #93a0ad;
+      --muted-2: #6b7785;
+
+      /* Accents */
       --accent: #8ab4ff;
-      --panel: #11151a;
-      --code: #161b22;
+      --accent-2: #b9d0ff;
+      --accent-ink: #061021;
+      --good: #7ee2b8;
+      --warn: #f0c674;
+
+      /* Lines */
+      --rule: #1b2128;
+      --rule-strong: #2a323c;
+
+      /* Geometry */
+      --radius: 12px;
+      --radius-sm: 8px;
+      --maxw: 1040px;
+      --pad-x: clamp(1.25rem, 4vw, 2.25rem);
+
+      /* Motion */
+      --ease: cubic-bezier(.2, .7, .2, 1);
     }
+
     @media (prefers-color-scheme: light) {
-      :root { --bg: #ffffff; --fg: #0d1116; --muted: #57606a; --rule: #d0d7de; --accent: #0969da; --panel: #f6f8fa; --code: #f3f5f7; }
+      :root {
+        --bg: #ffffff;
+        --bg-elev: #fafbfc;
+        --panel: #f6f8fa;
+        --panel-2: #eef1f4;
+        --code: #f3f5f7;
+        --fg: #0d1116;
+        --fg-strong: #000000;
+        --muted: #57606a;
+        --muted-2: #7d8590;
+        --accent: #0969da;
+        --accent-2: #054ea0;
+        --accent-ink: #ffffff;
+        --good: #1a7f4e;
+        --warn: #9a6700;
+        --rule: #d8dee4;
+        --rule-strong: #b8c0c8;
+      }
     }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+
+    /* ───── Reset & base ──────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      * { animation: none !important; transition: none !important; }
+    }
+    html, body { margin: 0; padding: 0; }
     body {
-      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+            "Segoe UI", Inter, Helvetica, Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      font-feature-settings: "ss01", "cv11";
     }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    code, pre { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
-    main { max-width: 920px; margin: 0 auto; padding: 4rem 1.5rem 6rem; }
-    header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-    .brand { font-weight: 600; letter-spacing: -0.01em; font-size: 1.05rem; }
-    .brand small { color: var(--muted); font-weight: 400; margin-left: .35rem; }
-    nav a { color: var(--muted); margin-left: 1.25rem; font-size: .95rem; }
-    nav a:hover { color: var(--fg); }
-    h1 {
-      margin: 3rem 0 1.25rem;
-      font-size: clamp(2rem, 4.5vw, 3.25rem);
-      line-height: 1.1;
-      letter-spacing: -0.02em;
-      font-weight: 600;
+    img, svg { display: block; max-width: 100%; }
+    a {
+      color: var(--accent);
+      text-decoration: none;
+      text-underline-offset: 2px;
+      transition: color .15s var(--ease);
     }
-    .sub {
+    a:hover { color: var(--accent-2); text-decoration: underline; }
+    a:focus-visible, button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    code, pre, kbd { font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+    code { font-size: 0.92em; }
+    h1, h2, h3 { letter-spacing: -0.02em; color: var(--fg-strong); }
+    p { margin: 0 0 1rem; }
+
+    /* ───── Layout ────────────────────────────────────────────────────── */
+    main { max-width: var(--maxw); margin: 0 auto; padding: 0 var(--pad-x) 6rem; }
+    section { padding: 4rem 0; border-top: 1px solid var(--rule); }
+    section:first-of-type { border-top: none; padding-top: 1rem; }
+
+    /* ───── Header ────────────────────────────────────────────────────── */
+    .site-header {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: saturate(180%) blur(10px);
+      -webkit-backdrop-filter: saturate(180%) blur(10px);
+      background: color-mix(in srgb, var(--bg) 80%, transparent);
+      border-bottom: 1px solid transparent;
+      transition: border-color .2s var(--ease), background .2s var(--ease);
+    }
+    .site-header.scrolled { border-bottom-color: var(--rule); }
+    .site-header-inner {
+      max-width: var(--maxw); margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 1rem;
+      padding: .85rem var(--pad-x);
+    }
+    .brand {
+      display: inline-flex; align-items: center; gap: .55rem;
+      color: var(--fg-strong);
+      font-weight: 600; letter-spacing: -0.01em; font-size: 1rem;
+    }
+    .brand:hover { text-decoration: none; }
+    .brand svg { width: 22px; height: 22px; color: var(--accent); }
+    .brand small { color: var(--muted); font-weight: 400; }
+    nav.primary { display: flex; gap: 1rem; align-items: center; }
+    nav.primary a {
       color: var(--muted);
-      font-size: clamp(1rem, 1.5vw, 1.2rem);
+      font-size: .92rem;
+      padding: .25rem .15rem;
+    }
+    nav.primary a:hover { color: var(--fg); text-decoration: none; }
+    @media (max-width: 640px) {
+      nav.primary a:not(.gh) { display: none; }
+    }
+
+    /* ───── Hero ──────────────────────────────────────────────────────── */
+    .hero {
+      padding: 5rem 0 3.5rem;
+      position: relative;
+      border-top: none;
+    }
+    .hero::before {
+      content: "";
+      position: absolute; inset: -2rem -10% 0 -10%;
+      background:
+        radial-gradient(40% 50% at 15% 0%, color-mix(in srgb, var(--accent) 14%, transparent) 0%, transparent 60%),
+        radial-gradient(35% 45% at 85% 10%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .hero > * { position: relative; z-index: 1; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: .5rem;
+      padding: .3rem .65rem;
+      border: 1px solid var(--rule-strong);
+      border-radius: 999px;
+      font-size: .78rem; font-weight: 500; letter-spacing: 0.02em;
+      color: var(--muted);
+      background: var(--panel);
+    }
+    .eyebrow .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--good);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent);
+    }
+    h1.headline {
+      margin: 1.5rem 0 1.25rem;
+      font-size: clamp(2.25rem, 5.5vw, 3.6rem);
+      line-height: 1.05;
+      font-weight: 600;
+      max-width: 22ch;
+    }
+    h1.headline .accent { color: var(--accent); }
+    .lede {
+      color: var(--muted);
+      font-size: clamp(1.05rem, 1.5vw, 1.2rem);
       max-width: 42rem;
       margin: 0 0 2rem;
     }
-    .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 3rem; }
+    .lede code {
+      background: var(--code);
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--rule);
+      color: var(--fg);
+    }
+
+    /* ───── Buttons ───────────────────────────────────────────────────── */
+    .cta-row { display: flex; flex-wrap: wrap; gap: .65rem; margin-bottom: 1.75rem; }
     .btn {
       display: inline-flex; align-items: center; gap: .5rem;
       padding: .65rem 1rem;
-      border-radius: 8px;
-      border: 1px solid var(--rule);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--rule-strong);
       color: var(--fg);
       font-size: .95rem;
       font-weight: 500;
       background: var(--panel);
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
     }
-    .btn.primary { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
-    .btn:hover { text-decoration: none; transform: translateY(-1px); }
-    pre.code {
-      background: var(--code);
+    .btn:hover {
+      text-decoration: none;
+      transform: translateY(-1px);
+      border-color: var(--accent);
+      color: var(--fg-strong);
+    }
+    .btn.primary {
+      background: var(--accent);
+      color: var(--accent-ink);
+      border-color: var(--accent);
+    }
+    .btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); color: var(--accent-ink); }
+    .btn .arrow { transition: transform .15s var(--ease); }
+    .btn:hover .arrow { transform: translateX(2px); }
+
+    .meta-row {
+      color: var(--muted);
+      font-size: .88rem;
+      display: flex; flex-wrap: wrap; gap: .35rem .75rem;
+    }
+    .meta-row span { white-space: nowrap; }
+    .meta-row .sep { color: var(--rule-strong); }
+
+    /* ───── Section heading ───────────────────────────────────────────── */
+    .section-h {
+      font-size: clamp(1.1rem, 1.7vw, 1.25rem);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 1.5rem;
+    }
+    .section-lede {
+      font-size: clamp(1.4rem, 2.4vw, 1.75rem);
+      color: var(--fg-strong);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      max-width: 36ch;
+      margin: 0 0 2rem;
+      line-height: 1.25;
+    }
+
+    /* ───── Tabs + code ───────────────────────────────────────────────── */
+    .tabs {
+      display: inline-flex;
+      gap: 0;
+      padding: 4px;
       border: 1px solid var(--rule);
+      background: var(--panel);
       border-radius: 10px;
-      padding: 1rem 1.25rem;
-      overflow-x: auto;
-      font-size: 14px;
-      line-height: 1.55;
+      margin-bottom: 0.75rem;
     }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 2rem 0; }
-    .card { padding: 1.1rem 1.2rem; border: 1px solid var(--rule); border-radius: 10px; background: var(--panel); }
-    .card h3 { margin: 0 0 .35rem; font-size: 1rem; font-weight: 600; }
+    .tabs button {
+      appearance: none;
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      padding: .45rem .85rem;
+      font: inherit;
+      font-size: .88rem;
+      font-weight: 500;
+      cursor: pointer;
+      border-radius: 6px;
+      transition: color .15s var(--ease), background .15s var(--ease);
+    }
+    .tabs button:hover { color: var(--fg); }
+    .tabs button[aria-selected="true"] {
+      background: var(--bg);
+      color: var(--fg-strong);
+      box-shadow: 0 1px 0 var(--rule);
+    }
+    .code-frame {
+      border: 1px solid var(--rule);
+      border-radius: var(--radius);
+      background: var(--code);
+      overflow: hidden;
+      position: relative;
+    }
+    .code-frame .filename {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .55rem .9rem;
+      border-bottom: 1px solid var(--rule);
+      background: var(--panel);
+      color: var(--muted);
+      font-size: .82rem;
+    }
+    .code-frame .filename .dots { display: inline-flex; gap: 5px; }
+    .code-frame .filename .dots span {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--rule-strong);
+    }
+    pre.code {
+      margin: 0;
+      padding: 1.1rem 1.25rem;
+      overflow-x: auto;
+      font-size: 13.5px;
+      line-height: 1.65;
+      color: var(--fg);
+      tab-size: 2;
+    }
+    pre.code .com { color: var(--muted); font-style: italic; }
+    pre.code .kw  { color: #ff79c6; }
+    pre.code .str { color: #a5e3a1; }
+    pre.code .num { color: #79c0ff; }
+    pre.code .fn  { color: #d2a8ff; }
+    pre.code .ty  { color: #ffa657; }
+    @media (prefers-color-scheme: light) {
+      pre.code .kw  { color: #cf222e; }
+      pre.code .str { color: #0a3069; }
+      pre.code .num { color: #0550ae; }
+      pre.code .fn  { color: #8250df; }
+      pre.code .ty  { color: #953800; }
+    }
+    .caption { color: var(--muted); font-size: .92rem; margin-top: 1rem; }
+
+    /* ───── Model rail ────────────────────────────────────────────────── */
+    .rail {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) 24px 1fr 1fr 1fr;
+      align-items: stretch;
+      gap: 0;
+      margin: 1.5rem 0 1.75rem;
+      border: 1px solid var(--rule);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--bg-elev);
+    }
+    .rail-cell {
+      padding: 1rem 1.1rem;
+      display: flex; flex-direction: column; gap: .35rem;
+      min-width: 0;
+    }
+    .rail-cell + .rail-cell { border-left: 1px solid var(--rule); }
+    .rail-cell .label {
+      font-size: .72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted-2);
+      font-weight: 600;
+    }
+    .rail-cell .name {
+      font-weight: 600;
+      color: var(--fg-strong);
+      font-size: .98rem;
+    }
+    .rail-cell .desc {
+      color: var(--muted);
+      font-size: .85rem;
+    }
+    .rail-cell.source { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .rail-arrow {
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted-2);
+      border-left: 1px solid var(--rule);
+    }
+    @media (max-width: 720px) {
+      .rail {
+        grid-template-columns: 1fr;
+      }
+      .rail-cell + .rail-cell { border-left: 0; border-top: 1px solid var(--rule); }
+      .rail-arrow { display: none; }
+    }
+
+    .ledger-body {
+      color: var(--fg);
+      max-width: 50rem;
+    }
+    .ledger-body em {
+      color: var(--accent);
+      font-style: normal;
+      font-weight: 500;
+    }
+
+    /* ───── Card grid ─────────────────────────────────────────────────── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      padding: 1.25rem 1.3rem 1.1rem;
+      border: 1px solid var(--rule);
+      border-radius: var(--radius);
+      background: var(--panel);
+      transition: border-color .15s var(--ease), transform .15s var(--ease), background .15s var(--ease);
+      display: flex; flex-direction: column; gap: .55rem;
+    }
+    .card:hover { border-color: var(--rule-strong); transform: translateY(-1px); background: var(--panel-2); }
+    .card .icon {
+      width: 28px; height: 28px;
+      color: var(--accent);
+      margin-bottom: .25rem;
+    }
+    .card h3 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--fg-strong);
+    }
     .card p { margin: 0; color: var(--muted); font-size: .92rem; }
-    .ledger { margin: 2rem 0; padding: 1.25rem 1.5rem; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 8px 8px 0; }
-    .ledger b { color: var(--fg); }
-    hr { border: 0; border-top: 1px solid var(--rule); margin: 3rem 0; }
-    footer { color: var(--muted); font-size: .9rem; margin-top: 4rem; }
-    .note { font-size: .85rem; color: var(--muted); margin-top: 1.25rem; }
-    .note code { background: var(--code); padding: 1px 6px; border-radius: 4px; }
+    .card .more {
+      margin-top: auto;
+      padding-top: .5rem;
+      font-size: .88rem;
+      color: var(--accent);
+      display: inline-flex; align-items: center; gap: .35rem;
+    }
+    .card .more .arrow { transition: transform .15s var(--ease); }
+    .card:hover .more .arrow { transform: translateX(2px); }
+
+    /* ───── Status table ──────────────────────────────────────────────── */
+    .status-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--rule);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--bg-elev);
+      font-size: .94rem;
+    }
+    .status-table th, .status-table td {
+      text-align: left;
+      padding: .75rem 1rem;
+      border-bottom: 1px solid var(--rule);
+    }
+    .status-table th {
+      background: var(--panel);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: .82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .status-table tr:last-child td { border-bottom: 0; }
+    .pill {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .15rem .55rem;
+      border-radius: 999px;
+      font-size: .82rem;
+      font-weight: 500;
+      border: 1px solid transparent;
+    }
+    .pill.good {
+      color: var(--good);
+      border-color: color-mix(in srgb, var(--good) 35%, transparent);
+      background: color-mix(in srgb, var(--good) 12%, transparent);
+    }
+    .pill.warn {
+      color: var(--warn);
+      border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+      background: color-mix(in srgb, var(--warn) 12%, transparent);
+    }
+
+    /* ───── Final CTA ─────────────────────────────────────────────────── */
+    .final-cta {
+      text-align: center;
+      padding: 5rem 0 4rem;
+    }
+    .final-cta h2 {
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      margin: 0 0 .5rem;
+      font-weight: 600;
+    }
+    .final-cta p {
+      color: var(--muted);
+      max-width: 32rem;
+      margin: 0 auto 1.75rem;
+    }
+    .final-cta .cta-row { justify-content: center; margin-bottom: 0; }
+
+    /* ───── Note ─────────────────────────────────────────────────────── */
+    .note {
+      font-size: .85rem;
+      color: var(--muted);
+      padding: .85rem 1rem;
+      background: var(--panel);
+      border: 1px solid var(--rule);
+      border-radius: var(--radius-sm);
+      border-left: 3px solid var(--warn);
+    }
+    .note code {
+      background: var(--code);
+      padding: 1px 5px;
+      border-radius: 4px;
+      border: 1px solid var(--rule);
+    }
+
+    /* ───── Footer ────────────────────────────────────────────────────── */
+    footer.site-footer {
+      border-top: 1px solid var(--rule);
+      padding: 3rem var(--pad-x) 3rem;
+      background: var(--bg-elev);
+    }
+    .footer-inner {
+      max-width: var(--maxw);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr 1fr;
+      gap: 2rem;
+    }
+    @media (max-width: 720px) {
+      .footer-inner { grid-template-columns: 1fr 1fr; }
+    }
+    .footer-brand .brand { font-size: 1rem; }
+    .footer-brand p {
+      color: var(--muted);
+      font-size: .9rem;
+      max-width: 24rem;
+      margin: .75rem 0 0;
+    }
+    .footer-col h4 {
+      font-size: .78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 0 0 .8rem;
+      font-weight: 600;
+    }
+    .footer-col ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .4rem; }
+    .footer-col a { color: var(--fg); font-size: .92rem; }
+    .footer-col a:hover { color: var(--accent); text-decoration: none; }
+    .footer-bottom {
+      max-width: var(--maxw);
+      margin: 2.5rem auto 0;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--rule);
+      color: var(--muted);
+      font-size: .85rem;
+      display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    }
   </style>
 </head>
 <body>
-  <main>
-    <header>
-      <div class="brand">Tape <small>· durable-execution substrate for ADK agents</small></div>
-      <nav>
-        <a href="https://github.com/vamsiramakrishnan/durable-agents">GitHub</a>
+
+  <header class="site-header" id="siteHeader">
+    <div class="site-header-inner">
+      <a class="brand" href="#top" aria-label="Tape — home">
+        <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="6" y="14" width="52" height="36" rx="4" stroke="currentColor" stroke-width="3"/>
+          <circle cx="22" cy="32" r="6" stroke="currentColor" stroke-width="3"/>
+          <circle cx="42" cy="32" r="6" stroke="currentColor" stroke-width="3"/>
+          <line x1="14" y1="50" x2="14" y2="58" stroke="currentColor" stroke-width="3"/>
+          <line x1="50" y1="50" x2="50" y2="58" stroke="currentColor" stroke-width="3"/>
+        </svg>
+        Tape
+        <small>· durable agents</small>
+      </a>
+      <nav class="primary" aria-label="Primary">
+        <a href="https://github.com/vamsiramakrishnan/durable-agents#readme">Docs</a>
+        <a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/quickstart.md">Quickstart</a>
         <a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/design-principles/agents-that-act-treatise.md">Treatise</a>
-        <a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/docs">Docs source</a>
+        <a href="https://github.com/vamsiramakrishnan/durable-agents/releases">Releases</a>
+        <a class="gh" href="https://github.com/vamsiramakrishnan/durable-agents" aria-label="GitHub repository">GitHub →</a>
       </nav>
-    </header>
-
-    <h1>A durable journal underneath your ADK agent.</h1>
-    <p class="sub">
-      Crash-survival, exactly-once-effective tool calls, and an explicit
-      <code>UNKNOWN</code> outcome — without changing one line of your ADK agent code.
-    </p>
-
-    <div class="actions">
-      <a class="btn primary" href="https://github.com/vamsiramakrishnan/durable-agents#readme">Get started</a>
-      <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/quickstart.md">Quickstart</a>
-      <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/concepts/why-tape.md">Why Tape</a>
-      <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/design-principles/agents-that-act-treatise.md">The treatise</a>
     </div>
+  </header>
 
-    <pre class="code"><span style="color: var(--muted);"># wire a durable runtime under an ADK agent — fifteen lines</span>
-<b>import</b> tape
-<b>from</b> tape.adk <b>import</b> durable_app
+  <main id="top">
 
-app, runner = durable_app(
-    name=<span style="color:#79c0ff;">"treasury"</span>,
-    agent=root_agent,                            <span style="color: var(--muted);"># your ADK LlmAgent</span>
-    budget=tape.Budget(usd_cap=50, token_cap=2_000_000),
-)</pre>
+    <!-- ───── Hero ─────────────────────────────────────────────────── -->
+    <section class="hero">
+      <span class="eyebrow"><span class="dot" aria-hidden="true"></span> A durable-execution substrate for ADK agents</span>
 
-    <div class="ledger">
-      Tape is <b>not</b> checkpointing Python. Tape is:<br>
-      record every model decision · record every external effect intent &amp; result ·
-      replay decisions on resume · skip confirmed effects · stop on ambiguity ·
-      reconcile reality · compensate when reality disagrees.
-    </div>
+      <h1 class="headline">
+        One journal.<br>
+        Every <span class="accent">decision</span>.<br>
+        Every <span class="accent">effect</span>.
+      </h1>
 
-    <div class="grid">
-      <div class="card">
-        <h3>One execution journal</h3>
-        <p>Append-only. Per-run. The source of truth for what happened — and what is still in flight.</p>
+      <p class="lede">
+        Your ADK agent gets crash-survival, exactly-once-effective tool calls,
+        and an explicit <code>UNKNOWN</code> outcome — without changing one
+        line of agent code.
+      </p>
+
+      <div class="cta-row">
+        <a class="btn primary" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/quickstart.md">
+          Quickstart · 10 min
+          <span class="arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents#readme">Read the docs</a>
+        <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents">View on GitHub</a>
       </div>
-      <div class="card">
-        <h3>Semantic projections</h3>
-        <p>Decisions (memory of reasoning), Effects (memory of reality), Obligations (memory of responsibility).</p>
-      </div>
-      <div class="card">
-        <h3>Reactors close the gap</h3>
-        <p>Recovery · reconciler · outbox · timers · compensation. Each idempotent. Each under a lease.</p>
-      </div>
-      <div class="card">
-        <h3>UNKNOWN is first-class</h3>
-        <p>The third outcome of any external effect. Blind retry on a non-idempotent upstream is structurally impossible.</p>
-      </div>
-    </div>
 
-    <hr>
+      <p class="meta-row">
+        <span>Apache-2.0</span>
+        <span class="sep">·</span>
+        <span>Python · Go · TypeScript · Java</span>
+        <span class="sep">·</span>
+        <span>Cloud Run · GKE · Postgres · Bigtable · Spanner</span>
+      </p>
+    </section>
+
+    <!-- ───── Code ─────────────────────────────────────────────────── -->
+    <section>
+      <h2 class="section-h">Wire it in fifteen lines</h2>
+      <p class="section-lede">Plug a durable runtime under your ADK agent. The agent code does not change.</p>
+
+      <div class="tabs" role="tablist" aria-label="SDK language">
+        <button role="tab" data-tab="py"   aria-selected="true">Python</button>
+        <button role="tab" data-tab="go"   aria-selected="false">Go</button>
+        <button role="tab" data-tab="ts"   aria-selected="false">TypeScript</button>
+        <button role="tab" data-tab="java" aria-selected="false">Java</button>
+      </div>
+
+      <div class="code-frame">
+        <div class="filename">
+          <span class="dots"><span></span><span></span><span></span></span>
+          <span data-name="py">treasury/app.py</span>
+          <span data-name="go"   hidden>treasury/main.go</span>
+          <span data-name="ts"   hidden>treasury/app.ts</span>
+          <span data-name="java" hidden>treasury/App.java</span>
+        </div>
+
+<pre class="code" data-panel="py"><span class="com"># wire a durable runtime under an ADK agent</span>
+<span class="kw">import</span> tape
+<span class="kw">from</span> tape.adk <span class="kw">import</span> durable_app
+
+app, runner = <span class="fn">durable_app</span>(
+    name=<span class="str">"treasury"</span>,
+    agent=root_agent,                            <span class="com"># your ADK LlmAgent</span>
+    budget=tape.<span class="ty">Budget</span>(usd_cap=<span class="num">50</span>, token_cap=<span class="num">2_000_000</span>),
+)
+
+<span class="com"># mark non-idempotent tools — the outbox owns dispatch</span>
+<span class="kw">@</span><span class="fn">tape.outbox_tool</span>(business_key=<span class="kw">lambda</span> a: a[<span class="str">"id"</span>])
+<span class="kw">def</span> <span class="fn">wire_transfer</span>(args): ...</pre>
+
+<pre class="code" data-panel="go" hidden><span class="kw">import</span> (
+    <span class="str">"context"</span>
+    tape <span class="str">"github.com/vamsiramakrishnan/durable-agents/tape/sdk/go"</span>
+)
+
+d, _ := tape.<span class="fn">NewDurableApp</span>(ctx, tape.<span class="ty">DurableConfig</span>{
+    Name:   <span class="str">"treasury"</span>,
+    Budget: tape.<span class="ty">Budget</span>{USDCap: <span class="num">50</span>, TokenCap: <span class="num">2_000_000</span>},
+})
+<span class="kw">defer</span> d.<span class="fn">Close</span>()
+
+<span class="com">// register a non-idempotent tool via the outbox</span>
+d.<span class="fn">OutboxTool</span>(<span class="str">"wire_transfer"</span>, transfer, tape.<span class="ty">OutboxOpts</span>{
+    BusinessKey: <span class="kw">func</span>(a <span class="ty">Args</span>) <span class="ty">string</span> { <span class="kw">return</span> a.ID },
+})</pre>
+
+<pre class="code" data-panel="ts" hidden><span class="kw">import</span> { durableApp, outboxTool } <span class="kw">from</span> <span class="str">'tape-ts'</span>;
+
+<span class="kw">const</span> app = <span class="fn">durableApp</span>({
+  name:   <span class="str">'treasury'</span>,
+  budget: { usdCap: <span class="num">50</span>, tokenCap: <span class="num">2_000_000</span> },
+});
+
+<span class="com">// mark non-idempotent tools — the outbox owns dispatch</span>
+<span class="kw">const</span> wireTransfer = <span class="fn">outboxTool</span>(<span class="str">'wire_transfer'</span>, transfer, {
+  businessKey: (a) => a.id,
+});</pre>
+
+<pre class="code" data-panel="java" hidden><span class="kw">import</span> dev.tape.<span class="ty">DurableApp</span>;
+
+<span class="kw">try</span> (<span class="ty">DurableApp</span> app = <span class="ty">DurableApp</span>.<span class="fn">wire</span>(<span class="kw">new</span> <span class="ty">DurableApp</span>.<span class="ty">Config</span>()
+        .<span class="fn">name</span>(<span class="str">"treasury"</span>)
+        .<span class="fn">budget</span>(<span class="kw">new</span> <span class="ty">DurableApp</span>.<span class="ty">Budget</span>(<span class="num">50.0</span>, <span class="num">2_000_000</span>)))) {
+
+    <span class="com">// app.client() is the journalled gRPC client</span>
+    app.<span class="fn">outboxTool</span>(<span class="str">"wire_transfer"</span>, transfer,
+        cfg -> cfg.<span class="fn">businessKey</span>(a -> a.<span class="fn">getId</span>()));
+}</pre>
+      </div>
+
+      <p class="caption">
+        Tool bodies stay plain. The safety contract — <code>business_key</code>,
+        <code>status_check</code>, <code>compensate</code> — is enforced at
+        construction <em>and</em> on the wire, so blind retry on a wire
+        transfer is structurally impossible.
+      </p>
+    </section>
+
+    <!-- ───── The model ─────────────────────────────────────────────── -->
+    <section>
+      <h2 class="section-h">The model, in one breath</h2>
+      <p class="section-lede">One append-only WAL. Three semantic projections.</p>
+
+      <div class="rail" aria-label="Journal model">
+        <div class="rail-cell source">
+          <span class="label">Source of truth</span>
+          <span class="name">WAL</span>
+          <span class="desc">Append-only. Per-run. What <em>happened</em>.</span>
+        </div>
+        <div class="rail-arrow" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>
+          </svg>
+        </div>
+        <div class="rail-cell">
+          <span class="label">Projection</span>
+          <span class="name">Decisions</span>
+          <span class="desc">Memory of reasoning. Replayed on resume.</span>
+        </div>
+        <div class="rail-cell">
+          <span class="label">Projection</span>
+          <span class="name">Effects</span>
+          <span class="desc">Memory of reality. Confirmed effects are skipped.</span>
+        </div>
+        <div class="rail-cell">
+          <span class="label">Projection</span>
+          <span class="name">Obligations</span>
+          <span class="desc">Memory of responsibility. Reactors close the gap.</span>
+        </div>
+      </div>
+
+      <p class="ledger-body">
+        Tape is <strong>not</strong> checkpointing Python.
+        Tape is: <em>record</em> every model decision · <em>record</em> every
+        external effect intent &amp; result · <em>replay</em> decisions on
+        resume · <em>skip</em> confirmed effects · <em>stop</em> on ambiguity
+        · <em>reconcile</em> reality · <em>compensate</em> when reality
+        disagrees.
+      </p>
+    </section>
+
+    <!-- ───── Cards ────────────────────────────────────────────────── -->
+    <section>
+      <h2 class="section-h">What you get</h2>
+
+      <div class="cards">
+        <a class="card" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/concepts/replay.md">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>
+          </svg>
+          <h3>Crash-survival</h3>
+          <p>Every decision and effect is journaled. A crashed run reconstructs and continues. Confirmed effects are not re-executed.</p>
+          <span class="more">Replay &amp; resume <span class="arrow">→</span></span>
+        </a>
+
+        <a class="card" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/non-idempotent-upstreams.md">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/>
+          </svg>
+          <h3>Non-idempotent safety</h3>
+          <p>Outbox + reconciliation makes <code>UNKNOWN</code> a first-class outcome. Blind retry on a wire transfer is structurally impossible.</p>
+          <span class="more">Non-idempotent upstreams <span class="arrow">→</span></span>
+        </a>
+
+        <a class="card" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/gcp-cloud-run.md">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M17.5 19a4.5 4.5 0 0 0 .5-8.96A6 6 0 0 0 6.5 9.5 4.5 4.5 0 0 0 7 18.5h10.5z"/>
+          </svg>
+          <h3>Production on GCP</h3>
+          <p>Cloud Run · GKE Autopilot · AlloyDB · Bigtable · Spanner · Pub/Sub · Secret Manager · OTel. One Typer CLI composes the topology.</p>
+          <span class="more">Deploy on Cloud Run <span class="arrow">→</span></span>
+        </a>
+
+        <a class="card" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/SDK_PARITY.md">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polygon points="12 3 21 8 12 13 3 8 12 3"/><polyline points="3 13 12 18 21 13"/><polyline points="3 18 12 23 21 18"/>
+          </svg>
+          <h3>Four SDKs, one wire</h3>
+          <p>Python, Go, TypeScript, Java — identical surface, language-idiomatic shape. Every SDK speaks the same <code>tape.proto</code>.</p>
+          <span class="more">SDK parity matrix <span class="arrow">→</span></span>
+        </a>
+
+        <a class="card" href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/docs/concepts">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+          </svg>
+          <h3>Sharp primitives</h3>
+          <p>Reactive KV with watch streams. Durable gates. Budgets as run state. Compensation registries. A reactor event bus.</p>
+          <span class="more">Concepts <span class="arrow">→</span></span>
+        </a>
+
+        <a class="card" href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/deploy">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+          <h3>Visible IaC</h3>
+          <p>Terraform/OpenTofu modules + a Helm chart you can read, edit, and own. No black-box managed runtime — the substrate is yours.</p>
+          <span class="more">Deploy assets <span class="arrow">→</span></span>
+        </a>
+      </div>
+    </section>
+
+    <!-- ───── Three commands ────────────────────────────────────────── -->
+    <section>
+      <h2 class="section-h">Three commands to production</h2>
+      <p class="section-lede">From a clean clone to a deployed agent on Cloud Run.</p>
+
+      <div class="code-frame">
+        <div class="filename">
+          <span class="dots"><span></span><span></span><span></span></span>
+          <span>bash</span>
+        </div>
+<pre class="code"><span class="com"># 1. Install — one command bootstraps every toolchain, builds, and wires the SDKs</span>
+./setup.sh
+
+<span class="com"># 2. Scaffold and run locally — server + reactors + agent on sqlite</span>
+tape init treasury
+<span class="kw">cd</span> treasury &amp;&amp; tape dev
+
+<span class="com"># 3. Render &amp; apply Terraform on GCP, then deploy</span>
+tape provision gcp --apply
+tape deploy gcp --target cloud-run</pre>
+      </div>
+      <p class="caption">
+        Verify the environment any time with <code>make doctor</code>.
+        The full ten-minute walk-through is in the
+        <a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/quickstart.md">quickstart</a>.
+      </p>
+    </section>
+
+    <!-- ───── Honest status ─────────────────────────────────────────── -->
+    <section>
+      <h2 class="section-h">Honest project status</h2>
+      <p class="section-lede">When something doesn't exist yet, the docs say so.</p>
+
+      <table class="status-table" aria-label="Project status by surface">
+        <thead>
+          <tr><th scope="col">Surface</th><th scope="col">Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Python SDK + ADK adapter</td><td><span class="pill good">✓ Reference implementation</span></td></tr>
+          <tr><td>Go / TypeScript / Java SDKs</td><td><span class="pill good">✓ Wired client + smoke tests</span></td></tr>
+          <tr><td>Rust server</td><td><span class="pill good">✓ SQLite / Postgres / AlloyDB</span></td></tr>
+          <tr><td>Bigtable backend</td><td><span class="pill good">✓ Production-ready</span></td></tr>
+          <tr><td>Spanner backend</td><td><span class="pill warn">⚑ Experimental — gated</span></td></tr>
+          <tr><td>Hard multi-tenancy</td><td><span class="pill warn">⚑ Design-only — proto change pending</span></td></tr>
+          <tr><td>Continue-as-new, child workflows</td><td><span class="pill warn">⚑ Roadmap</span></td></tr>
+        </tbody>
+      </table>
+      <p class="caption">
+        Trade-offs are explicit on the
+        <a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/design-principles/parity.md">parity matrix</a>.
+      </p>
+    </section>
+
+    <!-- ───── Final CTA ─────────────────────────────────────────────── -->
+    <section class="final-cta">
+      <h2>Ten minutes to a recovering agent.</h2>
+      <p>Wire the runtime, kill the process, watch it pick up where it left off.</p>
+      <div class="cta-row">
+        <a class="btn primary" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/quickstart.md">
+          Start the quickstart
+          <span class="arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="btn" href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/design-principles/agents-that-act-treatise.md">Read the treatise</a>
+      </div>
+    </section>
 
     <p class="note">
-      If you are the repository owner and you see this static page instead of the full MkDocs
-      site, set <b>Settings → Pages → Source</b> to <code>GitHub Actions</code>. The
-      <code>docs</code> workflow builds and deploys the full site on every push to
-      <code>main</code>.
+      <strong>Maintainer note —</strong> if you are the repository owner and
+      you see this static page instead of the full MkDocs site, set
+      <strong>Settings → Pages → Source</strong> to <code>GitHub Actions</code>.
+      The <code>docs</code> workflow builds and deploys the full site on every
+      push to <code>main</code>.
     </p>
 
-    <footer>
-      © the durable-agents authors · Apache-2.0 · built with care.
-    </footer>
   </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <a class="brand" href="#top">
+          <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect x="6" y="14" width="52" height="36" rx="4" stroke="currentColor" stroke-width="3"/>
+            <circle cx="22" cy="32" r="6" stroke="currentColor" stroke-width="3"/>
+            <circle cx="42" cy="32" r="6" stroke="currentColor" stroke-width="3"/>
+            <line x1="14" y1="50" x2="14" y2="58" stroke="currentColor" stroke-width="3"/>
+            <line x1="50" y1="50" x2="50" y2="58" stroke="currentColor" stroke-width="3"/>
+          </svg>
+          Tape
+        </a>
+        <p>A durable-execution substrate for ADK agents. Journal, recover, dispatch exactly-once.</p>
+      </div>
+
+      <div class="footer-col">
+        <h4>Docs</h4>
+        <ul>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/tape/docs/quickstart.md">Quickstart</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/docs/concepts">Concepts</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/docs/how-to">How-to guides</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/docs/deploy">Deploy</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>SDKs</h4>
+        <ul>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/sdk/python">Python</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/sdk/go">Go</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/sdk/typescript">TypeScript</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/tree/main/tape/sdk/java">Java</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents">GitHub</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/releases">Releases</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/CHANGELOG.md">Changelog</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/CONTRIBUTING.md">Contributing</a></li>
+          <li><a href="https://github.com/vamsiramakrishnan/durable-agents/blob/main/SECURITY.md">Security</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <span>© the durable-agents authors · Apache-2.0 · built with care.</span>
+      <span>Riding <a href="https://google.github.io/adk-docs/">Google ADK</a> · no patches required.</span>
+    </div>
+  </footer>
+
+  <script>
+    // Language tabs: switch the visible <pre data-panel="…"> block.
+    (function () {
+      var tabs = document.querySelectorAll('.tabs [role="tab"]');
+      var frame = document.querySelector('.code-frame');
+      if (!tabs.length || !frame) return;
+      var panels = frame.querySelectorAll('[data-panel]');
+      var names  = frame.querySelectorAll('[data-name]');
+      tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          var target = tab.getAttribute('data-tab');
+          tabs.forEach(function (t) { t.setAttribute('aria-selected', t === tab ? 'true' : 'false'); });
+          panels.forEach(function (p) { p.hidden = p.getAttribute('data-panel') !== target; });
+          names.forEach(function (n)  { n.hidden = n.getAttribute('data-name')  !== target; });
+        });
+      });
+    })();
+
+    // Header border-on-scroll: subtle separator once the page is scrolled.
+    (function () {
+      var h = document.getElementById('siteHeader');
+      if (!h) return;
+      var onScroll = function () {
+        if (window.scrollY > 8) h.classList.add('scrolled');
+        else h.classList.remove('scrolled');
+      };
+      window.addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+    })();
+  </script>
 </body>
 </html>
