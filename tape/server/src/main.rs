@@ -18,6 +18,8 @@ mod dst;
 mod matcher;
 mod pb;
 mod service;
+#[cfg(all(test, feature = "sim"))]
+mod sim;
 mod store;
 mod subjects;
 

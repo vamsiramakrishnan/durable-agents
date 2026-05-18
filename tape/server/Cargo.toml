@@ -15,6 +15,12 @@ default = []
 # into active injection points. See `design-principles/chaos.md` and
 # `server/src/chaos.rs`. Zero-cost when off — the macro compiles to nothing.
 chaos = ["fail/failpoints"]
+# `sim` activates the Madsim DST test module (`src/sim.rs`). Tests under
+# this feature use madsim's deterministic runtime + virtualised time — the
+# scenarios single-thread DST can't reach (lease expiry races, adversarial
+# scheduling, concurrent recovery). Phase 2.5 of TapeChaos. See
+# `design-principles/chaos.md §9`.
+sim = []
 
 [dependencies]
 tonic = "0.12"
@@ -48,6 +54,16 @@ googleapis-tonic-google-bigtable-v2 = "0.36"
 
 [build-dependencies]
 tonic-build = "0.12"
+
+# Deterministic simulation testing — Phase 2.5 of TapeChaos. Madsim provides
+# a tokio-compatible deterministic runtime with virtualised time and seeded
+# scheduling; we exercise it via `cargo test --features sim` (plus
+# `RUSTFLAGS='--cfg madsim'` to flip the simulator on — without that flag
+# madsim is a tokio passthrough, the tests still run, but you get neither
+# virtualised time nor deterministic scheduling). Dev-only — the production
+# binary is unaffected.
+[dev-dependencies]
+madsim = { version = "0.2", features = ["macros"] }
 
 [profile.release]
 opt-level = 2
