@@ -1,0 +1,82 @@
+# Chaos Mesh Workflow — a 30-minute GameDay that chains the three
+# experiments in this directory. Run as a soak; verify the invariants in
+# `design-principles/chaos.md §7` hold throughout:
+#
+#   * exactly_one(connector=bank.wire) — no duplicate effects
+#   * no_stuck_obligations — every compensation drains
+#   * no_blind_non_idempotent_retry — UNKNOWN effects go to the reconciler
+#   * no_budget_overrun — budgets respected even under chaos
+#
+# Drive the agent workload concurrently from a load generator; the
+# Reliability Surface (R(k,ε,λ)) is the report card.
+#
+# The Workflow runs experiments in sequence so we can attribute breakage
+# to one cause. Replace `Sequential` with `Parallel` for the harder test:
+# all three simultaneously.
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Workflow
+metadata:
+  name: tape-gameday-30m
+  namespace: tape
+spec:
+  entry: gameday
+  templates:
+    - name: gameday
+      templateType: Serial
+      deadline: "30m"
+      children:
+        - phase-network-degraded
+        - phase-server-kill
+        - phase-clock-skew
+        - phase-cooldown
+
+    - name: phase-network-degraded
+      templateType: NetworkChaos
+      deadline: "10m"
+      networkChaos:
+        action: delay
+        mode: all
+        selector:
+          namespaces: [tape]
+          labelSelectors:
+            app.kubernetes.io/name: tape
+            app.kubernetes.io/component: reactor
+        direction: to
+        target:
+          mode: all
+          selector:
+            namespaces: [tape]
+            labelSelectors:
+              app.kubernetes.io/name: tape
+              app.kubernetes.io/component: server
+        delay: { latency: "500ms", jitter: "100ms" }
+
+    - name: phase-server-kill
+      templateType: PodChaos
+      deadline: "10m"
+      podChaos:
+        action: pod-kill
+        mode: one
+        selector:
+          namespaces: [tape]
+          labelSelectors:
+            app.kubernetes.io/name: tape
+            app.kubernetes.io/component: server
+
+    - name: phase-clock-skew
+      templateType: TimeChaos
+      deadline: "5m"
+      timeChaos:
+        mode: one
+        selector:
+          namespaces: [tape]
+          labelSelectors:
+            app.kubernetes.io/name: tape
+            app.kubernetes.io/component: reactor
+        timeOffset: "+5m"
+        clockIds: [CLOCK_REALTIME, CLOCK_MONOTONIC]
+
+    - name: phase-cooldown
+      templateType: Suspend
+      deadline: "5m"

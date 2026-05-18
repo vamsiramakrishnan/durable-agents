@@ -1,0 +1,34 @@
+# Chaos Mesh — skew the timer reactor's clock by 5 minutes for 2 minutes.
+# Proves the timer firing rule isn't fooled by absolute-clock drift: the
+# server's `now_ms` is the authoritative time source, not the reactor's.
+#
+# What this proves:
+#   * Timers fire based on server-side `now_ms` (passed from caller), not
+#     on the reactor's local clock
+#   * The reconciler doesn't misclassify "pending too long" runs based on
+#     a skewed local clock
+#   * No duplicate fires when the skew adjusts back
+#
+# TimeChaos affects the reactor process's view of `gettimeofday`, `clock_gettime`
+# and related syscalls — a real production failure mode (NTP glitch, VM
+# pause, container clock drift).
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: TimeChaos
+metadata:
+  name: tape-timer-reactor-skew
+  namespace: tape
+  labels:
+    chaos-engineering/scenario: clock-skew
+spec:
+  mode: one
+  selector:
+    namespaces: [tape]
+    labelSelectors:
+      app.kubernetes.io/name: tape
+      app.kubernetes.io/component: reactor
+  timeOffset: "+5m"      # 5 minutes into the future
+  clockIds:
+    - CLOCK_REALTIME
+    - CLOCK_MONOTONIC
+  duration: "2m"

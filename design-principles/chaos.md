@@ -355,7 +355,7 @@ runtime.
 | 2.5   | Madsim DST foundation — virtualised time, deterministic scheduling, seeded RNG | done   |
 | 2.6   | Store bridge: sim-only `MemRunStore` (or `madsim-tokio` shim) so store tests run under `cfg(madsim)` |        |
 | 3.5   | Porcupine-style linearizability checker for the lease primitive              |        |
-| 5     | Chaos Mesh / Cilium manifests; `tape chaos` CLI                               |        |
+| 5     | `tape chaos` CLI + Chaos Mesh manifests (pod-kill, net-delay, time-skew, soak workflow) | done |
 | 6     | Mirror the SDK surface to Go / TypeScript / Java                             |        |
 
 Phase 0 is the foundation: a small, named injection surface in the Rust

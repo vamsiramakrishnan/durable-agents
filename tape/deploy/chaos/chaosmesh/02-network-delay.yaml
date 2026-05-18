@@ -1,0 +1,42 @@
+# Chaos Mesh — add 500ms ± 100ms of latency between reactor pods and the
+# tape-server. Models a degraded network path; should not affect
+# correctness, only latency.
+#
+# What this proves:
+#   * Reactor heartbeats still extend the lease in time (lease_ttl_ms is
+#     long enough to ride 500ms RTT)
+#   * Outbox dispatch + reconciliation still complete (no UNKNOWN drift)
+#   * The recovery reactor doesn't double-drive a run while RPC roundtrips
+#     are slow
+#
+# Pair with: the `tape/reactor/lag_ms` metric in the observability module
+# (tape/docs/observability.md). Lag should grow but stay bounded.
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: tape-network-degraded
+  namespace: tape
+  labels:
+    chaos-engineering/scenario: degraded-network
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces: [tape]
+    labelSelectors:
+      app.kubernetes.io/name: tape
+      app.kubernetes.io/component: reactor
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces: [tape]
+      labelSelectors:
+        app.kubernetes.io/name: tape
+        app.kubernetes.io/component: server
+  delay:
+    latency: "500ms"
+    jitter: "100ms"
+    correlation: "25"
+  duration: "10m"
