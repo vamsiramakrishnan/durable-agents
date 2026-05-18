@@ -8,7 +8,7 @@ pymdown-extensions==10.12
 # Pygments 2.20 changed the HtmlFormatter filename handling in a way that
 # trips pymdown-extensions 10.12 on code blocks without an explicit title.
 # Pin to the last known-good release.
-Pygments==2.18.0
+Pygments==2.20.0
 
 # The CLI generator needs the CLI's runtime deps (Typer + pydantic + jinja2 + rich).
 typer==0.15.1
