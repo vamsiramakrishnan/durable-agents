@@ -70,6 +70,10 @@ from .reactions import (
     run_dispatcher,
     run_pubsub_bridge,
 )
+# `tape.chaos` is the fault-injection surface (Layer 3 of TapeChaos).
+# Optional: importing `tape` doesn't pull `tape.chaos` in. Users import
+# `tape.chaos as chaos`. See `design-principles/chaos.md`.
+from . import chaos  # noqa: F401
 
 __all__ = [
     "TapeClient", "DEFAULT_URL", "pb",
