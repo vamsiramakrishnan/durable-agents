@@ -68,6 +68,8 @@ from .scenarios import (
 )
 from . import invariants as invariant
 from .connectors import wrap_connector, ChaosConnector
+from .snapshot import Snapshot, JournalLine, capture as capture_snapshot
+from .replay import replay, replayable, ReplayReport
 
 __all__ = [
     "Fault",
@@ -91,4 +93,11 @@ __all__ = [
     "ChaosConnector",
     # invariants namespace
     "invariant",
+    # snapshot + replay (Phase 2 — bit-for-bit determinism check)
+    "Snapshot",
+    "JournalLine",
+    "capture_snapshot",
+    "replay",
+    "replayable",
+    "ReplayReport",
 ]

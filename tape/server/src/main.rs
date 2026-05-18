@@ -13,6 +13,8 @@
 mod bigtable_change_stream;
 mod cel;
 mod chaos;
+#[cfg(test)]
+mod dst;
 mod matcher;
 mod pb;
 mod service;
