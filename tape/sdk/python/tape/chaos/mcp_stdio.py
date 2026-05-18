@@ -322,6 +322,20 @@ class MCPStdioProxy:
                     return
         except Exception:
             _log.exception("agent→upstream pump died")
+        finally:
+            # Forward EOF to the upstream: many MCP servers (the spec
+            # recommends it) only shut down when their stdin closes. If
+            # we never close it, `run()` blocks forever on `proc.wait()`
+            # after the agent disconnects.
+            self._close_upstream_stdin()
+
+    def _close_upstream_stdin(self) -> None:
+        if self._proc is None or self._proc.stdin is None:
+            return
+        try:
+            self._proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
 
     def _pump_upstream_to_agent(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None

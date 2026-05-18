@@ -59,18 +59,29 @@ class Fault:
     `bank.wire`); `kind` is `lose_ack` / `duplicate` / `delay`. The runner
     looks up the connector via `tape.connectors.get(name)` and wraps it
     with a `ChaosConnector` carrying these flags.
+
+    Tool-scoped connector faults (`lose_ack(tool=...)`, `duplicate(tool=...)`)
+    set `target=""` and `tool=<tool_name>`. The runner attaches them to
+    every registered connector; `ChaosConnector` then filters by
+    `effect.tool_name` at dispatch time. (This is what the v1 docstrings
+    on `lose_ack` / `duplicate` promised; the wiring landed in the P1
+    review-fix commit.)
     """
     layer: str          # "server" | "connector"
-    target: str         # failpoint name OR connector name
+    target: str         # failpoint name OR connector name (empty = fan-out for tool-scoped)
     action: str = ""    # fail-crate action (server) or fault kind (connector)
     probability: float = 1.0
     after_n: int = 0    # fire only after this many hits (server only)
     # Connector-only fields
     ms: int = 0         # delay length
     jitter: float = 0.0
+    # Tool selector for connector-layer faults. When non-empty, the fault
+    # only fires when `effect.tool_name == tool`.
+    tool: str = ""
     # Free-form selector (`when="tool == 'execute_sweep'"`) — Phase 2 will
     # bind this to a CEL evaluator on the server; v1 records it for the
-    # report so an operator can see what the fault was scoped to.
+    # report so an operator can see what the fault was scoped to. For tool-
+    # scoping, prefer `tool=` (above) — it's wired to the dispatch filter.
     when: str = ""
 
 
@@ -131,25 +142,30 @@ def lose_ack(*, connector: str = "", tool: str = "",
     """The connector calls the upstream, but the ack is lost — Tape records
     the effect as `UNKNOWN` and the reconciler resolves via `observe()`.
     Pass `connector=` (the routing key) **or** `tool=` (the tool name) —
-    not both. The wrapper looks up by connector name; a tool-scoped fault
-    is filtered by the connector at dispatch time."""
-    target = connector or tool
-    if not target:
+    not both. Connector-scoped faults are attached to that one connector;
+    tool-scoped faults attach to every registered connector and only fire
+    when `effect.tool_name == tool`."""
+    if connector and tool:
+        raise ValueError("lose_ack: pass connector= or tool=, not both")
+    if not (connector or tool):
         raise ValueError("lose_ack requires connector= or tool=")
-    return Fault(layer=_LAYER_CONNECTOR, target=target, action="lose_ack",
-                 probability=probability, when=f"tool == {tool!r}" if tool else "")
+    return Fault(layer=_LAYER_CONNECTOR, target=connector, tool=tool,
+                 action="lose_ack", probability=probability)
 
 
 def duplicate(*, connector: str = "", tool: str = "",
               probability: float = 0.05) -> Fault:
     """The connector returns `duplicate` from `observe()` — modelling the
     case where the upstream landed two copies of the same business key.
-    The reconciler should register a compensation."""
-    target = connector or tool
-    if not target:
+    The reconciler should register a compensation.
+
+    Same `connector=` / `tool=` semantics as [`lose_ack`][]."""
+    if connector and tool:
+        raise ValueError("duplicate: pass connector= or tool=, not both")
+    if not (connector or tool):
         raise ValueError("duplicate requires connector= or tool=")
-    return Fault(layer=_LAYER_CONNECTOR, target=target, action="duplicate",
-                 probability=probability, when=f"tool == {tool!r}" if tool else "")
+    return Fault(layer=_LAYER_CONNECTOR, target=connector, tool=tool,
+                 action="duplicate", probability=probability)
 
 
 def delay_connector(*, connector: str, ms: int, jitter: float = 0.0) -> Fault:
@@ -278,24 +294,54 @@ class Session:
         from .. import connectors as _connectors
         from .connectors import ChaosConnector
 
-        # Group faults by target connector name.
-        by_name: dict[str, List[Fault]] = {}
+        # Two flavours of connector-layer fault:
+        #   * `target=<connector_name>` — attach to that one connector;
+        #   * `target=""`, `tool=<tool>` — attach to every connector, and
+        #     let ChaosConnector filter by `effect.tool_name` at dispatch.
+        # The fan-out is what makes tool-scoped chaos work without the
+        # user having to know which connector handles which tool.
+        by_connector: dict[str, List[Fault]] = {}
+        tool_scoped: List[Fault] = []
         for f in self.scenario.faults:
-            if f.layer == _LAYER_CONNECTOR:
-                by_name.setdefault(f.target, []).append(f)
-        for name, faults in by_name.items():
+            if f.layer != _LAYER_CONNECTOR:
+                continue
+            if f.target:
+                by_connector.setdefault(f.target, []).append(f)
+            elif f.tool:
+                tool_scoped.append(f)
+            else:
+                self.report.notes.append(
+                    "connector fault skipped: neither target nor tool set")
+
+        # Connector-targeted: each fault attaches to exactly that one
+        # connector (or skips with a recorded note if it's not registered).
+        for name, faults in by_connector.items():
             real = _connectors.get(name)
             if real is None:
                 self.report.notes.append(
                     f"connector fault for {name!r} skipped: connector not registered")
                 continue
-            wrapped = ChaosConnector(inner=real, faults=tuple(faults),
-                                      rng=self._rng)
-            _connectors.register(wrapped)
-            # Restore on exit: reinstall the original connector.
-            def _restore(name=name, original=real):
-                _connectors.register(original)
-            self._connector_unpatches.append(_restore)
+            self._wrap_connector(name, real, list(faults) + tool_scoped)
+
+        # Tool-targeted: fan out to every registered connector that didn't
+        # already get its own bundle (those already received `tool_scoped`
+        # in the loop above). Avoids double-wrapping the same connector.
+        if tool_scoped:
+            already_wrapped = set(by_connector.keys())
+            for name, real in _connectors.all_registered().items():
+                if name in already_wrapped:
+                    continue
+                self._wrap_connector(name, real, tool_scoped)
+
+    def _wrap_connector(self, name: str, real, faults: List[Fault]) -> None:
+        from .. import connectors as _connectors
+        from .connectors import ChaosConnector
+        wrapped = ChaosConnector(inner=real, faults=tuple(faults),
+                                  rng=self._rng)
+        _connectors.register(wrapped)
+        def _restore(name=name, original=real):
+            _connectors.register(original)
+        self._connector_unpatches.append(_restore)
 
     def _check_invariants(self) -> None:
         client = TapeClient(self.url)

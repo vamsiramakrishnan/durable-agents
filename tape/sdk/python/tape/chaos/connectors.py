@@ -61,19 +61,28 @@ class ChaosConnector:
     def name(self) -> str:
         return getattr(self.inner, "name", "")
 
-    def _fault(self, kind: str):
-        """Pick one matching fault, applying probabilities. Returns the
-        Fault object if it fires, else None."""
+    def _fault(self, kind: str, effect=None):
+        """Pick one matching fault, applying probabilities and the
+        tool-scope filter. Returns the Fault if it fires, else None.
+
+        When `effect` is provided, a fault with non-empty `tool` only
+        fires when `effect.tool_name == fault.tool`. Tool-scoped faults
+        are fanned out across every registered connector by the runner
+        (see `Session._apply_connector_faults`); the filter here is
+        what actually narrows them to the targeted tool."""
         for f in self.faults:
             if f.action != kind:
                 continue
+            if f.tool and effect is not None:
+                if getattr(effect, "tool_name", "") != f.tool:
+                    continue
             if f.probability >= 1.0 or self.rng.random() < f.probability:
                 return f
         return None
 
     def dispatch(self, effect) -> DispatchResult:
         # delay → before the inner call (models slow upstream)
-        d = self._fault("delay")
+        d = self._fault("delay", effect)
         if d is not None and d.ms > 0:
             jitter_factor = 1.0
             if d.jitter > 0:
@@ -87,7 +96,7 @@ class ChaosConnector:
         # has to resolve via observe(). This is the same property
         # `TAPE_BANK_DISPATCH_INJECT_UNKNOWN` modelled, declarative.
         if isinstance(result, DispatchResult) and result.status == "confirmed":
-            if self._fault("lose_ack") is not None:
+            if self._fault("lose_ack", effect) is not None:
                 return DispatchResult(
                     status="unknown",
                     external_ref=result.external_ref,
@@ -101,7 +110,7 @@ class ChaosConnector:
         # `duplicate` → force the upstream's view to say "two copies". The
         # reconciler should respond by registering a compensation.
         if isinstance(result, ObservationResult) and result.status == "confirmed":
-            if self._fault("duplicate") is not None:
+            if self._fault("duplicate", effect) is not None:
                 return ObservationResult(
                     status="duplicate",
                     external_ref=result.external_ref,

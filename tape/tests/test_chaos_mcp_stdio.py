@@ -160,6 +160,56 @@ def test_drop_connection_returns_none_and_tears_down() -> None:
     assert resp is None, f"drop_connection should have torn down; got {resp!r}"
 
 
+def test_agent_eof_closes_upstream_stdin_so_proc_can_exit() -> None:
+    """Codex P1 regression: in CLI passthrough mode, when the agent
+    closes its stdin, the proxy's agent→upstream pump must close the
+    *upstream's* stdin too. Otherwise an MCP server that idles waiting
+    for stdin EOF (which the spec recommends) will keep running, and
+    `run()` blocks forever on `proc.wait()`.
+
+    We exercise the agent→upstream pump directly (it reads from
+    `sys.stdin.buffer`), drive an empty stdin into it via a pipe, and
+    assert the upstream's stdin ends up closed when the pump returns."""
+    import io
+    import os
+
+    # Use a tiny "sleeper" subprocess that does nothing but block on its
+    # own stdin. If our proxy properly closes its stdin, the sleeper's
+    # `sys.stdin.read()` returns "" and it exits with code 0. If we
+    # leave stdin open, the sleeper hangs and the test times out.
+    sleeper = [sys.executable, "-c",
+               "import sys; sys.stdin.read(); sys.exit(0)"]
+
+    proxy = MCPStdioProxy(upstream_cmd=sleeper)
+    proxy.start()
+    try:
+        # Drive an immediately-EOF stdin into the agent→upstream pump.
+        # The pump is `_pump_agent_to_upstream`, which reads from
+        # `sys.stdin.buffer`. Replace sys.stdin briefly with /dev/null
+        # so the for-loop sees EOF on the first read.
+        r, w = os.pipe()
+        os.close(w)  # close write end → reader sees EOF immediately
+        original_stdin = sys.stdin
+        try:
+            sys.stdin = os.fdopen(r, "rb", buffering=0)
+            # Pump runs until EOF. With the fix, the `finally` closes
+            # the upstream's stdin.
+            proxy._pump_agent_to_upstream()
+        finally:
+            sys.stdin = original_stdin
+
+        # The fix's contract: after the pump exits, upstream stdin is closed.
+        assert proxy._proc.stdin.closed, \
+            "agent→upstream pump must close upstream stdin on EOF " \
+            "so MCP servers idling on stdin can shut down"
+
+        # And the upstream actually exits within a bounded time.
+        rc = proxy._proc.wait(timeout=3.0)
+        assert rc == 0, f"sleeper should exit cleanly after stdin EOF, got rc={rc}"
+    finally:
+        proxy.stop()
+
+
 def test_schema_drift_mutates_payload() -> None:
     """`schema_drift` with a callback rewrites the response. Stand-in
     for "upstream changed its schema mid-deployment" — a realistic
