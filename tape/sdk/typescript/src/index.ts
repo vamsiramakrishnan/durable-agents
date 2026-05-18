@@ -56,3 +56,11 @@ export {
   tenancyDefaults, tenancyFromEnv, tenancyFromObject, isHard, warnIfHardButUnenforced,
   type TenancyMode, type TenancyConfig,
 } from './tenancy.ts';
+
+// TapeChaos — fault injection + chaos engineering surface. Optional;
+// importing tape-ts does not pull `tape-ts/chaos` in. Use it via:
+//
+//   import * as chaos from 'tape-ts/chaos';
+//
+// See `design-principles/chaos.md` for the design.
+export * as chaos from './chaos/index.ts';
