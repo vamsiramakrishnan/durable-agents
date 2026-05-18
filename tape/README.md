@@ -97,6 +97,7 @@ artifacts); the *agent process* can be in any of the four languages.
 | Built-in connectors             | HTTP / PubSub                | Log / Http / PubSub (`-tags pubsub`) / Tasks (`-tags cloudtasks`) | Log / Http / PubSub / Tasks (lazy)  | Log / Http / PubSub (reflective) / Tasks (reflective) |
 | Structured logs + OTel spans    | `tape.obs.log_json` / `span` | `tape.LogJSON` / `tape.Span`            | `logJson` / `span` / `setSpanHook`  | `Obs.logJson` / `Obs.span`                 |
 | Tenancy config + DESIGN-ONLY warn | `tape.TenancyConfig`       | `tape.TenancyConfig`                    | `tenancyFromObject` / `warnIf…`     | `Tenancy.Config`                           |
+| Chaos engineering surface       | `tape.chaos.*`               | `tape/sdk/go/chaos`                     | `tape-ts/chaos`                     | `dev.tape.chaos.*`                          |
 
 All four enforce the same `non_idempotent` safety rule at decoration /
 construction time: no `business_key`, no `status_check`, no `compensate`

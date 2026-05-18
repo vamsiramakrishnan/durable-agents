@@ -35,6 +35,9 @@ site/
 # DevEx artifacts (root-level)
 .env
 bin/
+# Exception: the TS SDK ships a real `bin/` (declared in package.json#bin)
+# — node CLI shims that are part of the published package, not artefacts.
+!tape/sdk/typescript/bin/
 dist/
 tape.db
 tape.db-wal

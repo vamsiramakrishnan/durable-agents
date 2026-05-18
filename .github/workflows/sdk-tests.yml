@@ -36,6 +36,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "tape/server" }
+      # tape/server/build.rs invokes prost-build, which shells out to
+      # `protoc` to compile tape.proto. The ubuntu-latest runner image
+      # doesn't include it by default — install it before any cargo step.
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: cargo test
         working-directory: tape/server
         run: cargo test --locked

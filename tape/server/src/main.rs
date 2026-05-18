@@ -12,9 +12,16 @@
 
 mod bigtable_change_stream;
 mod cel;
+mod chaos;
+#[cfg(test)]
+mod dst;
+#[cfg(test)]
+mod lin;
 mod matcher;
 mod pb;
 mod service;
+#[cfg(all(test, feature = "sim"))]
+mod sim;
 mod store;
 mod subjects;
 
@@ -46,6 +53,11 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "tape_server=info,tonic=warn".into()),
         )
         .init();
+
+    // No-op when built without `--features chaos`. With it, this registers
+    // every `fail::fail_point!` site declared in `service.rs` against the
+    // `FAILPOINTS` env var. See `chaos.rs` + `design-principles/chaos.md`.
+    chaos::init();
 
     let args = Args::parse();
     let store_url = match (args.store.as_deref(), args.db.as_deref()) {

@@ -29,6 +29,7 @@ from .commands import logs as logs_cmd
 from .commands import status as status_cmd
 from .commands import destroy as destroy_cmd
 from .commands import migrate as migrate_cmd
+from .commands import chaos as chaos_cmd
 
 console = Console()
 
@@ -74,6 +75,7 @@ app.command(name="migrate", help="Run schema migrations for the configured store
 app.add_typer(provision_cmd.app, name="provision", help="Render & apply infrastructure.")
 app.add_typer(deploy_cmd.app, name="deploy", help="Build & deploy services.")
 app.add_typer(destroy_cmd.app, name="destroy", help="Tear down provisioned infra.")
+app.add_typer(chaos_cmd.app, name="chaos", help="Drive chaos scenarios + replay + LDFI.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,35 @@
+# Chaos Mesh — kill a tape-server pod every 5 minutes for 1 minute.
+#
+# Proves the headline durability claim: the server is stateless between
+# requests, every mutating RPC is idempotent, and "one driver per run at
+# a time" is the per-run lease. Killing a server pod mid-flight should
+# not result in any of:
+#   * stuck runs (RUN_STATUS_STUCK)
+#   * blind-retry of a NON_IDEMPOTENT effect
+#   * a missing decision on re-drive
+#
+# Apply with `kubectl apply -f`; remove with `kubectl delete -f`.
+# Selectors assume the Helm chart's default labels
+# (tape/deploy/gcp/k8s/chart/tape/templates/_helpers.tpl).
+#
+# Pair with the SLO-gated abort pattern: a PrometheusRule on
+# `tape/runs/stuck > 0` for > 5m should auto-pause this experiment.
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: tape-server-kill
+  namespace: tape
+  labels:
+    chaos-engineering/scenario: durability-headline
+spec:
+  action: pod-kill
+  mode: one              # one pod at a time — never all of them
+  selector:
+    namespaces: [tape]
+    labelSelectors:
+      app.kubernetes.io/name: tape
+      app.kubernetes.io/component: server
+  scheduler:
+    cron: "@every 5m"
+  duration: "60s"
