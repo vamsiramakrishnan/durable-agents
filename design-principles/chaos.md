@@ -345,15 +345,17 @@ runtime.
 
 ## 11. Phases — how this lands
 
-| Phase | Deliverable                                                       |
-|-------|-------------------------------------------------------------------|
-| 0     | Failpoint catalog at the server primitives + this treatise        |
-| 1     | `tape.chaos` Python SDK: scenarios, invariants, connector shim     |
-| 2     | Deterministic simulation (madsim or turmoil) + replay CLI         |
-| 3     | LDFI + Porcupine integration; the Reliability Surface scorer      |
-| 4     | Agent-layer chaos: `model_chaos_proxy`, `mcp_chaos_proxy`         |
-| 5     | Chaos Mesh / Cilium manifests; `tape chaos` CLI                    |
-| 6     | Mirror the SDK surface to Go / TypeScript / Java                  |
+| Phase | Deliverable                                                                  | Status |
+|-------|------------------------------------------------------------------------------|--------|
+| 0     | Failpoint catalogue at the server primitives + this treatise                 | done   |
+| 1     | `tape.chaos` Python SDK: scenarios, invariants, connector shim                | done   |
+| 2     | Deterministic replay + single-thread DST harness                              | done   |
+| 3     | LDFI + Reliability Surface R(k,ε,λ) + DeepSnapshot                            | done   |
+| 2.5   | Full madsim DST — virtualised time + network + process                       |        |
+| 3.5   | Porcupine-style linearizability checker for the lease primitive              |        |
+| 4     | Agent-layer chaos: `model_chaos_proxy`, `mcp_chaos_proxy`                    |        |
+| 5     | Chaos Mesh / Cilium manifests; `tape chaos` CLI                               |        |
+| 6     | Mirror the SDK surface to Go / TypeScript / Java                             |        |
 
 Phase 0 is the foundation: a small, named injection surface in the Rust
 core, gated behind a cargo feature, with this treatise pinning the shape.

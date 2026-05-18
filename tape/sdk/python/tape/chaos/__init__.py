@@ -68,8 +68,22 @@ from .scenarios import (
 )
 from . import invariants as invariant
 from .connectors import wrap_connector, ChaosConnector
-from .snapshot import Snapshot, JournalLine, capture as capture_snapshot
+from .snapshot import (
+    Snapshot,
+    JournalLine,
+    capture as capture_snapshot,
+    DeepSnapshot,
+    capture_deep,
+)
 from .replay import replay, replayable, ReplayReport
+from .lineage import (
+    LineageNode,
+    LineageGraph,
+    derive_scenarios,
+    LDFIReport,
+    run_all as ldfi_run_all,
+)
+from .reliability import ReliabilitySurface, Recorder, score
 
 __all__ = [
     "Fault",
@@ -100,4 +114,15 @@ __all__ = [
     "replay",
     "replayable",
     "ReplayReport",
+    # phase 3 — LDFI + reliability surface + deep replay
+    "DeepSnapshot",
+    "capture_deep",
+    "LineageNode",
+    "LineageGraph",
+    "derive_scenarios",
+    "LDFIReport",
+    "ldfi_run_all",
+    "ReliabilitySurface",
+    "Recorder",
+    "score",
 ]

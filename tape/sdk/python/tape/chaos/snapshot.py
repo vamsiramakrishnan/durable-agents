@@ -140,6 +140,149 @@ class Snapshot:
         return out
 
 
+@dataclass(frozen=True)
+class DeepSnapshot:
+    """A snapshot that walks the full projection tables, not just the
+    journal summaries. Closes the gap noted in `Snapshot`: catches drift
+    inside `response_json`, `request_json`, `payload_json`, and the full
+    `tape_decisions` / `tape_effects` / `tape_obligations` rows.
+
+    More expensive than `Snapshot` (N+1 round trips: one per decision,
+    one per effect's GetEffect for full payload, one ListObligations).
+    Use when journal-summary equality has held and you need to confirm
+    payload-body determinism."""
+    run_id: str
+    decisions: tuple        # tuple[canonical decision tuples]
+    effects: tuple          # tuple[canonical effect tuples]
+    obligations: tuple      # tuple[canonical obligation tuples]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DeepSnapshot):
+            return NotImplemented
+        return (self.decisions == other.decisions
+                and self.effects == other.effects
+                and self.obligations == other.obligations)
+
+    def __hash__(self) -> int:
+        return hash((self.decisions, self.effects, self.obligations))
+
+
+def capture_deep(client: TapeClient, run_id: str, *,
+                 canonical_run_id: str = "run-1",
+                 max_decisions: int = 1_000) -> DeepSnapshot:
+    """Capture the run's full projection rows for body-level comparison.
+    Walks decisions by index (until `not found`), effects by listing
+    pending + walking the journal for confirmed ones, and obligations via
+    `list_obligations`."""
+    run_id_map = {run_id: canonical_run_id}
+
+    def _canon_dict(d: dict) -> tuple:
+        cleaned = _canonical(d, run_id_map)
+        if not isinstance(cleaned, dict):
+            return (("_value", cleaned),)
+        return _to_tuple(cleaned)
+
+    # Decisions: get_decision(i) until not found.
+    decisions: list[tuple] = []
+    for i in range(max_decisions):
+        try:
+            got = client.get_decision(run_id=run_id, decision_index=i)
+        except Exception:
+            break
+        if not got.found:
+            break
+        d = got.decision
+        decisions.append(_canon_dict({
+            "decision_index": d.decision_index,
+            "model": d.model,
+            "request_json": d.request_json,
+            "response_json": d.response_json,
+            "policy_version": d.policy_version,
+            "rationale": d.rationale,
+        }))
+
+    # Effects: walk the journal once, collecting unique effect keys, then
+    # GetEffect each one for the authoritative row.
+    effects: list[tuple] = []
+    import time
+    deadline = time.monotonic() + 3.0
+    seen_keys: set[str] = set()
+    it = client.subscribe_run(run_id=run_id, from_seq=0)
+    try:
+        for entry in it:
+            if entry.kind == "effect":
+                try:
+                    p = json.loads(entry.payload_json or "{}")
+                except Exception:
+                    continue
+                key = str(p.get("idempotency_key") or "")
+                if key:
+                    seen_keys.add(key)
+            if entry.kind == "run":
+                try:
+                    p = json.loads(entry.payload_json or "{}")
+                except Exception:
+                    p = {}
+                if (p.get("status") or "").lower() in {"terminal", "failed", "cancelled", "stuck"}:
+                    break
+            if time.monotonic() > deadline:
+                break
+    finally:
+        try:
+            it.cancel()
+        except Exception:
+            pass
+
+    for key in sorted(seen_keys):
+        try:
+            got = client.get_effect(run_id=run_id, idempotency_key=key)
+        except Exception:
+            continue
+        if not got.found:
+            continue
+        e = got.effect
+        effects.append(_canon_dict({
+            "tool_name": e.tool_name,
+            "idempotency_key": e.idempotency_key,
+            "status": e.status,
+            "request_json": e.request_json,
+            "response_json": e.response_json,
+            "error_json": e.error_json,
+            "semantics": e.semantics,
+            "dispatch_mode": e.dispatch_mode,
+            "business_key": e.business_key,
+            "connector": e.connector,
+            "external_ref": e.external_ref,
+            "decision_index": e.decision_index,
+        }))
+
+    # Obligations: list_obligations + canonicalise.
+    obligations: list[tuple] = []
+    try:
+        resp = client.list_obligations(run_id=run_id, only_unresolved=False)
+        for o in resp.obligations:
+            obligations.append(_canon_dict({
+                "kind": o.kind,
+                "effect_key": o.effect_key,
+                "status": o.status,
+                "payload_json": o.payload_json,
+                "attempts": o.attempts,
+                "max_attempts": o.max_attempts,
+                "last_error": o.last_error,
+                "result_json": o.result_json,
+                "compensator_ref": o.compensator_ref,
+            }))
+    except Exception:
+        pass
+
+    return DeepSnapshot(
+        run_id=run_id,
+        decisions=tuple(decisions),
+        effects=tuple(effects),
+        obligations=tuple(obligations),
+    )
+
+
 def capture(client: TapeClient, run_id: str, *,
             deadline_s: float = 5.0,
             canonical_run_id: str = "run-1") -> Snapshot:
@@ -186,4 +329,4 @@ def capture(client: TapeClient, run_id: str, *,
     return Snapshot(run_id=run_id, lines=tuple(lines))
 
 
-__all__ = ["Snapshot", "JournalLine", "capture"]
+__all__ = ["Snapshot", "JournalLine", "capture", "DeepSnapshot", "capture_deep"]
