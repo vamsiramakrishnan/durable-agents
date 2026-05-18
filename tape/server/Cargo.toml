@@ -25,7 +25,7 @@ sim = []
 [dependencies]
 tonic = "0.12"
 fail = { version = "0.5", default-features = false }
-prost = "0.13"
+prost = "0.14"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait = "0.1"
