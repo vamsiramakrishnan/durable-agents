@@ -15,6 +15,8 @@ mod cel;
 mod chaos;
 #[cfg(test)]
 mod dst;
+#[cfg(test)]
+mod lin;
 mod matcher;
 mod pb;
 mod service;

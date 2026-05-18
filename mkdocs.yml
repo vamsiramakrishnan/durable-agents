@@ -233,6 +233,7 @@ nav:
       - Tape spec: design/tape.md
       - Event bus: design/tape-event-bus.md
       - Parity matrix: design/parity.md
+      - Chaos & failure testing: design/chaos.md
 
   - Help:
       - help/index.md

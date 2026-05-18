@@ -257,3 +257,120 @@ async fn real_cas_against_tape_service_exactly_one_wins() {
     assert_eq!(wins, 1,
         "exactly one CAS must win; got acquired=({}, {})", a.acquired, b.acquired);
 }
+
+// ── Test 6: Phase 3.5 — Porcupine-style linearizability of the lease ────────
+//
+// "Exactly one wins" is necessary but not sufficient — the formal
+// Jepsen-style invariant is *linearizability*: there exists a total
+// order of the concurrent ops consistent with real-time happens-before
+// and with the sequential lease model. We record a history of
+// concurrent claim_obligation calls from N reactors, then feed it to
+// the Wing-Gong checker in `lin.rs`. Under cfg(madsim) the simulator's
+// determinism makes the witness reproducible per seed; under
+// passthrough the property still holds (linearizability is a real-time
+// invariant, not a determinism one), the checker just sees different
+// scheduling.
+
+#[madsim::test]
+async fn lease_history_is_linearizable() {
+    use crate::lin::{check, Event, LeaseModel, LeaseOp, LeaseRet};
+    use crate::pb::tape_server::Tape;
+    use crate::pb::*;
+    use crate::service::TapeService;
+    use crate::store::mem::MemRunStore;
+    use std::time::Instant;
+
+    let store = std::sync::Arc::new(MemRunStore::new());
+    let svc = std::sync::Arc::new(TapeService::new(store));
+
+    // Setup: run → decision → effect → obligation (the row everyone races for).
+    svc.begin_run(tonic::Request::new(BeginRunRequest {
+        app_name: "sim".into(), user_id: "u".into(),
+        session_id: "s".into(), invocation_id: "inv-lin".into(),
+        lease_owner: "driver".into(), lease_ttl_ms: 60_000,
+    })).await.unwrap();
+    let run_id_setup = svc.list_runs_to_recover(tonic::Request::new(
+        ListRunsToRecoverRequest { limit: 1, now_ms: crate::store::now_ms() + 1_000_000 }
+    )).await.unwrap().into_inner().runs[0].run_id.clone();
+    svc.record_decision(tonic::Request::new(RecordDecisionRequest {
+        run_id: run_id_setup.clone(), decision_index: 0, model: "m".into(),
+        request_json: "{}".into(), response_json: "{}".into(),
+        rationale: "".into(), policy_version: "".into(),
+    })).await.unwrap();
+    let be = svc.begin_effect(tonic::Request::new(BeginEffectRequest {
+        run_id: run_id_setup.clone(), decision_index: 0, tool_name: "wire".into(),
+        call_index: 0, request_json: "{}".into(), custom_key: "".into(),
+        semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
+    })).await.unwrap().into_inner();
+    svc.complete_effect(tonic::Request::new(CompleteEffectRequest {
+        run_id: run_id_setup.clone(), idempotency_key: be.idempotency_key.clone(),
+        status: EffectStatus::Confirmed as i32,
+        response_json: "{}".into(), error_json: "".into(),
+    })).await.unwrap();
+    svc.register_compensation(tonic::Request::new(RegisterCompensationRequest {
+        run_id: run_id_setup.clone(), effect_key: be.idempotency_key.clone(),
+        kind: "reverse_wire".into(), payload_json: "{}".into(),
+        compensator_ref: "".into(), max_attempts: 0,
+    })).await.unwrap();
+    let obs = svc.list_obligations(tonic::Request::new(ListObligationsRequest {
+        run_id: run_id_setup.clone(), only_unresolved: true, status_filter: 0,
+    })).await.unwrap().into_inner().obligations;
+    let ob_seq = obs[0].seq;
+
+    // Three reactors race; we record (start_ns, end_ns, op, ret) per call.
+    let t0 = Instant::now();
+    let claim = |claimer: &'static str, ttl_ms: i64| {
+        let svc = svc.clone();
+        let run_id = run_id_setup.clone();
+        async move {
+            let start = t0.elapsed().as_nanos() as u64;
+            let now_ms = crate::store::now_ms();
+            let resp = svc.claim_obligation(tonic::Request::new(ClaimObligationRequest {
+                run_id, obligation_seq: ob_seq,
+                claimer: claimer.into(), lease_ttl_ms: ttl_ms,
+            })).await.unwrap().into_inner();
+            let end = t0.elapsed().as_nanos() as u64;
+            Event {
+                process: claimer.into(),
+                op: LeaseOp::Claim {
+                    claimer: claimer.into(),
+                    ttl_ns: (ttl_ms as u64) * 1_000_000,
+                    now_ns: (now_ms as u64) * 1_000_000,
+                },
+                ret: LeaseRet::Claimed {
+                    acquired: resp.acquired,
+                    holder: if resp.acquired {
+                        claimer.into()
+                    } else {
+                        resp.obligation
+                            .as_ref()
+                            .map(|o| o.claimed_by.clone())
+                            .unwrap_or_default()
+                    },
+                },
+                start_ns: start,
+                end_ns: end,
+            }
+        }
+    };
+
+    let (a, b, c) = tokio::join!(
+        claim("reactor-A", 60_000),
+        claim("reactor-B", 60_000),
+        claim("reactor-C", 60_000),
+    );
+    let history = vec![a, b, c];
+
+    // The Wing-Gong checker must accept this history — i.e., a total
+    // order respecting real-time happens-before and the sequential
+    // lease model exists. If it doesn't, the production CAS is buggy
+    // in a way the "exactly one wins" check can't see.
+    if let Err(witness) = check(&LeaseModel, &history) {
+        panic!(
+            "lease history NOT linearizable; deepest prefix the search reached: {} of {} ops:\n{:#?}",
+            witness.deepest_prefix.len(),
+            history.len(),
+            witness.deepest_prefix
+        );
+    }
+}
