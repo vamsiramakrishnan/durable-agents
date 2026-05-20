@@ -7,7 +7,8 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./embedded": "./src/embedded/index.ts"
   },
   "files": [
     "src",
@@ -20,12 +21,19 @@
   "scripts": {
     "build": "tsc",
     "test": "node --test --experimental-strip-types --no-warnings test/*.test.ts",
+    "test:embedded": "node --test --experimental-strip-types --no-warnings test/embedded.test.ts",
     "outbox": "node --experimental-strip-types --no-warnings bin/tape-outbox-ts.ts",
     "regen-proto": "cp ../../proto/tape.proto ./proto/tape.proto"
   },
   "optionalDependencies": {
     "@google-cloud/pubsub": "^4.7.0",
-    "google-auth-library": "^9.0.0"
+    "better-sqlite3": "^11.0.0",
+    "google-auth-library": "^9.0.0",
+    "pg": "^8.11.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": { "optional": true },
+    "pg": { "optional": true }
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.10.6",
