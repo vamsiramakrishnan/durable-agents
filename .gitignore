@@ -61,3 +61,8 @@ tape/docs/reference/typescript/enumerations/
 tape/docs/reference/typescript/modules/
 tape/docs/reference/java/javadoc/                # the real Javadoc tree
 !tape/docs/reference/java/javadoc/index.html     # keep the placeholder redirect
+
+# Claude Code's per-agent worktrees (git creates submodule entries because the
+# worktrees contain .git/ — but they're not real submodules, just isolated
+# checkouts).
+.claude/
