@@ -27,8 +27,22 @@ from .service import (
     TapeSessionService,
     TimerRecord,
 )
+from .connectors import (
+    CompensationResult,
+    Connector,
+    DispatchResult,
+    LogConnector,
+    ObservationResult,
+)
+from .reactors import (
+    dispatch_outbox_once,
+    drain_obligations_once,
+    fire_due_timers_once,
+    reconcile_once,
+)
 
 __all__ = [
+    # service
     "TapeSessionService",
     "EffectStatus",
     "EffectSemantics",
@@ -38,4 +52,15 @@ __all__ = [
     "EffectRecord",
     "ObligationRecord",
     "TimerRecord",
+    # connectors
+    "Connector",
+    "DispatchResult",
+    "ObservationResult",
+    "CompensationResult",
+    "LogConnector",
+    # reactors
+    "dispatch_outbox_once",
+    "reconcile_once",
+    "drain_obligations_once",
+    "fire_due_timers_once",
 ]

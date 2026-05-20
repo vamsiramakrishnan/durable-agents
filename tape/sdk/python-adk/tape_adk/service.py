@@ -19,6 +19,7 @@ async. They mirror the proto RPCs (`BeginEffect`, `CompleteEffect`,
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -30,6 +31,23 @@ from sqlalchemy.exc import IntegrityError
 from google.adk.sessions.database_session_service import DatabaseSessionService
 
 from .schemas import StorageEffect, StorageObligation, StorageTimer, StorageValue
+
+
+# A note about cross-session CAS on SQLite + ADK's StaticPool:
+#
+# ADK configures SQLite with StaticPool — one shared connection across
+# all async sessions. SQLAlchemy's `async_session` checks out the connection
+# per-statement, so two concurrent `claim_effect_dispatch` calls on the same
+# row can interleave their BEGIN/UPDATE/COMMIT operations in ways that make
+# the rowcount-based CAS unreliable on SQLite.
+#
+# For Postgres (default pool, real per-session connections, row-level locks
+# via `with_for_update`), this isn't an issue — the SQL-level CAS works as
+# the proto and the failure-modes doc claim. For SQLite, we serialize CAS
+# in-process via an asyncio lock. That's enough for the embedded path: a
+# single-process ADK app calling its own reactors. For multi-process
+# deployments you want Postgres anyway.
+_SQLITE_CAS_LOCK_ATTR = "_tape_sqlite_cas_lock"
 
 
 # ── status enums (string-typed; mirror proto enums) ────────────────────────
@@ -204,6 +222,27 @@ class TapeSessionService(DatabaseSessionService):
     and ADK's DatabaseSessionService is closed by construction.
     """
 
+    @asynccontextmanager
+    async def _cas_lock(self):
+        """Serialize CAS attempts in-process when running against SQLite.
+
+        On Postgres the per-row SQL-level locking does this for us; the
+        lock is a no-op there. On SQLite we acquire a per-service asyncio
+        lock so concurrent `claim_effect_dispatch` / `claim_obligation`
+        calls from the same Python process don't race on the shared
+        connection. Multi-process correctness comes from the SQL CAS
+        predicate; this just protects the SQLite-shared-connection case."""
+        is_sqlite = self.db_engine.dialect.name == "sqlite"
+        if not is_sqlite:
+            yield
+            return
+        lock = getattr(self, _SQLITE_CAS_LOCK_ATTR, None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(self, _SQLITE_CAS_LOCK_ATTR, lock)
+        async with lock:
+            yield
+
     # ── effect ledger ────────────────────────────────────────────────────
 
     async def begin_effect(
@@ -364,7 +403,8 @@ class TapeSessionService(DatabaseSessionService):
         now = now_ms or _now_ms()
         expires = now + lease_ttl_ms
 
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._cas_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             # The CAS itself — a single conditional UPDATE.
             stmt = (
                 update(StorageEffect)
@@ -668,7 +708,8 @@ class TapeSessionService(DatabaseSessionService):
         await self._prepare_tables()
         now = now_ms or _now_ms()
         expires = now + lease_ttl_ms
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._cas_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             stmt = (
                 update(StorageObligation)
                 .where(
