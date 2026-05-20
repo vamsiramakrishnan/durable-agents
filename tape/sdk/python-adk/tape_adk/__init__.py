@@ -40,6 +40,8 @@ from .reactors import (
     fire_due_timers_once,
     reconcile_once,
 )
+from .decorators import effect, meta_of, outbox_tool
+from .plugin import AckLost, NonIdempotentSafetyPlugin
 
 __all__ = [
     # service
@@ -63,4 +65,11 @@ __all__ = [
     "reconcile_once",
     "drain_obligations_once",
     "fire_due_timers_once",
+    # decorators
+    "effect",
+    "outbox_tool",
+    "meta_of",
+    # plugin
+    "NonIdempotentSafetyPlugin",
+    "AckLost",
 ]
