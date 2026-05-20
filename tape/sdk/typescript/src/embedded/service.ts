@@ -388,8 +388,10 @@ export class TapeSessionService {
     responseJson?: unknown;
     errorJson?: unknown;
   }): Promise<EffectRecord | null> {
-    if (![EffectStatus.CONFIRMED, EffectStatus.FAILED, EffectStatus.UNKNOWN]
-        .includes(args.status as EffectStatusT)) {
+    const terminal: readonly string[] = [
+      EffectStatus.CONFIRMED, EffectStatus.FAILED, EffectStatus.UNKNOWN,
+    ];
+    if (!terminal.includes(args.status)) {
       throw new Error(`completeEffect: invalid status ${JSON.stringify(args.status)}`);
     }
     await this.ensureTables();
@@ -891,8 +893,10 @@ export class TapeSessionService {
     status: string;
     resultJson?: unknown;
   }): Promise<ObligationRecord | null> {
-    if (![ObligationStatus.COMPENSATED, ObligationStatus.STUCK]
-        .includes(args.status as ObligationStatusT)) {
+    const terminal: readonly string[] = [
+      ObligationStatus.COMPENSATED, ObligationStatus.STUCK,
+    ];
+    if (!terminal.includes(args.status)) {
       throw new Error(
         `resolveObligation: status must be COMPENSATED or STUCK, got ${JSON.stringify(args.status)}`);
     }
