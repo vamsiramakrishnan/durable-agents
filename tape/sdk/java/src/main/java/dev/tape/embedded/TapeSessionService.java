@@ -40,6 +40,14 @@ import static dev.tape.embedded.Schema.ValueRecord;
  * <p>The class is intentionally synchronous (no {@code CompletableFuture})
  * even though Python's is async — JDBC is blocking and callers wrap
  * however they like. The shapes + semantics match.
+ *
+ * <p>For SQLite specifically: every public method's body acquires the
+ * shared {@link #casLock} before touching JDBC. This mirrors how
+ * SQLAlchemy's StaticPool funnels all queries through a single connection
+ * in the Python reference — the natural-serialization fallback for an
+ * embedded engine that doesn't have row-level locks. For Postgres the
+ * lock is a no-op (real per-session connections + row-level locks do the
+ * coordination).
  */
 public final class TapeSessionService {
 
@@ -47,6 +55,49 @@ public final class TapeSessionService {
     private final boolean isSqlite;
     private final ReentrantLock casLock = new ReentrantLock();
     private volatile boolean tablesPrepared = false;
+
+    private void acquireIfSqlite() { if (isSqlite) casLock.lock(); }
+    private void releaseIfSqlite() { if (isSqlite && casLock.isHeldByCurrentThread()) casLock.unlock(); }
+
+    /**
+     * Acquire a connection AND, for SQLite, the in-process serialization
+     * lock — the lock is released when the returned Connection is closed.
+     *
+     * <p>This is the JDBC equivalent of "every query through one
+     * connection" that SQLAlchemy's StaticPool gives the Python reference.
+     * Without it, two threads each opening their own SQLite connection
+     * collide on SQLITE_BUSY / SQLITE_LOCKED_SHAREDCACHE — the embedded
+     * engine has no row-level locks to coordinate via. For Postgres the
+     * lock is a no-op (real per-session connections + row locks do it).
+     *
+     * <p>Always use with try-with-resources.
+     */
+    private Connection acquireConn() throws SQLException {
+        acquireIfSqlite();
+        try {
+            Connection real = ds.getConnection();
+            if (!isSqlite) return real;
+            // Proxy that delegates everything except close(); on close,
+            // releases the real connection AND the cas lock.
+            return (Connection) java.lang.reflect.Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[] { Connection.class },
+                (proxy, method, args) -> {
+                    if ("close".equals(method.getName())) {
+                        try { real.close(); } finally { releaseIfSqlite(); }
+                        return null;
+                    }
+                    try {
+                        return method.invoke(real, args);
+                    } catch (java.lang.reflect.InvocationTargetException ite) {
+                        throw ite.getTargetException();
+                    }
+                });
+        } catch (SQLException e) {
+            releaseIfSqlite();
+            throw e;
+        }
+    }
 
     /**
      * Build a service over the given DataSource. The dialect is auto-detected
@@ -75,7 +126,7 @@ public final class TapeSessionService {
         if (tablesPrepared) return;
         synchronized (this) {
             if (tablesPrepared) return;
-            try (Connection c = ds.getConnection()) {
+            try (Connection c = acquireConn()) {
                 Schema.createAllTables(c);
             }
             tablesPrepared = true;
@@ -120,7 +171,7 @@ public final class TapeSessionService {
             : invocationId + "/decision-" + decisionIndex + "/" + toolName + "/" + callIndex;
 
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             EffectRecord existing = selectEffect(c, appName, userId, sessionId, key);
             if (existing != null) return existing;
 
@@ -194,7 +245,7 @@ public final class TapeSessionService {
                 "completeEffect: invalid status " + status);
         }
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             EffectRecord row = selectEffect(c, appName, userId, sessionId, idempotencyKey);
             if (row == null) return Optional.empty();
             if (!EffectRecord.PENDING.equals(row.status())) return Optional.of(row);
@@ -221,7 +272,7 @@ public final class TapeSessionService {
     public Optional<EffectRecord> getEffect(
             String appName, String userId, String sessionId, String idempotencyKey) throws SQLException {
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             return Optional.ofNullable(selectEffect(c, appName, userId, sessionId, idempotencyKey));
         }
     }
@@ -246,8 +297,7 @@ public final class TapeSessionService {
         long now = nowMsArg > 0 ? nowMsArg : nowMs();
         long expires = now + leaseTtlMs;
 
-        if (isSqlite) casLock.lock();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             String sql = "UPDATE tape_effects SET"
                 + " dispatch_claimed_by=?, dispatch_claim_expires_at_ms=?"
                 + " WHERE app_name=? AND user_id=? AND session_id=? AND idempotency_key=?"
@@ -271,8 +321,6 @@ public final class TapeSessionService {
             }
             EffectRecord row = selectEffect(c, appName, userId, sessionId, idempotencyKey);
             return new ClaimEffectResult(acquired, Optional.ofNullable(row));
-        } finally {
-            if (isSqlite) casLock.unlock();
         }
     }
 
@@ -287,7 +335,7 @@ public final class TapeSessionService {
             String error, long nextDispatchAtMs) throws SQLException {
 
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             EffectRecord row = selectEffect(c, appName, userId, sessionId, idempotencyKey);
             if (row == null) return Optional.empty();
 
@@ -329,7 +377,7 @@ public final class TapeSessionService {
             String compensateOnDuplicateKind) throws SQLException {
 
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             boolean priorAuto = c.getAutoCommit();
             c.setAutoCommit(false);
             try {
@@ -441,7 +489,7 @@ public final class TapeSessionService {
         sql.append(" ORDER BY ts_ms LIMIT ?");
         args.add(limit <= 0 ? 200 : limit);
 
-        try (Connection c = ds.getConnection();
+        try (Connection c = acquireConn();
              PreparedStatement ps = c.prepareStatement(sql.toString())) {
             bindArgs(ps, args);
             return readEffects(ps);
@@ -473,7 +521,7 @@ public final class TapeSessionService {
         sql.append(" ORDER BY ts_ms LIMIT ?");
         args.add(limit <= 0 ? 200 : limit);
 
-        try (Connection c = ds.getConnection();
+        try (Connection c = acquireConn();
              PreparedStatement ps = c.prepareStatement(sql.toString())) {
             bindArgs(ps, args);
             return readEffects(ps);
@@ -488,7 +536,7 @@ public final class TapeSessionService {
             String effectKey, String kind, String payloadJson,
             String compensatorRef, int maxAttempts) throws SQLException {
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             ObligationRecord existing = selectObligationByKindKey(
                 c, appName, userId, sessionId, effectKey, kind);
             if (existing != null) return existing;
@@ -519,7 +567,7 @@ public final class TapeSessionService {
             args.add(ObligationRecord.COMMITTED);
         }
         sql.append(" ORDER BY seq DESC");
-        try (Connection c = ds.getConnection();
+        try (Connection c = acquireConn();
              PreparedStatement ps = c.prepareStatement(sql.toString())) {
             bindArgs(ps, args);
             return readObligations(ps);
@@ -558,7 +606,7 @@ public final class TapeSessionService {
             + String.join(" OR ", ors)
             + ") ORDER BY seq DESC LIMIT ?";
         args.add(limit <= 0 ? 500 : limit);
-        try (Connection c = ds.getConnection();
+        try (Connection c = acquireConn();
              PreparedStatement ps = c.prepareStatement(sql)) {
             bindArgs(ps, args);
             return readObligations(ps);
@@ -576,8 +624,7 @@ public final class TapeSessionService {
         long now = nowMsArg > 0 ? nowMsArg : nowMs();
         long expires = now + leaseTtlMs;
 
-        if (isSqlite) casLock.lock();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             String sql = "UPDATE tape_obligations SET"
                 + " status=?, claimed_by=?, claim_expires_at_ms=?"
                 + " WHERE seq=? AND ("
@@ -598,8 +645,6 @@ public final class TapeSessionService {
             }
             ObligationRecord row = selectObligation(c, seq);
             return new ClaimObligationResult(acquired, Optional.ofNullable(row));
-        } finally {
-            if (isSqlite) casLock.unlock();
         }
     }
 
@@ -609,7 +654,7 @@ public final class TapeSessionService {
     public Optional<ObligationRecord> recordObligationAttempt(
             long seq, String error, long nextAttemptAtMs) throws SQLException {
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             ObligationRecord row = selectObligation(c, seq);
             if (row == null) return Optional.empty();
 
@@ -649,7 +694,7 @@ public final class TapeSessionService {
                 "resolveObligation: status must be COMPENSATED or STUCK, got " + status);
         }
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             ObligationRecord row = selectObligation(c, seq);
             if (row == null) return Optional.empty();
             String sql = "UPDATE tape_obligations SET"
@@ -674,7 +719,7 @@ public final class TapeSessionService {
             String appName, String userId, String sessionId,
             String timerId, long fireAtMs, String kind, String payloadJson) throws SQLException {
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             TimerRecord existing = selectTimer(c, appName, userId, sessionId, timerId);
             if (existing != null) return existing;
 
@@ -708,8 +753,7 @@ public final class TapeSessionService {
             long nowMsArg, int limit, boolean claim) throws SQLException {
         prepareTables();
         long now = nowMsArg > 0 ? nowMsArg : nowMs();
-        if (isSqlite && claim) casLock.lock();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             boolean priorAuto = c.getAutoCommit();
             if (claim) c.setAutoCommit(false);
             try {
@@ -743,15 +787,13 @@ public final class TapeSessionService {
             } finally {
                 if (claim) try { c.setAutoCommit(priorAuto); } catch (SQLException ignore) {}
             }
-        } finally {
-            if (isSqlite && claim) casLock.unlock();
         }
     }
 
     public boolean cancelTimer(
             String appName, String userId, String sessionId, String timerId) throws SQLException {
         prepareTables();
-        try (Connection c = ds.getConnection();
+        try (Connection c = acquireConn();
              PreparedStatement ps = c.prepareStatement(
                 "DELETE FROM tape_timers WHERE app_name=? AND user_id=? AND session_id=? AND timer_id=?")) {
             ps.setString(1, appName);
@@ -773,8 +815,7 @@ public final class TapeSessionService {
             String namespace, String key, String valueJson,
             int ifVersion, String writer) throws SQLException {
         prepareTables();
-        if (isSqlite) casLock.lock();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             ValueRecord existing = selectValue(c, namespace, key);
             long now = nowMs();
             if (existing == null) {
@@ -817,14 +858,12 @@ public final class TapeSessionService {
                 }
             }
             return selectValue(c, namespace, key);
-        } finally {
-            if (isSqlite) casLock.unlock();
         }
     }
 
     public Optional<ValueRecord> getValue(String namespace, String key) throws SQLException {
         prepareTables();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = acquireConn()) {
             return Optional.ofNullable(selectValue(c, namespace, key));
         }
     }
