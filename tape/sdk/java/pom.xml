@@ -68,6 +68,16 @@
       <version>5.10.0</version>
       <scope>test</scope>
     </dependency>
+    <!-- SQLite driver for the embedded-mode tests. Scoped to test so
+         users who deploy against Postgres aren't forced to pull SQLite
+         transitively. Embedded users who want SQLite at runtime declare
+         their own dependency. -->
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+      <version>3.46.0.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
