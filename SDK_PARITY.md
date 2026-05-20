@@ -49,26 +49,43 @@ embedded backend in the other languages.
 
 | | Python (`tape-adk`) | TypeScript | Go | Java |
 |---|:--:|:--:|:--:|:--:|
-| Embedded `SessionService` that extends host framework's session store | ✅ extends `DatabaseSessionService` | 🟡 standalone (no ADK-TS) — scaffolded | 🟡 standalone (no ADK-Go integration yet) — scaffolded | 🟡 standalone — scaffolded |
-| SQL schema (effects · obligations · timers · values) | ✅ four `Storage*` tables on ADK's `Base` | 🟡 schema only | 🟡 schema only | 🟡 schema only |
-| 14 ledger methods (`begin_effect`, `complete_effect`, `claim_*`, etc.) | ✅ | 🟡 stubs | 🟡 stubs | 🟡 stubs |
-| Row-level CAS for outbox / obligation claims | ✅ + asyncio.Lock on SQLite | 🟡 | 🟡 | 🟡 |
-| Reactor library (4 async loops as plain functions) | ✅ | 🟡 | 🟡 | 🟡 |
-| Connector protocol (dispatch / observe / compensate) | ✅ + `LogConnector` | 🟡 | 🟡 | 🟡 |
-| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + `@effect` / `@outbox_tool` | — *(no ADK-TS)* | — *(needs ADK-Go integration plan)* | — *(needs ADK-Java integration plan)* |
-| Reactor CLI (`python -m tape_adk`) | ✅ `tape-adk-reactors` | 🟡 | 🟡 | 🟡 |
-| E2E test against the host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — | — | — |
+| Embedded session/effect store | ✅ extends ADK's `DatabaseSessionService` | ✅ standalone `src/embedded/` | ✅ standalone `embedded/` pkg | ✅ standalone `dev.tape.embedded` |
+| SQL schema (effects · obligations · timers · values) | ✅ four `Storage*` tables | ✅ column-identical | ✅ column-identical | ✅ column-identical |
+| Ledger methods (`begin_effect`, `complete_effect`, `claim_*`, …) | ✅ 19 | ✅ 19 | ✅ 19 | ✅ 19 |
+| Row-level CAS for outbox / obligation claims | ✅ + asyncio.Lock on SQLite | ✅ + Mutex on SQLite | ✅ + sync.Mutex on SQLite | ✅ + ReentrantLock on SQLite |
+| Reactor library (4 loops as plain functions) | ✅ | ✅ | ✅ | ✅ |
+| Connector protocol (dispatch / observe / compensate) + `LogConnector` | ✅ | ✅ | ✅ | ✅ |
+| Decorators / construction-time refusal (`@effect` / `@outbox_tool`) | ✅ | ✅ HOF wrappers | ✅ HOF + `ErrOutboxToolConfig` | ✅ builder + `IllegalArgumentException` |
+| Embedded test suite (same invariants) | ✅ 29 | ✅ 30 | ✅ 28 (`-race`) | ✅ 29 |
+| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + e2e vs real `Runner` | — *(no ADK-TS)* | 🟡 *(needs ADK-Go integration plan)* | 🟡 *(needs ADK-Java integration plan)* |
+| Reactor CLI (`python -m tape_adk`) | ✅ `tape-adk-reactors` | — *(call the funcs directly)* | — *(call the funcs directly)* | — *(call the funcs directly)* |
+| E2E test against a host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — *(no host framework)* | 🟡 *(pending ADK-Go)* | 🟡 *(pending ADK-Java)* |
 
-✅ shipping · 🟡 scaffolded / contract-compatible · — n/a by design
+✅ shipping · 🟡 design pending · — n/a by design
 
-The **scaffolded** rows mean: the SDK has the schema definition + a
-service skeleton + the connector / reactor types so a user can read what
-the contract looks like in their language, but the implementation hasn't
-been driven through an end-to-end e2e test against a real host runtime
-yet. Phase 1 of full default-tier parity is publishing these as
-contract-compatible modules; Phase 2 is wiring each language's host
-agent framework where one exists (ADK-Java and ADK-Go are separate
-projects whose integration paths need their own design work).
+**The embedded contract is at parity in all four languages.** The schema
+is column-identical across languages — a Python writer and a Go / TS /
+Java reader against the same SQLite file are mutually compatible. Every
+language's embedded test suite proves the same invariants: idempotent
+`begin_effect`, terminal-idempotent `complete_effect`, refusal of
+NON_IDEMPOTENT+INLINE and OUTBOX-without-connector, `(connector,
+business_key)` cross-run uniqueness, single-winner CAS under real
+concurrency, expired-lease reclaim, the `next_dispatch_at_ms=0` → UNKNOWN
+transition, `observe(CONFIRMED)` resolving UNKNOWN, atomic
+DUPLICATE→compensation, ABSENT-on-NON_IDEMPOTENT staying UNKNOWN,
+retries-then-STUCK, terminal-now forcing STUCK, timer claim semantics,
+`WriteValue` CAS, and the full UNKNOWN→reconcile loop with
+two-dispatchers-three-effects each-dispatched-once.
+
+**Two rows remain open**, both by the same root cause: a *host-framework
+plugin* needs the host framework. Python's `NonIdempotentSafetyPlugin`
+extends ADK-Python's `BasePlugin`; TS has no ADK to plug into (the
+embedded module is standalone-by-design); ADK-Go and ADK-Java are
+separate Google projects whose `SessionService` / plugin shapes need
+their own integration design before a `tape-adk-go` / `tape-adk-java`
+*plugin* (as opposed to the embedded store, which is done) can land.
+The embedded store + reactors + connectors are usable today by any
+Go / Java / Node agent, ADK or not.
 
 ---
 
