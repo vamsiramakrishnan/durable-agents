@@ -2,29 +2,42 @@ package dev.tape.embedded;
 
 import javax.sql.DataSource;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Statement;
 import java.util.UUID;
 import java.util.logging.Logger;
 
-/** Tiny in-memory SQLite DataSource for tests. Each test instance uses a
- *  unique shared-cache URL so concurrent connections see the same DB. */
+/** Tiny SQLite DataSource for tests. Uses a temp file (NOT shared-cache
+ *  in-memory) so concurrent JDBC connections coordinate via OS file
+ *  locking + WAL mode — the same posture the production embedded path
+ *  uses, and which the Python reference's CAS lock + StaticPool also
+ *  effectively serialises. Sets {@code busy_timeout=5000} so writers
+ *  wait briefly under contention instead of throwing immediately. */
 final class SqliteDataSource implements DataSource {
 
     private final String url;
+    private final Path dbFile;
 
     SqliteDataSource() {
-        // file::memory: + cache=shared lets multiple JDBC connections share
-        // the same in-memory DB. A unique name keeps tests isolated.
-        String name = "tape-test-" + UUID.randomUUID().toString().substring(0, 8);
-        this.url = "jdbc:sqlite:file:" + name + "?mode=memory&cache=shared";
-        // Keep one "keepalive" connection open for the lifetime of this
-        // DataSource so the shared in-memory DB doesn't get reclaimed
-        // between checkouts. Stored on the instance to keep it reachable.
         try {
-            this.keepalive = DriverManager.getConnection(url);
+            this.dbFile = Files.createTempFile(
+                "tape-test-" + UUID.randomUUID().toString().substring(0, 8), ".db");
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("failed to create temp sqlite file", e);
+        }
+        this.url = "jdbc:sqlite:" + dbFile.toAbsolutePath();
+        try {
+            this.keepalive = openConnection();
+            // Enable WAL so a writer doesn't block readers (matches the
+            // posture a production embedded SQLite deployment would use).
+            try (Statement st = keepalive.createStatement()) {
+                st.execute("PRAGMA journal_mode = WAL");
+            }
         } catch (SQLException e) {
             throw new RuntimeException("failed to open sqlite keepalive", e);
         }
@@ -35,16 +48,27 @@ final class SqliteDataSource implements DataSource {
 
     String url() { return url; }
 
+    private Connection openConnection() throws SQLException {
+        Connection c = DriverManager.getConnection(url);
+        try (Statement st = c.createStatement()) {
+            st.execute("PRAGMA busy_timeout = 5000");
+        }
+        return c;
+    }
+
     @Override public Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(url);
+        return openConnection();
     }
 
     @Override public Connection getConnection(String username, String password) throws SQLException {
-        return DriverManager.getConnection(url, username, password);
+        return openConnection();
     }
 
     void shutdown() {
         try { keepalive.close(); } catch (SQLException ignore) {}
+        try { Files.deleteIfExists(dbFile); } catch (java.io.IOException ignore) {}
+        try { Files.deleteIfExists(Path.of(dbFile.toString() + "-wal")); } catch (java.io.IOException ignore) {}
+        try { Files.deleteIfExists(Path.of(dbFile.toString() + "-shm")); } catch (java.io.IOException ignore) {}
     }
 
     @Override public PrintWriter getLogWriter() { return null; }
