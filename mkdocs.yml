@@ -194,6 +194,7 @@ nav:
 
   - How-to guides:
       - how-to/index.md
+      - "tape-adk — the default tier (no separate server)": how-to/tape-adk.md
       - Inspect the journal (TUI): how-to/inspect.md
       - Triage a live system: how-to/triage.md
       - The 60-second demos (crash + UNKNOWN): how-to/demo.md
