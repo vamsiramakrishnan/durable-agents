@@ -36,6 +36,7 @@ from .commands import chaos as chaos_cmd
 from .commands import inspect as inspect_cmd
 from .commands import tail as tail_cmd
 from .commands import demo as demo_cmd
+from .commands import inspect_adk as inspect_adk_cmd
 
 console = Console()
 
@@ -78,6 +79,8 @@ app.command(name="migrate", help="Run schema migrations for the configured store
 app.command(name="tail", help="Tail the journal across all runs (cross-run live stream).")(tail_cmd.run)
 app.command(name="inspect",
             help="Inspect a run's journal — Textual TUI (default) or rich snapshot / JSONL.")(inspect_cmd.run)
+app.command(name="inspect-adk",
+            help="Snapshot a session's journal from a tape-adk SQLAlchemy store (embedded path).")(inspect_adk_cmd.run)
 
 # `tape provision gcp ...` / `tape deploy gcp ...` / `tape destroy gcp ...` are
 # subcommand groups so we can add other clouds later (or none).

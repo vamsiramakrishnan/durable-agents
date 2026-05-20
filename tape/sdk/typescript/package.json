@@ -9,7 +9,11 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "files": ["src", "proto", "bin"],
+  "files": [
+    "src",
+    "proto",
+    "bin"
+  ],
   "bin": {
     "tape-outbox-ts": "bin/tape-outbox-ts.ts"
   },
@@ -20,15 +24,17 @@
     "regen-proto": "cp ../../proto/tape.proto ./proto/tape.proto"
   },
   "optionalDependencies": {
-    "google-auth-library": "^9.0.0",
-    "@google-cloud/pubsub": "^4.7.0"
+    "@google-cloud/pubsub": "^4.7.0",
+    "google-auth-library": "^9.0.0"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.10.6",
     "@grpc/proto-loader": "^0.7.10"
   },
   "devDependencies": {
-    "typescript": "^5.4.0",
-    "@types/node": "^20.10.0"
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.10.0",
+    "better-sqlite3": "^12.10.0",
+    "typescript": "^5.4.0"
   }
 }
