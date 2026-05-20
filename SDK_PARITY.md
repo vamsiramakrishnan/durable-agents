@@ -1,9 +1,21 @@
 # SDK Parity — Python · TypeScript · Go · Java
 
-Tape ships four SDKs against one wire protocol (`tape/proto/tape.proto`). The
-**protocol is the contract**: any feature reachable by RPC is reachable from
-every language. This document is the live parity scorecard and the roadmap to
-closing the remaining gaps.
+Tape ships in **two tiers**, both honoring the same logical schema and
+invariants:
+
+* **Scale tier** — Rust `tape-server` + gRPC clients in four languages.
+  Use for Bigtable / Spanner, high write throughput, or sharing the
+  journal across non-ADK clients.
+* **Default tier** — `tape-adk`, a Python package that extends ADK's
+  own `DatabaseSessionService` with the four primitives ADK doesn't
+  have (`UNKNOWN` status, outbox dispatch, reconciler, compensation
+  ledger). One database, one process, one `pip install`.
+
+The **protocol is the contract** for the scale tier; the **logical schema
++ invariants** are the contract that connects both tiers. Any feature
+reachable by RPC on the server is reachable from every SDK; any feature
+reachable on `tape-adk` is reachable via direct SQL on the equivalent
+embedded backend in the other languages.
 
 > If you're looking at the per-language wiring table, the canonical one lives in
 > [`tape/README.md`](tape/README.md#same-dx-in-go-typescript-and-java). This
@@ -11,7 +23,7 @@ closing the remaining gaps.
 
 ---
 
-## TL;DR
+## TL;DR — scale tier (gRPC clients)
 
 | | Python | TypeScript | Go | Java |
 |---|:--:|:--:|:--:|:--:|
@@ -26,14 +38,37 @@ closing the remaining gaps.
 | Reactions / event-bus subscribe | ✅ | ✅ | ✅ | ✅ |
 | Tenancy config + DESIGN-ONLY warnings | ✅ | ✅ | ✅ | ✅ |
 | Observability: structured logs + OTel span hook | ✅ | ✅ | ✅ | ✅ |
-| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK)* | — *(no ADK)* | ✅ `dev.tape.adk` |
+| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK-TS)* | — *(no ADK-Go integration)* | ✅ `dev.tape.adk` |
 | Built-in outbox-reactor runner | ✅ | ✅ `tape-outbox-ts` | ✅ `cmd/tape-outbox` | ✅ `dev.tape.cli.TapeOutbox` |
 | Built-in sinks (`Log`, `Webhook`, `PubSub`) | ✅ | ✅ all three | ✅ all three (PubSub via `-tags pubsub`) | ✅ all three (PubSub reflective) |
 | CLI (`tape init/dev/doctor/provision/deploy`) | ✅ | — *(call from Python CLI)* | — | — |
 | Cross-SDK parity test harness | ✅ drives all four | ✅ green | ✅ green | ✅ green |
 | End-user docs reference (auto-gen) | ✅ mkdocstrings | ✅ typedoc | ✅ gomarkdoc | ✅ javadoc |
 
-✅ shipping · ⚠️ partial · — n/a by design
+## TL;DR — default tier (embedded SQL, no separate server)
+
+| | Python (`tape-adk`) | TypeScript | Go | Java |
+|---|:--:|:--:|:--:|:--:|
+| Embedded `SessionService` that extends host framework's session store | ✅ extends `DatabaseSessionService` | 🟡 standalone (no ADK-TS) — scaffolded | 🟡 standalone (no ADK-Go integration yet) — scaffolded | 🟡 standalone — scaffolded |
+| SQL schema (effects · obligations · timers · values) | ✅ four `Storage*` tables on ADK's `Base` | 🟡 schema only | 🟡 schema only | 🟡 schema only |
+| 14 ledger methods (`begin_effect`, `complete_effect`, `claim_*`, etc.) | ✅ | 🟡 stubs | 🟡 stubs | 🟡 stubs |
+| Row-level CAS for outbox / obligation claims | ✅ + asyncio.Lock on SQLite | 🟡 | 🟡 | 🟡 |
+| Reactor library (4 async loops as plain functions) | ✅ | 🟡 | 🟡 | 🟡 |
+| Connector protocol (dispatch / observe / compensate) | ✅ + `LogConnector` | 🟡 | 🟡 | 🟡 |
+| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + `@effect` / `@outbox_tool` | — *(no ADK-TS)* | — *(needs ADK-Go integration plan)* | — *(needs ADK-Java integration plan)* |
+| Reactor CLI (`python -m tape_adk`) | ✅ `tape-adk-reactors` | 🟡 | 🟡 | 🟡 |
+| E2E test against the host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — | — | — |
+
+✅ shipping · 🟡 scaffolded / contract-compatible · — n/a by design
+
+The **scaffolded** rows mean: the SDK has the schema definition + a
+service skeleton + the connector / reactor types so a user can read what
+the contract looks like in their language, but the implementation hasn't
+been driven through an end-to-end e2e test against a real host runtime
+yet. Phase 1 of full default-tier parity is publishing these as
+contract-compatible modules; Phase 2 is wiring each language's host
+agent framework where one exists (ADK-Java and ADK-Go are separate
+projects whose integration paths need their own design work).
 
 ---
 

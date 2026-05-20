@@ -34,6 +34,12 @@ dev = ["pytest>=7", "pytest-asyncio>=0.23", "aiosqlite>=0.20"]
 where = ["."]
 include = ["tape_adk*"]
 
+[project.scripts]
+# `tape-adk-reactors` runs the embedded reactor loop. Equivalent to
+# `python -m tape_adk.reactors`. Drop into a Cloud Run Job, a GKE
+# CronJob, or a docker sidecar.
+tape-adk-reactors = "tape_adk.__main__:main"
+
 [tool.pytest.ini_options]
 # Our tests use plain `async def test_*` functions with the fixtures created
 # via `@pytest_asyncio.fixture` implicitly. asyncio_mode=auto means we don't

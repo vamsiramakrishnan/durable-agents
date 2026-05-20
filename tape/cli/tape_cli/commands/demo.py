@@ -1143,6 +1143,207 @@ def unknown_reconcile(
     raise typer.Exit(exit_code)
 
 
+# ── tape-adk (embedded) scenario ───────────────────────────────────────────
+#
+# A third demo that proves the architectural realignment: the SAME UNKNOWN →
+# reconcile loop, but running against `tape-adk` (which writes into ADK's
+# own DatabaseSessionService via SQLAlchemy) instead of the Rust gRPC server.
+# No server subprocess; one Python process holding both the journal and
+# the reactor logic. The user-visible contract is identical — exactly one
+# wire on disk after UNKNOWN survives — but the operational story is much
+# smaller.
+
+
+@app.command(name="tape-adk-embedded",
+             help="UNKNOWN→reconcile loop running against tape-adk (no separate server).")
+def tape_adk_embedded(
+    pause_s: float = typer.Option(
+        0.5, "--pause", "-p",
+        help="Pause between phases (seconds)."),
+    db_path: Optional[str] = typer.Option(
+        None, "--db",
+        help="SQLite file path (default: temp file in a fresh workdir)."),
+    keep_after: bool = typer.Option(
+        False, "--keep",
+        help="Don't tear down the workdir / DB when finished."),
+):
+    """Self-contained demo that uses `tape-adk` (the SQL-embedded form) for
+    the journal — no `tape-server` subprocess, no gRPC. The flow is the
+    same as `tape demo unknown-reconcile` but the storage is ADK's
+    `DatabaseSessionService` extended with `tape-adk`'s effect ledger and
+    reactor library.
+
+    Proves the architectural realignment in vivo: same contract, smaller
+    operational story, runs anywhere ADK runs.
+    """
+    try:
+        from tape_adk import (  # noqa: F401
+            EffectDispatchMode,
+            EffectSemantics,
+            EffectStatus,
+            TapeSessionService,
+            dispatch_outbox_once,
+            reconcile_once,
+        )
+        from tape_adk.connectors import (
+            DispatchResult, ObservationResult,
+        )
+    except ImportError:
+        die("tape-adk not installed.\n  Fix: pip install tape-adk")
+
+    import asyncio
+    import shutil
+
+    workdir = Path(db_path).parent if db_path else \
+        Path(tempfile.mkdtemp(prefix="tape-adk-demo-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    db = Path(db_path) if db_path else (workdir / "tape.db")
+    ledger_path = workdir / "bank.json"
+    db_url = f"sqlite+aiosqlite:///{db}"
+
+    info(f"[dim]workdir: {workdir}[/dim]")
+    info(f"[dim]db url : {db_url}[/dim]\n")
+
+    # A small in-line connector that mirrors the unknown-reconcile demo.
+    bank = FileBank(ledger_path)
+    business_key = "acct-1:2000000:2026-05-20"
+
+    class _DemoBankConnector:
+        name = "bank.wire"
+        n_dispatches = 0
+
+        async def dispatch(self, eff):
+            self.n_dispatches += 1
+            req = eff.request_json or {}
+            wire = bank.wire_by_business_key(
+                business_key=eff.business_key,
+                amount_minor=req.get("amount_minor", 0),
+                account_id=req.get("account_id", "?"))
+            # First dispatch: simulate lost ack.
+            if self.n_dispatches == 1:
+                return DispatchResult(
+                    status="unknown",
+                    error={"reason": "simulated lost ack"})
+            return DispatchResult(
+                status="confirmed", external_ref=wire["wire_id"],
+                response={"wire_id": wire["wire_id"]})
+
+        async def observe(self, eff):
+            rec = bank.find_by_business_key(eff.business_key or "")
+            if rec is None:
+                return ObservationResult(status="absent")
+            return ObservationResult(
+                status="confirmed", external_ref=rec["wire_id"],
+                response={"wire_id": rec["wire_id"]})
+
+        async def compensate(self, ob):  # pragma: no cover — not exercised
+            return None
+
+    connector = _DemoBankConnector()
+    ui = _DemoUI(url=db_url, ledger_path=ledger_path,
+                 title="demo tape-adk-embedded",
+                 default_subtitle=("EMBEDDED · TapeSessionService on SQLAlchemy · "
+                                   "no separate server"),
+                 ledger_ok_suffix=(
+                     "— same UNKNOWN→reconcile contract, in-process"))
+    ui.add_phases(
+        "TapeSessionService up (sqlite + aiosqlite)",
+        "session created",
+        "begin_effect(NON-IDEMPOTENT + OUTBOX) — PENDING in tape_effects",
+        "dispatch_outbox_once: claim + bank.dispatch returns UNKNOWN",
+        "tape_effects row → UNKNOWN (loud signal)",
+        "reconcile_once: observe(business_key) → bank says CONFIRMED",
+        "record_external_observation(CONFIRMED) — row → CONFIRMED",
+        "verify: exactly ONE wire on disk",
+    )
+
+    async def _run() -> tuple[Optional[str], int]:
+        svc = TapeSessionService(db_url=db_url)
+
+        ui.start_phase(0); await asyncio.sleep(pause_s)
+        sess = await svc.create_session(
+            app_name="treasury-adk-demo", user_id="cfo",
+            session_id=f"s-{uuid.uuid4().hex[:6]}", state={})
+        ui.finish_phase(0, detail="DatabaseSessionService initialised")
+        ui.finish_phase(1, detail=f"session={sess.id}")
+        await asyncio.sleep(pause_s)
+
+        ui.start_phase(2); await asyncio.sleep(pause_s)
+        eff = await svc.begin_effect(
+            app_name=sess.app_name, user_id=sess.user_id,
+            session_id=sess.id, invocation_id=f"inv-{uuid.uuid4().hex[:8]}",
+            decision_index=0, tool_name="bank.wire", call_index=0,
+            request_json={"amount_minor": 2_000_000, "account_id": "acct-1"},
+            semantics=EffectSemantics.NON_IDEMPOTENT,
+            dispatch_mode=EffectDispatchMode.OUTBOX,
+            business_key=business_key, connector="bank.wire")
+        ui.finish_phase(2, detail=f"key={eff.idempotency_key[-30:]}")
+        await asyncio.sleep(pause_s)
+
+        ui.start_phase(3); await asyncio.sleep(pause_s)
+        r1 = await dispatch_outbox_once(
+            svc, connectors={"bank.wire": connector},
+            claimer="demo-dispatcher")
+        outcomes = [x.get("outcome") for x in r1]
+        if "unknown" not in outcomes:
+            ui.finish_phase(3, ok=False,
+                            detail=f"expected unknown, got {outcomes}")
+            return None, 2
+        ui.finish_phase(3, detail="dispatcher → bank → UNKNOWN")
+        ui.finish_phase(4, detail="row.status = unknown")
+        await asyncio.sleep(pause_s)
+
+        ui.start_phase(5); await asyncio.sleep(pause_s)
+        r2 = await reconcile_once(svc, connectors={"bank.wire": connector})
+        outcomes2 = [x.get("outcome") for x in r2]
+        if "confirmed" not in outcomes2:
+            ui.finish_phase(5, ok=False,
+                            detail=f"expected confirmed, got {outcomes2}")
+            return None, 2
+        ui.finish_phase(5,
+                        detail="bank.observe(business_key) → CONFIRMED")
+        ui.finish_phase(6, detail="row.status = confirmed")
+        await asyncio.sleep(pause_s)
+
+        ui.start_phase(7); await asyncio.sleep(pause_s)
+        wires = ui.bank_wires()
+        if len(wires) == 1:
+            ui.finish_phase(7, detail=f"bank ledger: 1 wire ({wires[0]['wire_id']})")
+            ui.set_headline(
+                f"[bold green]✓ exactly one wire — UNKNOWN survived "
+                f"(embedded path).[/bold green]")
+            return sess.id, 0
+        ui.finish_phase(7, ok=False,
+                        detail=f"bank ledger has {len(wires)} — expected 1")
+        return None, 1
+
+    exit_code = 0
+    session_id: Optional[str] = None
+    try:
+        with Live(ui.render, refresh_per_second=8, console=console,
+                  screen=False) as live:
+            class _R:
+                def __rich__(_self): return ui.render()
+            live.update(_R())
+            try:
+                session_id, exit_code = asyncio.run(_run())
+            except Exception as ex:  # noqa: BLE001
+                warn(f"scenario crashed: {ex}")
+                exit_code = 2
+            time.sleep(pause_s * 3)
+    finally:
+        ui.stop()
+        if not keep_after:
+            with suppress(Exception):
+                shutil.rmtree(workdir, ignore_errors=True)
+        else:
+            ok(f"keeping workdir: {workdir}")
+            if session_id:
+                ok(f"inspect with:  tape inspect-adk {session_id} "
+                   f"--db-url {db_url}")
+    raise typer.Exit(exit_code)
+
+
 # Entry-point shim so the subprocess invocation works:
 #   python -m tape_cli.commands.demo --phase-a
 if __name__ == "__main__":  # pragma: no cover — subprocess entry only
