@@ -492,6 +492,188 @@ def _exit_code_from_snapshot(snap: _Snapshot) -> int:
     return 0
 
 
+# ── live triage against tape-adk (the embedded path) ─────────────────────
+
+
+def _live_triage_adk(*, db_url: str, watch: bool, interval: float,
+                     pending_threshold_ms: int) -> None:
+    """Same shape as `_live_triage` but runs against a `TapeSessionService`
+    (SQLAlchemy) instead of `TapeClient` (gRPC). The tape-adk model is
+    session-keyed (no separate run lifecycle / lease), so the "runs needing
+    recovery" section is replaced with an ADK-sessions overview."""
+    try:
+        from tape_adk import TapeSessionService
+        from tape_adk.schemas import StorageEffect, StorageObligation, StorageTimer
+        from sqlalchemy import select, func as sa_func
+    except ImportError:
+        die("tape-adk not installed.\n  Fix: pip install tape-adk")
+
+    import asyncio
+
+    async def _snapshot(svc: TapeSessionService) -> _Snapshot:
+        """Pull the embedded equivalent of `_take_snapshot`."""
+        now = int(time.time() * 1000)
+        cutoff = now - pending_threshold_ms
+        # Effects: PENDING > threshold and UNKNOWN.
+        pending_stale = await svc.list_pending_effects(
+            older_than_ms=cutoff, include_pending=True,
+            include_unknown=False, limit=200)
+        unknowns = await svc.list_pending_effects(
+            older_than_ms=0, include_pending=False,
+            include_unknown=True, limit=200)
+        outbox = await svc.list_effects_to_dispatch(now_ms=now, limit=200)
+        timers = await svc.list_due_timers(now_ms=now, limit=200, claim=False)
+        stuck_ob = await svc.list_unresolved_obligations(
+            limit=200, include_pending=False, include_stuck=True,
+            include_committed_expired=False)
+        pending_ob = await svc.list_unresolved_obligations(
+            limit=200, include_pending=True, include_stuck=False,
+            include_committed_expired=True)
+        return _Snapshot(
+            runs_to_recover=[],   # n/a in the embedded model
+            effects_pending_stale=pending_stale,
+            effects_unknown=unknowns,
+            obligations_stuck=stuck_ob,
+            obligations_pending=pending_ob,
+            outbox_ready=outbox,
+            timers_due=timers,
+        )
+
+    async def _session_count(svc: TapeSessionService) -> int:
+        """A cheap "is anything alive" signal."""
+        from google.adk.sessions.schemas.v1 import StorageSession
+        async with svc._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+            r = await sql.execute(sa_func.count(StorageSession.id).select())  # noqa: F841
+        # SQLAlchemy 2.0+ idiom: select(func.count(col))
+        async with svc._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+            n = (await sql.execute(
+                select(sa_func.count(StorageSession.id)))).scalar() or 0
+        return int(n)
+
+    def _render_adk_report(snap: _Snapshot, sess_count: int) -> Group:
+        """Same render shape as the gRPC path but with a sessions-overview
+        instead of runs-needing-recovery."""
+        now_ms = int(time.time() * 1000)
+        summary = RichTable.grid(padding=(0, 2), expand=True)
+        summary.add_column(style="dim bold", no_wrap=True)
+        summary.add_column()
+
+        def _row(label: str, n: int, *, danger_above: int = 0):
+            good = n == 0 if danger_above == 0 else n <= danger_above
+            style = "green" if good else "bold red on yellow"
+            glyph = "✓" if good else "!"
+            summary.add_row(label, Text(f"{glyph} {n}", style=style))
+
+        summary.add_row("db", Text(db_url, style="cyan"))
+        summary.add_row("checked", time.strftime("%Y-%m-%d %H:%M:%S UTC",
+                                                   time.gmtime(now_ms / 1000)))
+        summary.add_row("ADK sessions",
+                         Text(str(sess_count), style="dim"))
+        _row("effects UNKNOWN", len(snap.effects_unknown))
+        _row(f"effects PENDING > {pending_threshold_ms // 1000}s",
+             len(snap.effects_pending_stale))
+        _row("obligations STUCK", len(snap.obligations_stuck))
+        _row("obligations PENDING/expired", len(snap.obligations_pending),
+             danger_above=10)
+        _row("outbox dispatch-ready", len(snap.outbox_ready), danger_above=20)
+        _row("timers overdue", len(snap.timers_due), danger_above=5)
+
+        # Adapt the dataclass records into the shape the existing
+        # render_effects / render_obligations / render_outbox / render_timers
+        # functions expect. They access proto-like fields; our dataclasses
+        # have the same field names (status, idempotency_key, tool_name,
+        # business_key, ts_ms, run_id-vs-invocation_id, etc.) — only the
+        # `run_id` column we display needs the swap.
+        from types import SimpleNamespace
+
+        def _eff_adapt(e):
+            ns = SimpleNamespace(**e.__dict__)
+            ns.run_id = e.invocation_id  # what the renderer displays
+            ns.status = _EFFECT_STATUS_RMAP.get(e.status, 0)
+            return ns
+
+        def _ob_adapt(o):
+            ns = SimpleNamespace(**o.__dict__)
+            ns.run_id = o.invocation_id
+            ns.status = _OBLIGATION_STATUS_RMAP.get(o.status, 0)
+            return ns
+
+        def _t_adapt(t):
+            ns = SimpleNamespace(**t.__dict__)
+            ns.run_id = t.session_id
+            return ns
+
+        adapted = _Snapshot(
+            runs_to_recover=[],
+            effects_pending_stale=[_eff_adapt(e) for e in snap.effects_pending_stale],
+            effects_unknown=[_eff_adapt(e) for e in snap.effects_unknown],
+            obligations_stuck=[_ob_adapt(o) for o in snap.obligations_stuck],
+            obligations_pending=[_ob_adapt(o) for o in snap.obligations_pending],
+            outbox_ready=[_eff_adapt(e) for e in snap.outbox_ready],
+            timers_due=[_t_adapt(t) for t in snap.timers_due],
+        )
+
+        return Group(
+            Panel(summary, title="[bold]tape doctor --live --db-url[/bold]",
+                  subtitle="[dim]operational triage (embedded)[/dim]",
+                  border_style="cyan", padding=(0, 1)),
+            _render_effects(adapted, now_ms=now_ms,
+                            pending_threshold_ms=pending_threshold_ms),
+            _render_obligations(adapted, now_ms=now_ms),
+            _render_outbox(adapted, now_ms=now_ms),
+            _render_timers(adapted, now_ms=now_ms),
+        )
+
+    svc = TapeSessionService(db_url=db_url)
+
+    async def _one_pass() -> tuple[_Snapshot, int]:
+        snap = await _snapshot(svc)
+        sess = await _session_count(svc)
+        return snap, sess
+
+    if watch:
+        # Lazy renderable that re-fetches each tick.
+        last_snap, last_sess = asyncio.run(_one_pass())
+        class _LivePoll:
+            def __init__(_self):
+                _self._snap, _self._sess = last_snap, last_sess
+                _self._next = time.time() + interval
+            def __rich__(_self):
+                now = time.time()
+                if now >= _self._next:
+                    try:
+                        _self._snap, _self._sess = asyncio.run(_one_pass())
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _self._next = now + interval
+                return _render_adk_report(_self._snap, _self._sess)
+        try:
+            with Live(_LivePoll(), refresh_per_second=4,
+                      console=console, screen=False) as _:
+                while True:
+                    time.sleep(0.25)
+        except KeyboardInterrupt:
+            pass
+    else:
+        snap, sess = asyncio.run(_one_pass())
+        console.print(_render_adk_report(snap, sess))
+        rc = _exit_code_from_snapshot(snap)
+        if rc:
+            raise typer.Exit(rc)
+
+
+# String→int maps so the embedded path can reuse the gRPC renderers
+# (which look up status via _EFFECT_STATUS / _OBLIGATION_STATUS dicts).
+_EFFECT_STATUS_RMAP = {
+    "unspecified": 0, "pending": 1, "confirmed": 2,
+    "failed": 3, "unknown": 4,
+}
+_OBLIGATION_STATUS_RMAP = {
+    "unspecified": 0, "pending": 1, "committed": 2,
+    "compensated": 3, "stuck": 4,
+}
+
+
 def _live_triage(*, url: Optional[str], watch: bool, interval: float,
                  pending_threshold_ms: int) -> None:
     resolved = _resolve_url(url)
@@ -551,9 +733,10 @@ def run(
     agents_cli_aware: bool = typer.Option(False, "--agents-cli-aware",
         help="Also run agents-cli scaffold compatibility checks."),
     live: bool = typer.Option(False, "--live",
-        help="Query a running tape-server and report operational health "
-             "(runs needing recovery, UNKNOWN effects, stuck obligations, "
-             "outbox + timer lag, reactor DLQ). Skips the env checks."),
+        help="Query a running system and report operational health "
+             "(UNKNOWN effects, stuck obligations, outbox + timer lag). "
+             "Pair with --url (gRPC) or --db-url (tape-adk embedded). "
+             "Skips the env checks."),
     watch: bool = typer.Option(False, "--watch", "-w",
         help="With --live: refresh the report in place every --interval "
              "seconds (Ctrl-C to stop). Without --live: noop."),
@@ -564,10 +747,24 @@ def run(
         help="Effects PENDING longer than this are flagged."),
     url: Optional[str] = typer.Option(
         None, "--url",
-        help="Tape server URL (default: $TAPE_URL or tape.yaml)."),
+        help="Tape server URL — selects the gRPC path. "
+             "Default: $TAPE_URL or tape.yaml."),
+    db_url: Optional[str] = typer.Option(
+        None, "--db-url",
+        help="SQLAlchemy URL — selects the tape-adk embedded path "
+             "(no separate server). Default: $TAPE_ADK_DB_URL. "
+             "Mutually exclusive with --url."),
 ):
     # `--live` is a different verb — it doesn't run env checks. Hand off.
     if live:
+        adk_db_url = db_url or os.environ.get("TAPE_ADK_DB_URL")
+        if adk_db_url and url:
+            die("--url and --db-url are mutually exclusive. Pick one: "
+                "--url (gRPC) or --db-url (embedded).")
+        if adk_db_url:
+            return _live_triage_adk(
+                db_url=adk_db_url, watch=watch, interval=interval,
+                pending_threshold_ms=pending_threshold_ms)
         return _live_triage(url=url, watch=watch, interval=interval,
                             pending_threshold_ms=pending_threshold_ms)
     project: Optional[TapeProject] = None
