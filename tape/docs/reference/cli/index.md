@@ -144,6 +144,22 @@ Usage: tape demo crash-resume [OPTIONS]
 | `--keep` | `False` | Don't tear down the server / ledger when the demo finishes (so you can `tape inspect`). |
 | `--server-binary` | — | Path to a built `tape-server` (default: auto-locate in the repo). |
 
+#### `tape demo tape-adk-embedded`
+
+UNKNOWN→reconcile loop running against tape-adk (no separate server).
+
+```
+Usage: tape demo tape-adk-embedded [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--pause`, `-p` | `0.5` | Pause between phases (seconds). |
+| `--db` | — | SQLite file path (default: temp file in a fresh workdir). |
+| `--keep` | `False` | Don't tear down the workdir / DB when finished. |
+
 #### `tape demo unknown-reconcile`
 
 Non-idempotent + OUTBOX + UNKNOWN + reconciler — the full ambiguity loop.
@@ -244,11 +260,12 @@ Usage: tape doctor [OPTIONS]
 | `--local`, `--no-local` | `True` | — |
 | `--gcp`, `--no-gcp` | `False` | — |
 | `--agents-cli-aware` | `False` | Also run agents-cli scaffold compatibility checks. |
-| `--live` | `False` | Query a running tape-server and report operational health (runs needing recovery, UNKNOWN effects, stuck obligations, outbox + timer lag, reactor DLQ). Skips the env checks. |
+| `--live` | `False` | Query a running system and report operational health (UNKNOWN effects, stuck obligations, outbox + timer lag). Pair with --url (gRPC) or --db-url (tape-adk embedded). Skips the env checks. |
 | `--watch`, `-w` | `False` | With --live: refresh the report in place every --interval seconds (Ctrl-C to stop). Without --live: noop. |
 | `--interval` | `2.0` | Refresh interval in seconds for --watch. |
 | `--pending-threshold-ms` | `60000` | Effects PENDING longer than this are flagged. |
-| `--url` | — | Tape server URL (default: $TAPE_URL or tape.yaml). |
+| `--url` | — | Tape server URL — selects the gRPC path. Default: $TAPE_URL or tape.yaml. |
+| `--db-url` | — | SQLAlchemy URL — selects the tape-adk embedded path (no separate server). Default: $TAPE_ADK_DB_URL. Mutually exclusive with --url. |
 
 ### `tape enhance`
 
@@ -325,6 +342,29 @@ Usage: tape inspect [OPTIONS] [RUN_ID]
 | `--list`, `-l` | `False` | List recoverable runs (same as `tape inspect` with no args). |
 | `--replay` | `False` | Launch directly into the side-by-side replay-diff screen (FIRST RUN vs REPLAY for every journal entry). |
 | `--url` | — | Override the tape server URL. Default: $TAPE_URL or tape.yaml. |
+
+### `tape inspect-adk`
+
+Snapshot a session's journal from a tape-adk SQLAlchemy store (embedded path).
+
+```
+Usage: tape inspect-adk [OPTIONS] SESSION_ID
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `SESSION_ID` | ADK session id to inspect. |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--app` | — | ADK app name (the `name=` on App). |
+| `--user` | — | ADK user id. |
+| `--db-url` | — | SQLAlchemy URL of the tape-adk store. Default: $TAPE_ADK_DB_URL. |
+| `--raw` | `False` | Emit JSON instead of the rendered panels (for jq / scripts). |
 
 ### `tape logs`
 
