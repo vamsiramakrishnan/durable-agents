@@ -38,7 +38,7 @@ embedded backend in the other languages.
 | Reactions / event-bus subscribe | ✅ | ✅ | ✅ | ✅ |
 | Tenancy config + DESIGN-ONLY warnings | ✅ | ✅ | ✅ | ✅ |
 | Observability: structured logs + OTel span hook | ✅ | ✅ | ✅ | ✅ |
-| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK-TS)* | — *(no ADK-Go integration)* | ✅ `dev.tape.adk` |
+| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK-TS)* | ✅ `adkplugin` (separate module) | ✅ `dev.tape.adk` |
 | Built-in outbox-reactor runner | ✅ | ✅ `tape-outbox-ts` | ✅ `cmd/tape-outbox` | ✅ `dev.tape.cli.TapeOutbox` |
 | Built-in sinks (`Log`, `Webhook`, `PubSub`) | ✅ | ✅ all three | ✅ all three (PubSub via `-tags pubsub`) | ✅ all three (PubSub reflective) |
 | CLI (`tape init/dev/doctor/provision/deploy`) | ✅ | — *(call from Python CLI)* | — | — |
@@ -57,9 +57,9 @@ embedded backend in the other languages.
 | Connector protocol (dispatch / observe / compensate) + `LogConnector` | ✅ | ✅ | ✅ | ✅ |
 | Decorators / construction-time refusal (`@effect` / `@outbox_tool`) | ✅ | ✅ HOF wrappers | ✅ HOF + `ErrOutboxToolConfig` | ✅ builder + `IllegalArgumentException` |
 | Embedded test suite (same invariants) | ✅ 29 | ✅ 30 | ✅ 28 (`-race`) | ✅ 32 |
-| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + e2e vs real `Runner` | — *(no ADK-TS)* | 🟡 *(needs ADK-Go integration plan)* | ✅ + e2e vs real `Runner` |
+| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + e2e vs real `Runner` | — *(no ADK-TS)* | ✅ `adkplugin.NewTapePlugin` + e2e vs real `Runner` | ✅ + e2e vs real `Runner` |
 | Reactor CLI (`python -m tape_adk`) | ✅ `tape-adk-reactors` | — *(call the funcs directly)* | — *(call the funcs directly)* | — *(call the funcs directly)* |
-| E2E test against a host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — *(no host framework)* | 🟡 *(pending ADK-Go)* | ✅ ADK-Java `Runner` + scripted `BaseLlm` |
+| E2E test against a host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — *(no host framework)* | ✅ ADK-Go `runner.Runner` + scripted `model.LLM` | ✅ ADK-Java `Runner` + scripted `BaseLlm` |
 
 ✅ shipping · 🟡 design pending · — n/a by design
 
@@ -77,14 +77,17 @@ retries-then-STUCK, terminal-now forcing STUCK, timer claim semantics,
 `WriteValue` CAS, and the full UNKNOWN→reconcile loop with
 two-dispatchers-three-effects each-dispatched-once.
 
-**Two rows remain open**, both by the same root cause: a *host-framework
-plugin* needs the host framework. Python's `NonIdempotentSafetyPlugin`
-extends ADK-Python's `BasePlugin`; TS has no ADK to plug into (the
-embedded module is standalone-by-design); ADK-Go and ADK-Java are
-separate Google projects whose `SessionService` / plugin shapes need
-their own integration design before a `tape-adk-go` / `tape-adk-java`
-*plugin* (as opposed to the embedded store, which is done) can land.
-The embedded store + reactors + connectors are usable today by any
+**The host-framework plugin row is now closed in three of four languages.**
+Python's `NonIdempotentSafetyPlugin` extends ADK-Python's `BasePlugin`;
+ADK-Java ships `dev.tape.adk`; ADK-Go ships `adkplugin.NewTapePlugin`,
+which rides ADK-Go's `plugin.Plugin` tool callbacks
+(`BeforeToolCallback` / `AfterToolCallback` / `OnToolErrorCallback` +
+`BeforeRunCallback`) — each verified by an e2e test driving a real
+`runner.Runner` with a scripted `model.LLM`. The `adkplugin` package is
+a *separate Go module* so the heavy ADK-Go dependency stays optional:
+embedded-only users (`go build ./embedded/`) never pull it. TS has no
+ADK to plug into (the embedded module is standalone-by-design). The
+embedded store + reactors + connectors are usable today by any
 Go / Java / Node agent, ADK or not.
 
 ---
