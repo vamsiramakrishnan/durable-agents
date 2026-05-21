@@ -33,21 +33,30 @@ from google.adk.sessions.database_session_service import DatabaseSessionService
 from .schemas import StorageEffect, StorageObligation, StorageTimer, StorageValue
 
 
-# A note about cross-session CAS on SQLite + ADK's StaticPool:
+# A note about concurrent writes on SQLite + ADK's StaticPool:
 #
-# ADK configures SQLite with StaticPool — one shared connection across
-# all async sessions. SQLAlchemy's `async_session` checks out the connection
-# per-statement, so two concurrent `claim_effect_dispatch` calls on the same
-# row can interleave their BEGIN/UPDATE/COMMIT operations in ways that make
-# the rowcount-based CAS unreliable on SQLite.
+# ADK configures SQLite with StaticPool — one shared connection across all
+# async sessions. SQLAlchemy checks that connection out per-statement, so
+# ANY two concurrent writes (two `complete_effect`s, a CAS racing a
+# `record_dispatch_attempt`, …) can interleave their BEGIN/UPDATE/COMMIT
+# operations and lose a commit. The first cut of this file only locked the
+# two `claim_*` methods; the two-dispatcher test then proved that wasn't
+# enough — `complete_effect` races too, leaving an effect PENDING after the
+# dispatcher reported it confirmed.
 #
-# For Postgres (default pool, real per-session connections, row-level locks
-# via `with_for_update`), this isn't an issue — the SQL-level CAS works as
-# the proto and the failure-modes doc claim. For SQLite, we serialize CAS
-# in-process via an asyncio lock. That's enough for the embedded path: a
-# single-process ADK app calling its own reactors. For multi-process
-# deployments you want Postgres anyway.
-_SQLITE_CAS_LOCK_ATTR = "_tape_sqlite_cas_lock"
+# The fix: a single per-service write lock (`_write_lock`) held by EVERY
+# mutating method, gated to SQLite. On Postgres (default pool, real
+# per-session connections, MVCC, `with_for_update`) the lock is a no-op —
+# concurrency is the database's job. On SQLite, which is single-writer
+# anyway, serialising writes in-process costs nothing real and makes the
+# embedded path correct for one Python process driving its own reactors.
+# Cross-process SQLite is out of scope; use Postgres for that.
+#
+# (The Go embedded SDK uses real pooled connections + SQLite's native
+# write lock, and the TS one uses synchronous better-sqlite3 — neither
+# needs this; verified by stress runs. It's a SQLAlchemy-StaticPool
+# artefact specific to the Python path.)
+_SQLITE_CAS_LOCK_ATTR = "_tape_sqlite_write_lock"
 
 
 # ── status enums (string-typed; mirror proto enums) ────────────────────────
@@ -223,15 +232,26 @@ class TapeSessionService(DatabaseSessionService):
     """
 
     @asynccontextmanager
-    async def _cas_lock(self):
-        """Serialize CAS attempts in-process when running against SQLite.
+    async def _write_lock(self):
+        """Serialize *every mutating operation* in-process on SQLite.
 
-        On Postgres the per-row SQL-level locking does this for us; the
-        lock is a no-op there. On SQLite we acquire a per-service asyncio
-        lock so concurrent `claim_effect_dispatch` / `claim_obligation`
-        calls from the same Python process don't race on the shared
-        connection. Multi-process correctness comes from the SQL CAS
-        predicate; this just protects the SQLite-shared-connection case."""
+        ADK configures SQLite with `StaticPool` — one shared connection
+        across all async sessions. SQLAlchemy checks that connection out
+        per-statement, so two concurrent writes (a `complete_effect` racing
+        another dispatcher's `complete_effect`, a CAS racing a
+        `record_dispatch_attempt`, …) can interleave their BEGIN/UPDATE/
+        COMMIT operations and lose a commit. The original implementation
+        only locked the two `claim_*` methods; the two-dispatcher test
+        proved that wasn't enough — `complete_effect` races too.
+
+        The fix: a single per-service write lock, held by every mutating
+        method, gated to SQLite. On Postgres (real per-session connections,
+        MVCC, row-level locks) the lock is a no-op — concurrency is the
+        database's job there. On SQLite, which is single-writer anyway,
+        serialising writes in-process costs nothing real and makes the
+        embedded path correct for a single Python process driving its own
+        reactors. Cross-process SQLite is out of scope (SQLite isn't a
+        multi-writer database); use Postgres for that."""
         is_sqlite = self.db_engine.dialect.name == "sqlite"
         if not is_sqlite:
             yield
@@ -282,7 +302,8 @@ class TapeSessionService(DatabaseSessionService):
                or f"{invocation_id}/decision-{decision_index}/{tool_name}/{call_index}")
 
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             # Try to read an existing row first — idempotent on replay.
             existing = (await sql.execute(
                 select(StorageEffect).where(
@@ -343,7 +364,8 @@ class TapeSessionService(DatabaseSessionService):
             raise ValueError(f"complete_effect: invalid status {status!r}")
 
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             row = (await sql.execute(
                 select(StorageEffect).where(
                     StorageEffect.app_name == app_name,
@@ -403,7 +425,7 @@ class TapeSessionService(DatabaseSessionService):
         now = now_ms or _now_ms()
         expires = now + lease_ttl_ms
 
-        async with self._cas_lock(), \
+        async with self._write_lock(), \
                 self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             # The CAS itself — a single conditional UPDATE.
             stmt = (
@@ -451,7 +473,8 @@ class TapeSessionService(DatabaseSessionService):
         value schedules a retry — the effect stays PENDING.
         """
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             row = (await sql.execute(
                 select(StorageEffect).where(
                     StorageEffect.app_name == app_name,
@@ -487,7 +510,8 @@ class TapeSessionService(DatabaseSessionService):
         `EffectStatus` and, on DUPLICATE, atomically registers a
         compensation obligation if `compensate_on_duplicate_kind` is set."""
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             row = (await sql.execute(
                 select(StorageEffect).where(
                     StorageEffect.app_name == app_name,
@@ -616,7 +640,8 @@ class TapeSessionService(DatabaseSessionService):
         """Idempotent on (session, effect_key, kind) — a second call returns
         the existing row instead of creating a duplicate."""
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             existing = (await sql.execute(
                 select(StorageObligation).where(
                     StorageObligation.app_name == app_name,
@@ -708,7 +733,7 @@ class TapeSessionService(DatabaseSessionService):
         await self._prepare_tables()
         now = now_ms or _now_ms()
         expires = now + lease_ttl_ms
-        async with self._cas_lock(), \
+        async with self._write_lock(), \
                 self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             stmt = (
                 update(StorageObligation)
@@ -742,7 +767,8 @@ class TapeSessionService(DatabaseSessionService):
         forces STUCK (terminal-now). Otherwise: bump attempts; if
         `attempts >= max_attempts` mark STUCK; else reschedule PENDING."""
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             row = (await sql.execute(
                 select(StorageObligation).where(
                     StorageObligation.seq == seq))).scalars().one_or_none()
@@ -773,7 +799,8 @@ class TapeSessionService(DatabaseSessionService):
                 f"resolve_obligation: status must be COMPENSATED or STUCK, "
                 f"got {status!r}")
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             row = (await sql.execute(
                 select(StorageObligation).where(
                     StorageObligation.seq == seq))).scalars().one_or_none()
@@ -797,7 +824,8 @@ class TapeSessionService(DatabaseSessionService):
         """Idempotent on (session, timer_id) — a second `set_timer` with the
         same id returns the existing record."""
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             existing = (await sql.execute(
                 select(StorageTimer).where(
                     StorageTimer.app_name == app_name,
@@ -827,7 +855,8 @@ class TapeSessionService(DatabaseSessionService):
         timer reactors don't re-fire."""
         await self._prepare_tables()
         now = now_ms or _now_ms()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             stmt = select(StorageTimer).where(
                 StorageTimer.fired.is_(False),
                 StorageTimer.fire_at_ms <= now,
@@ -845,7 +874,8 @@ class TapeSessionService(DatabaseSessionService):
         timer_id: str,
     ) -> bool:
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             result = await sql.execute(
                 delete(StorageTimer).where(
                     StorageTimer.app_name == app_name,
@@ -865,7 +895,8 @@ class TapeSessionService(DatabaseSessionService):
         """Optimistic-CAS write. `if_version < 0` disables CAS (last writer
         wins). `if_version == current_version` advances; mismatch raises."""
         await self._prepare_tables()
-        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
             existing = (await sql.execute(
                 select(StorageValue).where(
                     StorageValue.namespace == namespace,
