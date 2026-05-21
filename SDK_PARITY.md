@@ -56,10 +56,10 @@ embedded backend in the other languages.
 | Reactor library (4 loops as plain functions) | ✅ | ✅ | ✅ | ✅ |
 | Connector protocol (dispatch / observe / compensate) + `LogConnector` | ✅ | ✅ | ✅ | ✅ |
 | Decorators / construction-time refusal (`@effect` / `@outbox_tool`) | ✅ | ✅ HOF wrappers | ✅ HOF + `ErrOutboxToolConfig` | ✅ builder + `IllegalArgumentException` |
-| Embedded test suite (same invariants) | ✅ 29 | ✅ 30 | ✅ 28 (`-race`) | ✅ 29 |
-| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + e2e vs real `Runner` | — *(no ADK-TS)* | 🟡 *(needs ADK-Go integration plan)* | 🟡 *(needs ADK-Java integration plan)* |
+| Embedded test suite (same invariants) | ✅ 29 | ✅ 30 | ✅ 28 (`-race`) | ✅ 32 |
+| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + e2e vs real `Runner` | — *(no ADK-TS)* | 🟡 *(needs ADK-Go integration plan)* | ✅ + e2e vs real `Runner` |
 | Reactor CLI (`python -m tape_adk`) | ✅ `tape-adk-reactors` | — *(call the funcs directly)* | — *(call the funcs directly)* | — *(call the funcs directly)* |
-| E2E test against a host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — *(no host framework)* | 🟡 *(pending ADK-Go)* | 🟡 *(pending ADK-Java)* |
+| E2E test against a host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — *(no host framework)* | 🟡 *(pending ADK-Go)* | ✅ ADK-Java `Runner` + scripted `BaseLlm` |
 
 ✅ shipping · 🟡 design pending · — n/a by design
 

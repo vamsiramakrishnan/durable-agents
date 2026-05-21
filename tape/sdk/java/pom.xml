@@ -109,6 +109,19 @@
         </executions>
       </plugin>
       <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <!-- -parameters keeps method parameter names in the bytecode so
+               ADK-Java's FunctionTool reflection (used by the embedded
+               NonIdempotentSafetyPlugin e2e test) can bind tool args by
+               name. Harmless for the non-ADK paths. -->
+          <compilerArgs>
+            <arg>-parameters</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
       </plugin>
