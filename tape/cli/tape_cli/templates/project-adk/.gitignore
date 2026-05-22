@@ -1,0 +1,8 @@
+.tape/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.egg-info/
+.venv/
+.env

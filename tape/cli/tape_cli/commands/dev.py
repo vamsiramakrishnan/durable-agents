@@ -35,6 +35,11 @@ def run(
     root = find_project_root()
     project = TapeProject.load(root / "tape.yaml")
 
+    # Embedded tier — no server. Run the reactor loop + the live journal.
+    if project.project.tier == "adk":
+        _adk_dev(root, project)
+        return
+
     eff_store = store or project.tape.store.kind
     eff_events = events or project.tape.events.kind
 
@@ -48,6 +53,60 @@ def run(
         _docker_dev(root, project, eff_store, eff_events, port)
     else:
         _native_dev(root, project, eff_store, server_binary, port, kill_resume_demo)
+
+
+def _adk_dev(root: Path, project) -> None:
+    """`tape dev` for the embedded (`tier: adk`) tier.
+
+    No server. Starts the reactor loop (`python -m tape_adk`) as a
+    subprocess and opens the live journal view. The developer drives
+    their agent separately (`adk run app`, `adk web`, or a script) — its
+    effects appear in the live view.
+    """
+    emb = project.embedded
+    if emb is None:
+        die("tape.yaml has `project.tier: adk` but no `embedded:` section.",
+            )
+    db_url = emb.db_url
+    # SQLite file stores: make sure the parent dir exists.
+    if db_url.startswith("sqlite") and ":///" in db_url:
+        db_path = db_url.split(":///", 1)[1]
+        if db_path and db_path != ":memory:":
+            Path(db_path).resolve().parent.mkdir(parents=True, exist_ok=True)
+
+    # The reactor loop needs the project importable (for `--connectors
+    # app.connectors:CONNECTORS`).
+    child_env = {"PYTHONPATH": os.pathsep.join(
+        [str(root), os.environ.get("PYTHONPATH", "")])}
+
+    reactor_cmd = [sys.executable, "-m", "tape_adk",
+                   "--db-url", db_url,
+                   "--tick-ms", str(emb.reactor_interval_ms)]
+    if emb.connectors:
+        reactor_cmd += ["--connectors", emb.connectors]
+
+    ok(f"embedded tier — db: {db_url}")
+    procs: list[subprocess.Popen] = []
+    try:
+        procs.append(_start(reactor_cmd, cwd=root, env=child_env))
+        ok("reactor loop started (outbox · reconciler · compensation · timers)")
+        info("")
+        info("[dim]Drive your agent in another terminal — e.g. "
+             "`adk run app` — effects appear below. Ctrl-C to stop.[/dim]")
+        info("")
+        time.sleep(0.6)  # let the reactor log its startup line first
+
+        # Open the live journal. Blocks until Ctrl-C.
+        from .inspect_adk import live_journal
+        live_journal(db_url,
+                     reactor_note="[green]running[/green] "
+                                  f"(tick {emb.reactor_interval_ms}ms)")
+    finally:
+        for p in procs:
+            try:
+                p.terminate()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _native_dev(root: Path, project, store: str, server_binary: Optional[str],

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{{ name }}"
+version = "0.1.0"
+description = "A durable ADK agent on Tape (embedded tier — no separate server)."
+requires-python = ">=3.10"
+dependencies = [
+  # The embedded tier: tape-adk extends ADK's DatabaseSessionService with
+  # the effect ledger, obligation ledger, reactors, and the safety plugin.
+  "tape-adk>=0.1.0",
+  # SQLite driver for the dev store. Swap for asyncpg in production.
+  "aiosqlite>=0.20",
+  # The CLI — `tape dev`, `tape inspect-adk`, etc.
+  "tape-cli>=0.1.0",
+  "google-adk>=1.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
