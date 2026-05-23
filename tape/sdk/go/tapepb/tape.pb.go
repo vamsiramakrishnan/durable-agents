@@ -494,15 +494,29 @@ func (TaskStatus) EnumDescriptor() ([]byte, []int) {
 }
 
 type BeginRunRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppName       string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	UserId        string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	SessionId     string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	InvocationId  string                 `protobuf:"bytes,4,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
-	LeaseOwner    string                 `protobuf:"bytes,5,opt,name=lease_owner,json=leaseOwner,proto3" json:"lease_owner,omitempty"` // who is driving this run right now
-	LeaseTtlMs    int64                  `protobuf:"varint,6,opt,name=lease_ttl_ms,json=leaseTtlMs,proto3" json:"lease_ttl_ms,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	AppName      string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	UserId       string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	SessionId    string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	InvocationId string                 `protobuf:"bytes,4,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
+	LeaseOwner   string                 `protobuf:"bytes,5,opt,name=lease_owner,json=leaseOwner,proto3" json:"lease_owner,omitempty"` // who is driving this run right now
+	LeaseTtlMs   int64                  `protobuf:"varint,6,opt,name=lease_ttl_ms,json=leaseTtlMs,proto3" json:"lease_ttl_ms,omitempty"`
+	// Identity & authorization context. Populated by AIPlex-managed deployments
+	// (via the AIPLEX_* env vars, threaded through `tape.adk.identity.from_env()`)
+	// and by anyone else who wants their runs to be queryable by tenant / agent /
+	// principal in the run timeline. Tape does not depend on AIPlex — these are
+	// generic fields with conventional AIPlex env-var population.
+	TenantId string `protobuf:"bytes,20,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"` // tenant identifier (AIPlex tenant, organisation, …)
+	Actor    string `protobuf:"bytes,21,opt,name=actor,proto3" json:"actor,omitempty"`                       // SPIFFE-style workload identity ("who is acting")
+	Subject  string `protobuf:"bytes,22,opt,name=subject,proto3" json:"subject,omitempty"`                   // human principal label, distinct from ADK's user_id
+	// (e.g. "spiffe://.../user/alice", an OIDC sub, etc.)
+	AgentId          string            `protobuf:"bytes,23,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`                                                          // stable agent kind id (the AIPlex catalog id)
+	AiplexInstanceId string            `protobuf:"bytes,24,opt,name=aiplex_instance_id,json=aiplexInstanceId,proto3" json:"aiplex_instance_id,omitempty"`                             // AIPlex Instance.ID — joins back to AIPlex's deploy record
+	GatewayRoute     string            `protobuf:"bytes,25,opt,name=gateway_route,json=gatewayRoute,proto3" json:"gateway_route,omitempty"`                                           // the gateway route this run came in on
+	Scopes           []string          `protobuf:"bytes,26,rep,name=scopes,proto3" json:"scopes,omitempty"`                                                                           // authorized scopes (e.g. "mcp:tools:bank_wire")
+	Labels           map[string]string `protobuf:"bytes,27,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // free-form key/value labels (aiplex.plane, …)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *BeginRunRequest) Reset() {
@@ -575,6 +589,62 @@ func (x *BeginRunRequest) GetLeaseTtlMs() int64 {
 		return x.LeaseTtlMs
 	}
 	return 0
+}
+
+func (x *BeginRunRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *BeginRunRequest) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *BeginRunRequest) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *BeginRunRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *BeginRunRequest) GetAiplexInstanceId() string {
+	if x != nil {
+		return x.AiplexInstanceId
+	}
+	return ""
+}
+
+func (x *BeginRunRequest) GetGatewayRoute() string {
+	if x != nil {
+		return x.GatewayRoute
+	}
+	return ""
+}
+
+func (x *BeginRunRequest) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *BeginRunRequest) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
 }
 
 type BeginRunResponse struct {
@@ -1059,6 +1129,17 @@ type RunState struct {
 	StartedAtMs      int64                  `protobuf:"varint,10,opt,name=started_at_ms,json=startedAtMs,proto3" json:"started_at_ms,omitempty"`
 	EndedAtMs        int64                  `protobuf:"varint,11,opt,name=ended_at_ms,json=endedAtMs,proto3" json:"ended_at_ms,omitempty"`
 	WaitingOnGate    string                 `protobuf:"bytes,12,opt,name=waiting_on_gate,json=waitingOnGate,proto3" json:"waiting_on_gate,omitempty"` // set iff status == WAITING
+	// Identity & authorization context, mirrored from BeginRunRequest. Indexable
+	// columns (tenant_id, actor, agent_id) drive the AIPlex run timeline queries;
+	// labels stays free-form (JSON in storage).
+	TenantId         string            `protobuf:"bytes,20,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Actor            string            `protobuf:"bytes,21,opt,name=actor,proto3" json:"actor,omitempty"`
+	Subject          string            `protobuf:"bytes,22,opt,name=subject,proto3" json:"subject,omitempty"`
+	AgentId          string            `protobuf:"bytes,23,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	AiplexInstanceId string            `protobuf:"bytes,24,opt,name=aiplex_instance_id,json=aiplexInstanceId,proto3" json:"aiplex_instance_id,omitempty"`
+	GatewayRoute     string            `protobuf:"bytes,25,opt,name=gateway_route,json=gatewayRoute,proto3" json:"gateway_route,omitempty"`
+	Scopes           []string          `protobuf:"bytes,26,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	Labels           map[string]string `protobuf:"bytes,27,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1175,6 +1256,62 @@ func (x *RunState) GetWaitingOnGate() string {
 		return x.WaitingOnGate
 	}
 	return ""
+}
+
+func (x *RunState) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *RunState) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *RunState) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *RunState) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *RunState) GetAiplexInstanceId() string {
+	if x != nil {
+		return x.AiplexInstanceId
+	}
+	return ""
+}
+
+func (x *RunState) GetGatewayRoute() string {
+	if x != nil {
+		return x.GatewayRoute
+	}
+	return ""
+}
+
+func (x *RunState) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *RunState) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
 }
 
 type JournalEntry struct {
@@ -6855,7 +6992,7 @@ var File_tape_proto protoreflect.FileDescriptor
 const file_tape_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"tape.proto\x12\atape.v1\"\xcc\x01\n" +
+	"tape.proto\x12\atape.v1\"\x98\x04\n" +
 	"\x0fBeginRunRequest\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1d\n" +
@@ -6865,7 +7002,18 @@ const file_tape_proto_rawDesc = "" +
 	"\vlease_owner\x18\x05 \x01(\tR\n" +
 	"leaseOwner\x12 \n" +
 	"\flease_ttl_ms\x18\x06 \x01(\x03R\n" +
-	"leaseTtlMs\"\x8a\x01\n" +
+	"leaseTtlMs\x12\x1b\n" +
+	"\ttenant_id\x18\x14 \x01(\tR\btenantId\x12\x14\n" +
+	"\x05actor\x18\x15 \x01(\tR\x05actor\x12\x18\n" +
+	"\asubject\x18\x16 \x01(\tR\asubject\x12\x19\n" +
+	"\bagent_id\x18\x17 \x01(\tR\aagentId\x12,\n" +
+	"\x12aiplex_instance_id\x18\x18 \x01(\tR\x10aiplexInstanceId\x12#\n" +
+	"\rgateway_route\x18\x19 \x01(\tR\fgatewayRoute\x12\x16\n" +
+	"\x06scopes\x18\x1a \x03(\tR\x06scopes\x12<\n" +
+	"\x06labels\x18\x1b \x03(\v2$.tape.v1.BeginRunRequest.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8a\x01\n" +
 	"\x10BeginRunResponse\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x18\n" +
 	"\aresumed\x18\x02 \x01(\bR\aresumed\x12\x19\n" +
@@ -6895,7 +7043,7 @@ const file_tape_proto_rawDesc = "" +
 	"\x04runs\x18\x01 \x03(\v2\x11.tape.v1.RunStateR\x04runs\"G\n" +
 	"\x13SubscribeRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
-	"\bfrom_seq\x18\x02 \x01(\x03R\afromSeq\"\xa0\x03\n" +
+	"\bfrom_seq\x18\x02 \x01(\x03R\afromSeq\"\xe5\x05\n" +
 	"\bRunState\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x17\n" +
@@ -6912,7 +7060,18 @@ const file_tape_proto_rawDesc = "" +
 	"\rstarted_at_ms\x18\n" +
 	" \x01(\x03R\vstartedAtMs\x12\x1e\n" +
 	"\vended_at_ms\x18\v \x01(\x03R\tendedAtMs\x12&\n" +
-	"\x0fwaiting_on_gate\x18\f \x01(\tR\rwaitingOnGate\"\xa6\x02\n" +
+	"\x0fwaiting_on_gate\x18\f \x01(\tR\rwaitingOnGate\x12\x1b\n" +
+	"\ttenant_id\x18\x14 \x01(\tR\btenantId\x12\x14\n" +
+	"\x05actor\x18\x15 \x01(\tR\x05actor\x12\x18\n" +
+	"\asubject\x18\x16 \x01(\tR\asubject\x12\x19\n" +
+	"\bagent_id\x18\x17 \x01(\tR\aagentId\x12,\n" +
+	"\x12aiplex_instance_id\x18\x18 \x01(\tR\x10aiplexInstanceId\x12#\n" +
+	"\rgateway_route\x18\x19 \x01(\tR\fgatewayRoute\x12\x16\n" +
+	"\x06scopes\x18\x1a \x03(\tR\x06scopes\x125\n" +
+	"\x06labels\x18\x1b \x03(\v2\x1d.tape.v1.RunState.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa6\x02\n" +
 	"\fJournalEntry\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12!\n" +
@@ -7508,7 +7667,7 @@ func file_tape_proto_rawDescGZIP() []byte {
 }
 
 var file_tape_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
-var file_tape_proto_msgTypes = make([]protoimpl.MessageInfo, 92)
+var file_tape_proto_msgTypes = make([]protoimpl.MessageInfo, 94)
 var file_tape_proto_goTypes = []any{
 	(RunStatus)(0),                            // 0: tape.v1.RunStatus
 	(EffectStatus)(0),                         // 1: tape.v1.EffectStatus
@@ -7610,155 +7769,159 @@ var file_tape_proto_goTypes = []any{
 	(*DeleteSessionResponse)(nil),             // 97: tape.v1.DeleteSessionResponse
 	(*AppendEventRequest)(nil),                // 98: tape.v1.AppendEventRequest
 	(*AppendEventResponse)(nil),               // 99: tape.v1.AppendEventResponse
+	nil,                                       // 100: tape.v1.BeginRunRequest.LabelsEntry
+	nil,                                       // 101: tape.v1.RunState.LabelsEntry
 }
 var file_tape_proto_depIdxs = []int32{
-	0,  // 0: tape.v1.BeginRunResponse.status:type_name -> tape.v1.RunStatus
-	18, // 1: tape.v1.ResumeRunResponse.run:type_name -> tape.v1.RunState
-	0,  // 2: tape.v1.EndRunRequest.status:type_name -> tape.v1.RunStatus
-	18, // 3: tape.v1.EndRunResponse.run:type_name -> tape.v1.RunState
-	18, // 4: tape.v1.ListRunsToRecoverResponse.runs:type_name -> tape.v1.RunState
-	0,  // 5: tape.v1.RunState.status:type_name -> tape.v1.RunStatus
-	21, // 6: tape.v1.GetDecisionResponse.decision:type_name -> tape.v1.DecisionRecord
-	2,  // 7: tape.v1.BeginEffectRequest.semantics:type_name -> tape.v1.EffectSemantics
-	3,  // 8: tape.v1.BeginEffectRequest.dispatch_mode:type_name -> tape.v1.EffectDispatchMode
-	1,  // 9: tape.v1.BeginEffectResponse.status:type_name -> tape.v1.EffectStatus
-	1,  // 10: tape.v1.CompleteEffectRequest.status:type_name -> tape.v1.EffectStatus
-	30, // 11: tape.v1.GetEffectResponse.effect:type_name -> tape.v1.EffectRecord
-	1,  // 12: tape.v1.ReconcileEffectRequest.resolved_status:type_name -> tape.v1.EffectStatus
-	1,  // 13: tape.v1.EffectRecord.status:type_name -> tape.v1.EffectStatus
-	2,  // 14: tape.v1.EffectRecord.semantics:type_name -> tape.v1.EffectSemantics
-	3,  // 15: tape.v1.EffectRecord.dispatch_mode:type_name -> tape.v1.EffectDispatchMode
-	30, // 16: tape.v1.ListEffectsToDispatchResponse.effects:type_name -> tape.v1.EffectRecord
-	30, // 17: tape.v1.ClaimEffectDispatchResponse.effect:type_name -> tape.v1.EffectRecord
-	4,  // 18: tape.v1.RecordExternalObservationRequest.resolution:type_name -> tape.v1.EffectResolution
-	5,  // 19: tape.v1.ListObligationsRequest.status_filter:type_name -> tape.v1.ObligationStatus
-	41, // 20: tape.v1.ListObligationsResponse.obligations:type_name -> tape.v1.ObligationRecord
-	5,  // 21: tape.v1.ResolveObligationRequest.status:type_name -> tape.v1.ObligationStatus
-	5,  // 22: tape.v1.ObligationRecord.status:type_name -> tape.v1.ObligationStatus
-	41, // 23: tape.v1.ListUnresolvedObligationsResponse.obligations:type_name -> tape.v1.ObligationRecord
-	41, // 24: tape.v1.ClaimObligationResponse.obligation:type_name -> tape.v1.ObligationRecord
-	51, // 25: tape.v1.AdmitBudgetResponse.budget:type_name -> tape.v1.BudgetState
-	0,  // 26: tape.v1.SendSignalResponse.run_status:type_name -> tape.v1.RunStatus
-	30, // 27: tape.v1.ListPendingEffectsResponse.effects:type_name -> tape.v1.EffectRecord
-	59, // 28: tape.v1.ListDueTimersResponse.timers:type_name -> tape.v1.TimerRecord
-	6,  // 29: tape.v1.Reaction.handler_kind:type_name -> tape.v1.HandlerKind
-	67, // 30: tape.v1.ListReactionsResponse.reactions:type_name -> tape.v1.Reaction
-	7,  // 31: tape.v1.Task.status:type_name -> tape.v1.TaskStatus
-	72, // 32: tape.v1.ClaimTasksResponse.tasks:type_name -> tape.v1.Task
-	72, // 33: tape.v1.CompleteTaskResponse.task:type_name -> tape.v1.Task
-	72, // 34: tape.v1.NackTaskResponse.task:type_name -> tape.v1.Task
-	7,  // 35: tape.v1.ListTasksRequest.status:type_name -> tape.v1.TaskStatus
-	72, // 36: tape.v1.ListTasksResponse.tasks:type_name -> tape.v1.Task
-	81, // 37: tape.v1.GetValueResponse.value:type_name -> tape.v1.ValueRecord
-	81, // 38: tape.v1.ValueEvent.value:type_name -> tape.v1.ValueRecord
-	90, // 39: tape.v1.Session.events:type_name -> tape.v1.EventRecord
-	89, // 40: tape.v1.GetSessionResponse.session:type_name -> tape.v1.Session
-	89, // 41: tape.v1.ListSessionsResponse.sessions:type_name -> tape.v1.Session
-	90, // 42: tape.v1.AppendEventRequest.event:type_name -> tape.v1.EventRecord
-	90, // 43: tape.v1.AppendEventResponse.event:type_name -> tape.v1.EventRecord
-	8,  // 44: tape.v1.Tape.BeginRun:input_type -> tape.v1.BeginRunRequest
-	10, // 45: tape.v1.Tape.ResumeRun:input_type -> tape.v1.ResumeRunRequest
-	12, // 46: tape.v1.Tape.EndRun:input_type -> tape.v1.EndRunRequest
-	14, // 47: tape.v1.Tape.GetRun:input_type -> tape.v1.GetRunRequest
-	15, // 48: tape.v1.Tape.ListRunsToRecover:input_type -> tape.v1.ListRunsToRecoverRequest
-	17, // 49: tape.v1.Tape.SubscribeRun:input_type -> tape.v1.SubscribeRunRequest
-	20, // 50: tape.v1.Tape.RecordDecision:input_type -> tape.v1.RecordDecisionRequest
-	22, // 51: tape.v1.Tape.GetDecision:input_type -> tape.v1.GetDecisionRequest
-	24, // 52: tape.v1.Tape.BeginEffect:input_type -> tape.v1.BeginEffectRequest
-	26, // 53: tape.v1.Tape.CompleteEffect:input_type -> tape.v1.CompleteEffectRequest
-	27, // 54: tape.v1.Tape.GetEffect:input_type -> tape.v1.GetEffectRequest
-	29, // 55: tape.v1.Tape.ReconcileEffect:input_type -> tape.v1.ReconcileEffectRequest
-	31, // 56: tape.v1.Tape.ListEffectsToDispatch:input_type -> tape.v1.ListEffectsToDispatchRequest
-	33, // 57: tape.v1.Tape.ClaimEffectDispatch:input_type -> tape.v1.ClaimEffectDispatchRequest
-	35, // 58: tape.v1.Tape.RecordDispatchAttempt:input_type -> tape.v1.RecordDispatchAttemptRequest
-	36, // 59: tape.v1.Tape.RecordExternalObservation:input_type -> tape.v1.RecordExternalObservationRequest
-	37, // 60: tape.v1.Tape.RegisterCompensation:input_type -> tape.v1.RegisterCompensationRequest
-	38, // 61: tape.v1.Tape.ListObligations:input_type -> tape.v1.ListObligationsRequest
-	40, // 62: tape.v1.Tape.ResolveObligation:input_type -> tape.v1.ResolveObligationRequest
-	42, // 63: tape.v1.Tape.ListUnresolvedObligations:input_type -> tape.v1.ListUnresolvedObligationsRequest
-	44, // 64: tape.v1.Tape.ClaimObligation:input_type -> tape.v1.ClaimObligationRequest
-	46, // 65: tape.v1.Tape.RecordObligationAttempt:input_type -> tape.v1.RecordObligationAttemptRequest
-	47, // 66: tape.v1.Tape.SetBudget:input_type -> tape.v1.SetBudgetRequest
-	48, // 67: tape.v1.Tape.AdmitBudget:input_type -> tape.v1.AdmitBudgetRequest
-	50, // 68: tape.v1.Tape.ChargeBudget:input_type -> tape.v1.ChargeBudgetRequest
-	52, // 69: tape.v1.Tape.AwaitSignal:input_type -> tape.v1.AwaitSignalRequest
-	54, // 70: tape.v1.Tape.SendSignal:input_type -> tape.v1.SendSignalRequest
-	56, // 71: tape.v1.Tape.ListPendingEffects:input_type -> tape.v1.ListPendingEffectsRequest
-	58, // 72: tape.v1.Tape.SetTimer:input_type -> tape.v1.SetTimerRequest
-	60, // 73: tape.v1.Tape.CancelTimer:input_type -> tape.v1.CancelTimerRequest
-	62, // 74: tape.v1.Tape.ListDueTimers:input_type -> tape.v1.ListDueTimersRequest
-	64, // 75: tape.v1.Tape.SubscribeEvents:input_type -> tape.v1.SubscribeEventsRequest
-	65, // 76: tape.v1.Tape.SubscribeBySubject:input_type -> tape.v1.SubscribeBySubjectRequest
-	67, // 77: tape.v1.Tape.RegisterReaction:input_type -> tape.v1.Reaction
-	68, // 78: tape.v1.Tape.DeregisterReaction:input_type -> tape.v1.DeregisterReactionRequest
-	70, // 79: tape.v1.Tape.ListReactions:input_type -> tape.v1.ListReactionsRequest
-	73, // 80: tape.v1.Tape.ClaimTasks:input_type -> tape.v1.ClaimTasksRequest
-	75, // 81: tape.v1.Tape.CompleteTask:input_type -> tape.v1.CompleteTaskRequest
-	77, // 82: tape.v1.Tape.NackTask:input_type -> tape.v1.NackTaskRequest
-	79, // 83: tape.v1.Tape.ListTasks:input_type -> tape.v1.ListTasksRequest
-	82, // 84: tape.v1.Tape.WriteValue:input_type -> tape.v1.WriteValueRequest
-	83, // 85: tape.v1.Tape.GetValue:input_type -> tape.v1.GetValueRequest
-	85, // 86: tape.v1.Tape.WatchValue:input_type -> tape.v1.WatchValueRequest
-	87, // 87: tape.v1.Tape.DeleteValue:input_type -> tape.v1.DeleteValueRequest
-	91, // 88: tape.v1.Tape.CreateSession:input_type -> tape.v1.CreateSessionRequest
-	92, // 89: tape.v1.Tape.GetSession:input_type -> tape.v1.GetSessionRequest
-	94, // 90: tape.v1.Tape.ListSessions:input_type -> tape.v1.ListSessionsRequest
-	96, // 91: tape.v1.Tape.DeleteSession:input_type -> tape.v1.DeleteSessionRequest
-	98, // 92: tape.v1.Tape.AppendEvent:input_type -> tape.v1.AppendEventRequest
-	9,  // 93: tape.v1.Tape.BeginRun:output_type -> tape.v1.BeginRunResponse
-	11, // 94: tape.v1.Tape.ResumeRun:output_type -> tape.v1.ResumeRunResponse
-	13, // 95: tape.v1.Tape.EndRun:output_type -> tape.v1.EndRunResponse
-	18, // 96: tape.v1.Tape.GetRun:output_type -> tape.v1.RunState
-	16, // 97: tape.v1.Tape.ListRunsToRecover:output_type -> tape.v1.ListRunsToRecoverResponse
-	19, // 98: tape.v1.Tape.SubscribeRun:output_type -> tape.v1.JournalEntry
-	21, // 99: tape.v1.Tape.RecordDecision:output_type -> tape.v1.DecisionRecord
-	23, // 100: tape.v1.Tape.GetDecision:output_type -> tape.v1.GetDecisionResponse
-	25, // 101: tape.v1.Tape.BeginEffect:output_type -> tape.v1.BeginEffectResponse
-	30, // 102: tape.v1.Tape.CompleteEffect:output_type -> tape.v1.EffectRecord
-	28, // 103: tape.v1.Tape.GetEffect:output_type -> tape.v1.GetEffectResponse
-	30, // 104: tape.v1.Tape.ReconcileEffect:output_type -> tape.v1.EffectRecord
-	32, // 105: tape.v1.Tape.ListEffectsToDispatch:output_type -> tape.v1.ListEffectsToDispatchResponse
-	34, // 106: tape.v1.Tape.ClaimEffectDispatch:output_type -> tape.v1.ClaimEffectDispatchResponse
-	30, // 107: tape.v1.Tape.RecordDispatchAttempt:output_type -> tape.v1.EffectRecord
-	30, // 108: tape.v1.Tape.RecordExternalObservation:output_type -> tape.v1.EffectRecord
-	41, // 109: tape.v1.Tape.RegisterCompensation:output_type -> tape.v1.ObligationRecord
-	39, // 110: tape.v1.Tape.ListObligations:output_type -> tape.v1.ListObligationsResponse
-	41, // 111: tape.v1.Tape.ResolveObligation:output_type -> tape.v1.ObligationRecord
-	43, // 112: tape.v1.Tape.ListUnresolvedObligations:output_type -> tape.v1.ListUnresolvedObligationsResponse
-	45, // 113: tape.v1.Tape.ClaimObligation:output_type -> tape.v1.ClaimObligationResponse
-	41, // 114: tape.v1.Tape.RecordObligationAttempt:output_type -> tape.v1.ObligationRecord
-	51, // 115: tape.v1.Tape.SetBudget:output_type -> tape.v1.BudgetState
-	49, // 116: tape.v1.Tape.AdmitBudget:output_type -> tape.v1.AdmitBudgetResponse
-	51, // 117: tape.v1.Tape.ChargeBudget:output_type -> tape.v1.BudgetState
-	53, // 118: tape.v1.Tape.AwaitSignal:output_type -> tape.v1.AwaitSignalResponse
-	55, // 119: tape.v1.Tape.SendSignal:output_type -> tape.v1.SendSignalResponse
-	57, // 120: tape.v1.Tape.ListPendingEffects:output_type -> tape.v1.ListPendingEffectsResponse
-	59, // 121: tape.v1.Tape.SetTimer:output_type -> tape.v1.TimerRecord
-	61, // 122: tape.v1.Tape.CancelTimer:output_type -> tape.v1.CancelTimerResponse
-	63, // 123: tape.v1.Tape.ListDueTimers:output_type -> tape.v1.ListDueTimersResponse
-	66, // 124: tape.v1.Tape.SubscribeEvents:output_type -> tape.v1.EventEntry
-	66, // 125: tape.v1.Tape.SubscribeBySubject:output_type -> tape.v1.EventEntry
-	67, // 126: tape.v1.Tape.RegisterReaction:output_type -> tape.v1.Reaction
-	69, // 127: tape.v1.Tape.DeregisterReaction:output_type -> tape.v1.DeregisterReactionResponse
-	71, // 128: tape.v1.Tape.ListReactions:output_type -> tape.v1.ListReactionsResponse
-	74, // 129: tape.v1.Tape.ClaimTasks:output_type -> tape.v1.ClaimTasksResponse
-	76, // 130: tape.v1.Tape.CompleteTask:output_type -> tape.v1.CompleteTaskResponse
-	78, // 131: tape.v1.Tape.NackTask:output_type -> tape.v1.NackTaskResponse
-	80, // 132: tape.v1.Tape.ListTasks:output_type -> tape.v1.ListTasksResponse
-	81, // 133: tape.v1.Tape.WriteValue:output_type -> tape.v1.ValueRecord
-	84, // 134: tape.v1.Tape.GetValue:output_type -> tape.v1.GetValueResponse
-	86, // 135: tape.v1.Tape.WatchValue:output_type -> tape.v1.ValueEvent
-	88, // 136: tape.v1.Tape.DeleteValue:output_type -> tape.v1.DeleteValueResponse
-	89, // 137: tape.v1.Tape.CreateSession:output_type -> tape.v1.Session
-	93, // 138: tape.v1.Tape.GetSession:output_type -> tape.v1.GetSessionResponse
-	95, // 139: tape.v1.Tape.ListSessions:output_type -> tape.v1.ListSessionsResponse
-	97, // 140: tape.v1.Tape.DeleteSession:output_type -> tape.v1.DeleteSessionResponse
-	99, // 141: tape.v1.Tape.AppendEvent:output_type -> tape.v1.AppendEventResponse
-	93, // [93:142] is the sub-list for method output_type
-	44, // [44:93] is the sub-list for method input_type
-	44, // [44:44] is the sub-list for extension type_name
-	44, // [44:44] is the sub-list for extension extendee
-	0,  // [0:44] is the sub-list for field type_name
+	100, // 0: tape.v1.BeginRunRequest.labels:type_name -> tape.v1.BeginRunRequest.LabelsEntry
+	0,   // 1: tape.v1.BeginRunResponse.status:type_name -> tape.v1.RunStatus
+	18,  // 2: tape.v1.ResumeRunResponse.run:type_name -> tape.v1.RunState
+	0,   // 3: tape.v1.EndRunRequest.status:type_name -> tape.v1.RunStatus
+	18,  // 4: tape.v1.EndRunResponse.run:type_name -> tape.v1.RunState
+	18,  // 5: tape.v1.ListRunsToRecoverResponse.runs:type_name -> tape.v1.RunState
+	0,   // 6: tape.v1.RunState.status:type_name -> tape.v1.RunStatus
+	101, // 7: tape.v1.RunState.labels:type_name -> tape.v1.RunState.LabelsEntry
+	21,  // 8: tape.v1.GetDecisionResponse.decision:type_name -> tape.v1.DecisionRecord
+	2,   // 9: tape.v1.BeginEffectRequest.semantics:type_name -> tape.v1.EffectSemantics
+	3,   // 10: tape.v1.BeginEffectRequest.dispatch_mode:type_name -> tape.v1.EffectDispatchMode
+	1,   // 11: tape.v1.BeginEffectResponse.status:type_name -> tape.v1.EffectStatus
+	1,   // 12: tape.v1.CompleteEffectRequest.status:type_name -> tape.v1.EffectStatus
+	30,  // 13: tape.v1.GetEffectResponse.effect:type_name -> tape.v1.EffectRecord
+	1,   // 14: tape.v1.ReconcileEffectRequest.resolved_status:type_name -> tape.v1.EffectStatus
+	1,   // 15: tape.v1.EffectRecord.status:type_name -> tape.v1.EffectStatus
+	2,   // 16: tape.v1.EffectRecord.semantics:type_name -> tape.v1.EffectSemantics
+	3,   // 17: tape.v1.EffectRecord.dispatch_mode:type_name -> tape.v1.EffectDispatchMode
+	30,  // 18: tape.v1.ListEffectsToDispatchResponse.effects:type_name -> tape.v1.EffectRecord
+	30,  // 19: tape.v1.ClaimEffectDispatchResponse.effect:type_name -> tape.v1.EffectRecord
+	4,   // 20: tape.v1.RecordExternalObservationRequest.resolution:type_name -> tape.v1.EffectResolution
+	5,   // 21: tape.v1.ListObligationsRequest.status_filter:type_name -> tape.v1.ObligationStatus
+	41,  // 22: tape.v1.ListObligationsResponse.obligations:type_name -> tape.v1.ObligationRecord
+	5,   // 23: tape.v1.ResolveObligationRequest.status:type_name -> tape.v1.ObligationStatus
+	5,   // 24: tape.v1.ObligationRecord.status:type_name -> tape.v1.ObligationStatus
+	41,  // 25: tape.v1.ListUnresolvedObligationsResponse.obligations:type_name -> tape.v1.ObligationRecord
+	41,  // 26: tape.v1.ClaimObligationResponse.obligation:type_name -> tape.v1.ObligationRecord
+	51,  // 27: tape.v1.AdmitBudgetResponse.budget:type_name -> tape.v1.BudgetState
+	0,   // 28: tape.v1.SendSignalResponse.run_status:type_name -> tape.v1.RunStatus
+	30,  // 29: tape.v1.ListPendingEffectsResponse.effects:type_name -> tape.v1.EffectRecord
+	59,  // 30: tape.v1.ListDueTimersResponse.timers:type_name -> tape.v1.TimerRecord
+	6,   // 31: tape.v1.Reaction.handler_kind:type_name -> tape.v1.HandlerKind
+	67,  // 32: tape.v1.ListReactionsResponse.reactions:type_name -> tape.v1.Reaction
+	7,   // 33: tape.v1.Task.status:type_name -> tape.v1.TaskStatus
+	72,  // 34: tape.v1.ClaimTasksResponse.tasks:type_name -> tape.v1.Task
+	72,  // 35: tape.v1.CompleteTaskResponse.task:type_name -> tape.v1.Task
+	72,  // 36: tape.v1.NackTaskResponse.task:type_name -> tape.v1.Task
+	7,   // 37: tape.v1.ListTasksRequest.status:type_name -> tape.v1.TaskStatus
+	72,  // 38: tape.v1.ListTasksResponse.tasks:type_name -> tape.v1.Task
+	81,  // 39: tape.v1.GetValueResponse.value:type_name -> tape.v1.ValueRecord
+	81,  // 40: tape.v1.ValueEvent.value:type_name -> tape.v1.ValueRecord
+	90,  // 41: tape.v1.Session.events:type_name -> tape.v1.EventRecord
+	89,  // 42: tape.v1.GetSessionResponse.session:type_name -> tape.v1.Session
+	89,  // 43: tape.v1.ListSessionsResponse.sessions:type_name -> tape.v1.Session
+	90,  // 44: tape.v1.AppendEventRequest.event:type_name -> tape.v1.EventRecord
+	90,  // 45: tape.v1.AppendEventResponse.event:type_name -> tape.v1.EventRecord
+	8,   // 46: tape.v1.Tape.BeginRun:input_type -> tape.v1.BeginRunRequest
+	10,  // 47: tape.v1.Tape.ResumeRun:input_type -> tape.v1.ResumeRunRequest
+	12,  // 48: tape.v1.Tape.EndRun:input_type -> tape.v1.EndRunRequest
+	14,  // 49: tape.v1.Tape.GetRun:input_type -> tape.v1.GetRunRequest
+	15,  // 50: tape.v1.Tape.ListRunsToRecover:input_type -> tape.v1.ListRunsToRecoverRequest
+	17,  // 51: tape.v1.Tape.SubscribeRun:input_type -> tape.v1.SubscribeRunRequest
+	20,  // 52: tape.v1.Tape.RecordDecision:input_type -> tape.v1.RecordDecisionRequest
+	22,  // 53: tape.v1.Tape.GetDecision:input_type -> tape.v1.GetDecisionRequest
+	24,  // 54: tape.v1.Tape.BeginEffect:input_type -> tape.v1.BeginEffectRequest
+	26,  // 55: tape.v1.Tape.CompleteEffect:input_type -> tape.v1.CompleteEffectRequest
+	27,  // 56: tape.v1.Tape.GetEffect:input_type -> tape.v1.GetEffectRequest
+	29,  // 57: tape.v1.Tape.ReconcileEffect:input_type -> tape.v1.ReconcileEffectRequest
+	31,  // 58: tape.v1.Tape.ListEffectsToDispatch:input_type -> tape.v1.ListEffectsToDispatchRequest
+	33,  // 59: tape.v1.Tape.ClaimEffectDispatch:input_type -> tape.v1.ClaimEffectDispatchRequest
+	35,  // 60: tape.v1.Tape.RecordDispatchAttempt:input_type -> tape.v1.RecordDispatchAttemptRequest
+	36,  // 61: tape.v1.Tape.RecordExternalObservation:input_type -> tape.v1.RecordExternalObservationRequest
+	37,  // 62: tape.v1.Tape.RegisterCompensation:input_type -> tape.v1.RegisterCompensationRequest
+	38,  // 63: tape.v1.Tape.ListObligations:input_type -> tape.v1.ListObligationsRequest
+	40,  // 64: tape.v1.Tape.ResolveObligation:input_type -> tape.v1.ResolveObligationRequest
+	42,  // 65: tape.v1.Tape.ListUnresolvedObligations:input_type -> tape.v1.ListUnresolvedObligationsRequest
+	44,  // 66: tape.v1.Tape.ClaimObligation:input_type -> tape.v1.ClaimObligationRequest
+	46,  // 67: tape.v1.Tape.RecordObligationAttempt:input_type -> tape.v1.RecordObligationAttemptRequest
+	47,  // 68: tape.v1.Tape.SetBudget:input_type -> tape.v1.SetBudgetRequest
+	48,  // 69: tape.v1.Tape.AdmitBudget:input_type -> tape.v1.AdmitBudgetRequest
+	50,  // 70: tape.v1.Tape.ChargeBudget:input_type -> tape.v1.ChargeBudgetRequest
+	52,  // 71: tape.v1.Tape.AwaitSignal:input_type -> tape.v1.AwaitSignalRequest
+	54,  // 72: tape.v1.Tape.SendSignal:input_type -> tape.v1.SendSignalRequest
+	56,  // 73: tape.v1.Tape.ListPendingEffects:input_type -> tape.v1.ListPendingEffectsRequest
+	58,  // 74: tape.v1.Tape.SetTimer:input_type -> tape.v1.SetTimerRequest
+	60,  // 75: tape.v1.Tape.CancelTimer:input_type -> tape.v1.CancelTimerRequest
+	62,  // 76: tape.v1.Tape.ListDueTimers:input_type -> tape.v1.ListDueTimersRequest
+	64,  // 77: tape.v1.Tape.SubscribeEvents:input_type -> tape.v1.SubscribeEventsRequest
+	65,  // 78: tape.v1.Tape.SubscribeBySubject:input_type -> tape.v1.SubscribeBySubjectRequest
+	67,  // 79: tape.v1.Tape.RegisterReaction:input_type -> tape.v1.Reaction
+	68,  // 80: tape.v1.Tape.DeregisterReaction:input_type -> tape.v1.DeregisterReactionRequest
+	70,  // 81: tape.v1.Tape.ListReactions:input_type -> tape.v1.ListReactionsRequest
+	73,  // 82: tape.v1.Tape.ClaimTasks:input_type -> tape.v1.ClaimTasksRequest
+	75,  // 83: tape.v1.Tape.CompleteTask:input_type -> tape.v1.CompleteTaskRequest
+	77,  // 84: tape.v1.Tape.NackTask:input_type -> tape.v1.NackTaskRequest
+	79,  // 85: tape.v1.Tape.ListTasks:input_type -> tape.v1.ListTasksRequest
+	82,  // 86: tape.v1.Tape.WriteValue:input_type -> tape.v1.WriteValueRequest
+	83,  // 87: tape.v1.Tape.GetValue:input_type -> tape.v1.GetValueRequest
+	85,  // 88: tape.v1.Tape.WatchValue:input_type -> tape.v1.WatchValueRequest
+	87,  // 89: tape.v1.Tape.DeleteValue:input_type -> tape.v1.DeleteValueRequest
+	91,  // 90: tape.v1.Tape.CreateSession:input_type -> tape.v1.CreateSessionRequest
+	92,  // 91: tape.v1.Tape.GetSession:input_type -> tape.v1.GetSessionRequest
+	94,  // 92: tape.v1.Tape.ListSessions:input_type -> tape.v1.ListSessionsRequest
+	96,  // 93: tape.v1.Tape.DeleteSession:input_type -> tape.v1.DeleteSessionRequest
+	98,  // 94: tape.v1.Tape.AppendEvent:input_type -> tape.v1.AppendEventRequest
+	9,   // 95: tape.v1.Tape.BeginRun:output_type -> tape.v1.BeginRunResponse
+	11,  // 96: tape.v1.Tape.ResumeRun:output_type -> tape.v1.ResumeRunResponse
+	13,  // 97: tape.v1.Tape.EndRun:output_type -> tape.v1.EndRunResponse
+	18,  // 98: tape.v1.Tape.GetRun:output_type -> tape.v1.RunState
+	16,  // 99: tape.v1.Tape.ListRunsToRecover:output_type -> tape.v1.ListRunsToRecoverResponse
+	19,  // 100: tape.v1.Tape.SubscribeRun:output_type -> tape.v1.JournalEntry
+	21,  // 101: tape.v1.Tape.RecordDecision:output_type -> tape.v1.DecisionRecord
+	23,  // 102: tape.v1.Tape.GetDecision:output_type -> tape.v1.GetDecisionResponse
+	25,  // 103: tape.v1.Tape.BeginEffect:output_type -> tape.v1.BeginEffectResponse
+	30,  // 104: tape.v1.Tape.CompleteEffect:output_type -> tape.v1.EffectRecord
+	28,  // 105: tape.v1.Tape.GetEffect:output_type -> tape.v1.GetEffectResponse
+	30,  // 106: tape.v1.Tape.ReconcileEffect:output_type -> tape.v1.EffectRecord
+	32,  // 107: tape.v1.Tape.ListEffectsToDispatch:output_type -> tape.v1.ListEffectsToDispatchResponse
+	34,  // 108: tape.v1.Tape.ClaimEffectDispatch:output_type -> tape.v1.ClaimEffectDispatchResponse
+	30,  // 109: tape.v1.Tape.RecordDispatchAttempt:output_type -> tape.v1.EffectRecord
+	30,  // 110: tape.v1.Tape.RecordExternalObservation:output_type -> tape.v1.EffectRecord
+	41,  // 111: tape.v1.Tape.RegisterCompensation:output_type -> tape.v1.ObligationRecord
+	39,  // 112: tape.v1.Tape.ListObligations:output_type -> tape.v1.ListObligationsResponse
+	41,  // 113: tape.v1.Tape.ResolveObligation:output_type -> tape.v1.ObligationRecord
+	43,  // 114: tape.v1.Tape.ListUnresolvedObligations:output_type -> tape.v1.ListUnresolvedObligationsResponse
+	45,  // 115: tape.v1.Tape.ClaimObligation:output_type -> tape.v1.ClaimObligationResponse
+	41,  // 116: tape.v1.Tape.RecordObligationAttempt:output_type -> tape.v1.ObligationRecord
+	51,  // 117: tape.v1.Tape.SetBudget:output_type -> tape.v1.BudgetState
+	49,  // 118: tape.v1.Tape.AdmitBudget:output_type -> tape.v1.AdmitBudgetResponse
+	51,  // 119: tape.v1.Tape.ChargeBudget:output_type -> tape.v1.BudgetState
+	53,  // 120: tape.v1.Tape.AwaitSignal:output_type -> tape.v1.AwaitSignalResponse
+	55,  // 121: tape.v1.Tape.SendSignal:output_type -> tape.v1.SendSignalResponse
+	57,  // 122: tape.v1.Tape.ListPendingEffects:output_type -> tape.v1.ListPendingEffectsResponse
+	59,  // 123: tape.v1.Tape.SetTimer:output_type -> tape.v1.TimerRecord
+	61,  // 124: tape.v1.Tape.CancelTimer:output_type -> tape.v1.CancelTimerResponse
+	63,  // 125: tape.v1.Tape.ListDueTimers:output_type -> tape.v1.ListDueTimersResponse
+	66,  // 126: tape.v1.Tape.SubscribeEvents:output_type -> tape.v1.EventEntry
+	66,  // 127: tape.v1.Tape.SubscribeBySubject:output_type -> tape.v1.EventEntry
+	67,  // 128: tape.v1.Tape.RegisterReaction:output_type -> tape.v1.Reaction
+	69,  // 129: tape.v1.Tape.DeregisterReaction:output_type -> tape.v1.DeregisterReactionResponse
+	71,  // 130: tape.v1.Tape.ListReactions:output_type -> tape.v1.ListReactionsResponse
+	74,  // 131: tape.v1.Tape.ClaimTasks:output_type -> tape.v1.ClaimTasksResponse
+	76,  // 132: tape.v1.Tape.CompleteTask:output_type -> tape.v1.CompleteTaskResponse
+	78,  // 133: tape.v1.Tape.NackTask:output_type -> tape.v1.NackTaskResponse
+	80,  // 134: tape.v1.Tape.ListTasks:output_type -> tape.v1.ListTasksResponse
+	81,  // 135: tape.v1.Tape.WriteValue:output_type -> tape.v1.ValueRecord
+	84,  // 136: tape.v1.Tape.GetValue:output_type -> tape.v1.GetValueResponse
+	86,  // 137: tape.v1.Tape.WatchValue:output_type -> tape.v1.ValueEvent
+	88,  // 138: tape.v1.Tape.DeleteValue:output_type -> tape.v1.DeleteValueResponse
+	89,  // 139: tape.v1.Tape.CreateSession:output_type -> tape.v1.Session
+	93,  // 140: tape.v1.Tape.GetSession:output_type -> tape.v1.GetSessionResponse
+	95,  // 141: tape.v1.Tape.ListSessions:output_type -> tape.v1.ListSessionsResponse
+	97,  // 142: tape.v1.Tape.DeleteSession:output_type -> tape.v1.DeleteSessionResponse
+	99,  // 143: tape.v1.Tape.AppendEvent:output_type -> tape.v1.AppendEventResponse
+	95,  // [95:144] is the sub-list for method output_type
+	46,  // [46:95] is the sub-list for method input_type
+	46,  // [46:46] is the sub-list for extension type_name
+	46,  // [46:46] is the sub-list for extension extendee
+	0,   // [0:46] is the sub-list for field type_name
 }
 
 func init() { file_tape_proto_init() }
@@ -7772,7 +7935,7 @@ func file_tape_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tape_proto_rawDesc), len(file_tape_proto_rawDesc)),
 			NumEnums:      8,
-			NumMessages:   92,
+			NumMessages:   94,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

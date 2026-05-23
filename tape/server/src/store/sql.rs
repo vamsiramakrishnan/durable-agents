@@ -25,7 +25,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::ToSql as SqliteToSql;
 
-use super::{derive_key, merge_json, now_ms, RunStore, StoreError, StoreResult};
+use super::{derive_key, merge_json, now_ms, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::subjects;
 
@@ -424,13 +424,32 @@ impl SqlRunStore {
 }
 
 const RUN_COLS: &str = "run_id, app_name, user_id, session_id, invocation_id, status, seq_cursor, \
-    lease_owner, lease_expires_at_ms, started_at_ms, ended_at_ms, waiting_on_gate";
+    lease_owner, lease_expires_at_ms, started_at_ms, ended_at_ms, waiting_on_gate, \
+    tenant_id, actor, subject, agent_id, aiplex_instance_id, gateway_route, scopes_json, labels_json";
 fn run_of(r: &Row) -> RunState {
     RunState {
         run_id: r.str(0), app_name: r.str(1), user_id: r.str(2), session_id: r.str(3),
         invocation_id: r.str(4), status: r.i32(5), seq_cursor: r.i64(6), lease_owner: r.str(7),
         lease_expires_at_ms: r.i64(8), started_at_ms: r.i64(9), ended_at_ms: r.i64(10), waiting_on_gate: r.str(11),
+        tenant_id: r.str(12), actor: r.str(13), subject: r.str(14), agent_id: r.str(15),
+        aiplex_instance_id: r.str(16), gateway_route: r.str(17),
+        scopes: parse_scopes(&r.str(18)),
+        labels: parse_labels(&r.str(19)),
     }
+}
+
+/// Decode the JSON-encoded `scopes_json` column back into a `Vec<String>`.
+/// Empty / malformed input degrades to `vec![]` (defensive — the SDK writes
+/// valid JSON arrays, but old rows or hand-edited DBs may not).
+fn parse_scopes(s: &str) -> Vec<String> {
+    if s.is_empty() { return Vec::new(); }
+    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
+}
+
+/// Decode the JSON-encoded `labels_json` column into a `HashMap<String, String>`.
+fn parse_labels(s: &str) -> std::collections::HashMap<String, String> {
+    if s.is_empty() { return std::collections::HashMap::new(); }
+    serde_json::from_str::<std::collections::HashMap<String, String>>(s).unwrap_or_default()
 }
 const EFFECT_COLS: &str = "run_id, seq, decision_index, tool_name, idempotency_key, status, \
     request_json, response_json, error_json, ts_ms, \
@@ -478,6 +497,7 @@ const DEFAULT_LEASE_MS: i64 = 60_000;
 impl RunStore for SqlRunStore {
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
+                       identity: &RunIdentity<'_>,
                        lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<BeginRunResponse> {
         let ts = now_ms();
         let lease_exp = ts + lease_ttl_ms.max(0);
@@ -494,16 +514,25 @@ impl RunStore for SqlRunStore {
             return Ok(BeginRunResponse { run_id, resumed: true, next_seq: seq_cursor, status: cur.status });
         }
         let run_id = uuid::Uuid::new_v4().to_string();
+        let scopes_json = if identity.scopes_json.is_empty() { "[]" } else { identity.scopes_json };
+        let labels_json = if identity.labels_json.is_empty() { "{}" } else { identity.labels_json };
         self.d().exec(
-            "INSERT INTO tape_runs (run_id, app_name, user_id, session_id, invocation_id, status, seq_cursor, lease_owner, lease_expires_at_ms, started_at_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,0,?7,?8,?9)",
+            "INSERT INTO tape_runs (run_id, app_name, user_id, session_id, invocation_id, status, seq_cursor, lease_owner, lease_expires_at_ms, started_at_ms, \
+                tenant_id, actor, subject, agent_id, aiplex_instance_id, gateway_route, scopes_json, labels_json) \
+             VALUES (?1,?2,?3,?4,?5,?6,0,?7,?8,?9, ?10,?11,?12,?13,?14,?15,?16,?17)",
             vec![run_id.clone().into(), app.into(), user.into(), session.into(), invocation.into(),
-                 (RunStatus::Running as i32).into(), lease_owner.into(), lease_exp.into(), ts.into()]).await?;
+                 (RunStatus::Running as i32).into(), lease_owner.into(), lease_exp.into(), ts.into(),
+                 identity.tenant_id.into(), identity.actor.into(), identity.subject.into(),
+                 identity.agent_id.into(), identity.aiplex_instance_id.into(),
+                 identity.gateway_route.into(), scopes_json.into(), labels_json.into()]).await?;
         // Run-lifecycle journal: /tape/run/running/<app>/<user>/<session>/<run_id>
         let seq = self.next_seq(&run_id).await.unwrap_or(0);
         let payload = serde_json::json!({
             "app": app, "user": user, "session": session,
             "run_id": run_id, "invocation_id": invocation, "status": "running",
+            "tenant_id": identity.tenant_id, "actor": identity.actor,
+            "subject": identity.subject, "agent_id": identity.agent_id,
+            "aiplex_instance_id": identity.aiplex_instance_id,
         }).to_string();
         let _ = self.journal(&run_id, seq, "run", &payload, ts).await;
         Ok(BeginRunResponse { run_id, resumed: false, next_seq: 0, status: RunStatus::Running as i32 })

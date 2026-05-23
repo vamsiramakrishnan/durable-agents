@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use super::{RunStore, StoreError, StoreResult};
+use super::{RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::store::now_ms;
 
@@ -101,6 +101,7 @@ impl RunStore for MemRunStore {
     // ── run lifecycle ───────────────────────────────────────────────────────
 
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
+                       identity: &RunIdentity<'_>,
                        lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<BeginRunResponse> {
         let inv_key = (app.into(), user.into(), session.into(), invocation.into());
         let now = now_ms();
@@ -124,6 +125,16 @@ impl RunStore for MemRunStore {
             }
         }
         let run_id = format!("r-{}", uuid::Uuid::new_v4());
+        let scopes: Vec<String> = if identity.scopes_json.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(identity.scopes_json).unwrap_or_default()
+        };
+        let labels: std::collections::HashMap<String, String> = if identity.labels_json.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            serde_json::from_str(identity.labels_json).unwrap_or_default()
+        };
         let run = RunState {
             run_id: run_id.clone(),
             app_name: app.into(),
@@ -137,6 +148,14 @@ impl RunStore for MemRunStore {
             started_at_ms: now,
             ended_at_ms: 0,
             waiting_on_gate: String::new(),
+            tenant_id: identity.tenant_id.into(),
+            actor: identity.actor.into(),
+            subject: identity.subject.into(),
+            agent_id: identity.agent_id.into(),
+            aiplex_instance_id: identity.aiplex_instance_id.into(),
+            gateway_route: identity.gateway_route.into(),
+            scopes,
+            labels,
         };
         g.runs.insert(run_id.clone(), run);
         g.invocations.insert(inv_key, run_id.clone());

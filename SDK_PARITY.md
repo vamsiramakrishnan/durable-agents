@@ -62,6 +62,25 @@ trip.
 
 ## Open gaps (the roadmap)
 
+### G8. Run identity (AIPlex integration PR 1) — partial
+`BeginRunRequest` and `RunState` gained seven identity fields (`tenant_id`,
+`actor`, `subject`, `agent_id`, `aiplex_instance_id`, `gateway_route`,
+`scopes`, `labels`). Python is the reference; the other three SDKs have the
+call-surface plumbed but the developer-ergonomics layer varies.
+
+| SDK        | Wire fields exposed | Env-derived `RunIdentity` helper |
+| ---------- | :-----------------: | :------------------------------: |
+| Python     |          ✅          |  ✅ `tape.adk.identity.RunIdentity.from_env()`  |
+| Java       |          ✅          |  ✅ `dev.tape.RunIdentity.fromEnv()`            |
+| Go         |          ✅          |  ✖ (callers thread fields into `BeginRunOpts` manually) |
+| TypeScript |          ✅          |  ✖ (dynamic `beginRun({...})` call surface)     |
+
+**To close:** add a `RunIdentity` helper to Go (`tape/sdk/go/identity.go`)
+and TS (`tape/sdk/typescript/src/identity.ts`) mirroring the Python /
+Java surfaces. Tracked alongside AIPlex integration PR 1.
+
+---
+
 ### ~~G1. Outbox-reactor runners in TS / Go / Java~~ ✅ Shipped
 Python's `tape.reactors.outbox` is the reference. Each of TS/Go/Java now
 ships a packaged daemon entrypoint with the same dispatch loop and the same

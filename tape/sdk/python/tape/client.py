@@ -178,10 +178,19 @@ class TapeClient:
     # ── run lifecycle ───────────────────────────────────────────────────────
 
     def begin_run(self, *, app_name, user_id, session_id, invocation_id,
-                  lease_owner="", lease_ttl_ms=120_000):
+                  lease_owner="", lease_ttl_ms=120_000,
+                  tenant_id="", actor="", subject="", agent_id="",
+                  aiplex_instance_id="", gateway_route="",
+                  scopes=None, labels=None):
+        # Identity & authorization context. Empty values are valid (a
+        # non-AIPlex caller may pass nothing); AIPlex-managed agents populate
+        # everything via `tape.adk.identity.RunIdentity.from_env()`.
         return self.stub.BeginRun(pb.BeginRunRequest(
             app_name=app_name, user_id=user_id, session_id=session_id,
-            invocation_id=invocation_id, lease_owner=lease_owner, lease_ttl_ms=lease_ttl_ms))
+            invocation_id=invocation_id, lease_owner=lease_owner, lease_ttl_ms=lease_ttl_ms,
+            tenant_id=tenant_id, actor=actor, subject=subject, agent_id=agent_id,
+            aiplex_instance_id=aiplex_instance_id, gateway_route=gateway_route,
+            scopes=list(scopes or []), labels=dict(labels or {})))
 
     def resume_run(self, *, run_id, lease_owner="", lease_ttl_ms=120_000):
         return self.stub.ResumeRun(pb.ResumeRunRequest(

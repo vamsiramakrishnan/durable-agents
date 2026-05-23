@@ -195,8 +195,27 @@ export class TapeClient {
   }
 
   // ── run lifecycle ─────────────────────────────────────────────────────────
-  beginRun(r: { appName: string; userId: string; sessionId: string; invocationId: string; leaseOwner?: string; leaseTtlMs?: number }) {
-    return this.call('BeginRun', { ...r, leaseTtlMs: r.leaseTtlMs ?? 120_000 });
+  // Identity fields (tenantId / actor / subject / agentId / aiplexInstanceId /
+  // gatewayRoute / scopes / labels) are populated by AIPlex-managed
+  // deployments from the AIPLEX_* env vars; non-AIPlex callers may omit them.
+  // See tape/proto/tape.proto §BeginRunRequest.
+  beginRun(r: { appName: string; userId: string; sessionId: string; invocationId: string;
+                leaseOwner?: string; leaseTtlMs?: number;
+                tenantId?: string; actor?: string; subject?: string; agentId?: string;
+                aiplexInstanceId?: string; gatewayRoute?: string;
+                scopes?: string[]; labels?: Record<string, string> }) {
+    return this.call('BeginRun', {
+      ...r,
+      leaseTtlMs: r.leaseTtlMs ?? 120_000,
+      tenantId: r.tenantId ?? '',
+      actor: r.actor ?? '',
+      subject: r.subject ?? '',
+      agentId: r.agentId ?? '',
+      aiplexInstanceId: r.aiplexInstanceId ?? '',
+      gatewayRoute: r.gatewayRoute ?? '',
+      scopes: r.scopes ?? [],
+      labels: r.labels ?? {},
+    });
   }
   resumeRun(r: { runId: string; leaseOwner?: string; leaseTtlMs?: number }) {
     return this.call('ResumeRun', { ...r, leaseTtlMs: r.leaseTtlMs ?? 120_000 });

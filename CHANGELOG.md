@@ -5,6 +5,35 @@ this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — AIPlex integration (PR 1: run identity)
+- **`BeginRunRequest` and `RunState` carry identity & authorization context.**
+  Seven new fields: `tenant_id`, `actor` (SPIFFE workload identity), `subject`
+  (human principal, distinct from ADK's `user_id`), `agent_id` (stable AIPlex
+  catalog id), `aiplex_instance_id`, `gateway_route`, `scopes`, and `labels`.
+  Stored as first-class columns on `tape_runs` (scopes/labels JSON-encoded);
+  indexed on `(tenant_id, agent_id, started_at_ms)`, `(actor, started_at_ms)`
+  and `(subject, started_at_ms)` for the AIPlex run timeline queries.
+- **`tape.adk.identity.RunIdentity`** — typed dataclass with
+  `RunIdentity.from_env()` reading the conventional `AIPLEX_*` env vars
+  (`AIPLEX_TENANT_ID`, `AIPLEX_ACTOR`, `AIPLEX_SUBJECT`, `AIPLEX_AGENT_ID`,
+  `AIPLEX_INSTANCE_ID`, `AIPLEX_ROUTE`, `AIPLEX_SCOPES`, `AIPLEX_LABELS`).
+  `durable_app` defaults `identity=RunIdentity.from_env()` so AIPlex-deployed
+  agents get identity threaded for free; non-AIPlex callers may pass
+  `RunIdentity()` explicitly to opt out.
+- **Java SDK** ships `dev.tape.RunIdentity` with the same `fromEnv` parser and
+  `TapeClient.beginRun(..., RunIdentity)` overload.
+- **Go SDK** extends `BeginRunOpts` with the identity fields; tapepb
+  regenerated.
+- **TypeScript SDK** extends the `beginRun({...})` argument shape with the
+  same fields (dynamic call surface — no codegen needed).
+- **Schema rewrite, not migration.** `0001_init.{sqlite,postgres}.sql` rewritten
+  in place to include the new columns; no chained migration. Tape and AIPlex
+  are pre-users, so the schema takes its final shape directly.
+- **No server-side required-field validation in PR 1.** AIPlex-deployed
+  servers will enforce non-empty `tenant_id` / `actor` / `agent_id` via a
+  `TAPE_REQUIRE_IDENTITY` config in PR 5; local dev and existing examples
+  keep working with empty identity.
+
 ### Added — DevEx
 - **One-command bootstrap.** `./setup.sh` installs mise + every toolchain (Rust, Python, Node, Go, Java, just), builds the Rust server, and editable-installs the Python SDK + CLI. `--minimal` and `--skip-build` flags.
 - **Curl-pipe installer.** `install.sh` fetches the prebuilt `tape-server` binary from GitHub Releases and pip-installs the CLI. Falls back to a clear "run `./setup.sh` from a clone" message if no release exists yet.

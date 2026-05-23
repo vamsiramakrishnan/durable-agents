@@ -104,7 +104,7 @@ use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::{
     RowFilter, RowRange, RowSet,
 };
 
-use super::{derive_key, merge_json, now_ms, RunStore, StoreError, StoreResult};
+use super::{derive_key, merge_json, now_ms, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::subjects;
 
@@ -480,12 +480,27 @@ fn rk_pending(reaction_id: &str, shard: i32, task_id: &str) -> String {
 
 // ── decoders ────────────────────────────────────────────────────────────────
 fn run_from(run_id: &str, m: &RowMap) -> RunState {
+    let scopes_s = m.gs("scopes");
+    let scopes: Vec<String> = if scopes_s.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&scopes_s).unwrap_or_default()
+    };
+    let labels_s = m.gs("labels");
+    let labels: std::collections::HashMap<String, String> = if labels_s.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        serde_json::from_str(&labels_s).unwrap_or_default()
+    };
     RunState {
         run_id: run_id.to_string(),
         app_name: m.gs("app"), user_id: m.gs("user"), session_id: m.gs("session"),
         invocation_id: m.gs("inv"), status: m.gi("status") as i32, seq_cursor: m.gi("seq"),
         lease_owner: m.gs("lease_owner"), lease_expires_at_ms: m.gi("lease_exp"),
         started_at_ms: m.gi("started"), ended_at_ms: m.gi("ended"), waiting_on_gate: m.gs("waiting_gate"),
+        tenant_id: m.gs("tenant_id"), actor: m.gs("actor"), subject: m.gs("subject"),
+        agent_id: m.gs("agent_id"), aiplex_instance_id: m.gs("aiplex_instance_id"),
+        gateway_route: m.gs("gateway_route"), scopes, labels,
     }
 }
 fn effect_from(key: &str, m: &RowMap) -> EffectRecord {
@@ -639,7 +654,9 @@ impl RunStore for BigtableRunStore {
     fn journal_notify(&self) -> Arc<tokio::sync::Notify> { self.notify.clone() }
 
     // ── run lifecycle ───────────────────────────────────────────────────────
-    async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str, lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<BeginRunResponse> {
+    async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
+                       identity: &RunIdentity<'_>,
+                       lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<BeginRunResponse> {
         let ts = now_ms();
         let lease_exp = ts + lease_ttl_ms.max(0);
         if let Some(idx) = self.read_row(&rk_idx(app, user, session, invocation)).await? {
@@ -656,10 +673,17 @@ impl RunStore for BigtableRunStore {
             }
         }
         let run_id = uuid::Uuid::new_v4().to_string();
+        let scopes_json = if identity.scopes_json.is_empty() { "[]" } else { identity.scopes_json };
+        let labels_json = if identity.labels_json.is_empty() { "{}" } else { identity.labels_json };
         self.write_row(&rk_run(&run_id), vec![
             set("status", iv(RunStatus::Running as i64)), set("app", sv(app)), set("user", sv(user)),
             set("session", sv(session)), set("inv", sv(invocation)), set("seq", iv(0)),
             set("lease_owner", sv(lease_owner)), set("lease_exp", iv(lease_exp)), set("started", iv(ts)),
+            set("tenant_id", sv(identity.tenant_id)), set("actor", sv(identity.actor)),
+            set("subject", sv(identity.subject)), set("agent_id", sv(identity.agent_id)),
+            set("aiplex_instance_id", sv(identity.aiplex_instance_id)),
+            set("gateway_route", sv(identity.gateway_route)),
+            set("scopes", sv(scopes_json)), set("labels", sv(labels_json)),
         ]).await?;
         self.write_row(&rk_idx(app, user, session, invocation), vec![set("run", sv(run_id.clone()))]).await?;
         self.write_row(&rk_route(app, user, session), vec![set("run", sv(run_id.clone())), set("started", iv(ts))]).await?;
@@ -669,6 +693,9 @@ impl RunStore for BigtableRunStore {
         let payload = serde_json::json!({
             "app": app, "user": user, "session": session,
             "run_id": run_id, "invocation_id": invocation, "status": "running",
+            "tenant_id": identity.tenant_id, "actor": identity.actor,
+            "subject": identity.subject, "agent_id": identity.agent_id,
+            "aiplex_instance_id": identity.aiplex_instance_id,
         }).to_string();
         let _ = self.journal(&run_id, seq, "run", &payload, ts).await;
         Ok(BeginRunResponse { run_id, resumed: false, next_seq: 0, status: RunStatus::Running as i32 })

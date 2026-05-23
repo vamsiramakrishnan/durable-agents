@@ -159,8 +159,9 @@ async fn step(
             match HandlerKind::try_from(r.handler_kind).unwrap_or(HandlerKind::Unspecified) {
                 HandlerKind::Agent => {
                     let invocation = format!("react-{}-{}", r.reaction_id, e.global_seq);
+                    let identity = crate::store::RunIdentity::default();
                     if let Err(err) = store
-                        .begin_run(&r.agent_app, "", "", &invocation, "matcher", 0)
+                        .begin_run(&r.agent_app, "", "", &invocation, &identity, "matcher", 0)
                         .await
                     {
                         tracing::warn!(reaction = %r.reaction_id, %err, "matcher: begin_run failed (best-effort)");
@@ -282,7 +283,7 @@ mod tests {
     /// Helper: begin a run for subsequent journal-writing RPCs.
     async fn begin_test_run(store: &Arc<dyn RunStore>, inv: &str) -> String {
         let r = store
-            .begin_run("app", "u", "s", inv, "t", 60_000)
+            .begin_run("app", "u", "s", inv, &crate::store::RunIdentity::default(), "t", 60_000)
             .await
             .unwrap();
         r.run_id

@@ -11,7 +11,7 @@ use tonic::{Request, Response, Status};
 
 use crate::pb::tape_server::Tape;
 use crate::pb::*;
-use crate::store::{now_ms, RunStore, StoreError};
+use crate::store::{now_ms, RunIdentity, RunStore, StoreError};
 
 pub struct TapeService {
     store: Arc<dyn RunStore>,
@@ -35,8 +35,24 @@ impl Tape for TapeService {
         let r = req.into_inner();
         let ttl = if r.lease_ttl_ms > 0 { r.lease_ttl_ms } else { DEFAULT_LEASE_MS };
         fail::fail_point!("tape::begin_run::pre_db", |a| Err(Status::internal(format!("chaos: tape::begin_run::pre_db {}", a.unwrap_or_default()))));
+        // Marshal identity fields to JSON for storage; the SDK passes vec/map
+        // through proto and we round-trip them as text so the column schema
+        // stays sane across SQLite / Postgres / Bigtable.
+        let scopes_json = serde_json::to_string(&r.scopes).unwrap_or_else(|_| "[]".to_string());
+        let labels_json = serde_json::to_string(&r.labels).unwrap_or_else(|_| "{}".to_string());
+        let identity = RunIdentity {
+            tenant_id: &r.tenant_id,
+            actor: &r.actor,
+            subject: &r.subject,
+            agent_id: &r.agent_id,
+            aiplex_instance_id: &r.aiplex_instance_id,
+            gateway_route: &r.gateway_route,
+            scopes_json: &scopes_json,
+            labels_json: &labels_json,
+        };
         let resp = self.store
-            .begin_run(&r.app_name, &r.user_id, &r.session_id, &r.invocation_id, &r.lease_owner, ttl)
+            .begin_run(&r.app_name, &r.user_id, &r.session_id, &r.invocation_id,
+                       &identity, &r.lease_owner, ttl)
             .await.map_err(db)?;
         fail::fail_point!("tape::begin_run::post_db", |a| Err(Status::internal(format!("chaos: tape::begin_run::post_db {}", a.unwrap_or_default()))));
         Ok(Response::new(resp))
@@ -549,6 +565,7 @@ mod tests {
         let run = svc.begin_run(Request::new(BeginRunRequest {
             app_name: "a".into(), user_id: "u".into(), session_id: "s".into(),
             invocation_id: "inv".into(), lease_owner: "t".into(), lease_ttl_ms: 60_000,
+            ..Default::default()
         })).await.unwrap().into_inner();
         assert!(!run.resumed);
         let rid = run.run_id;
@@ -649,6 +666,7 @@ mod tests {
         let again = svc.begin_run(Request::new(BeginRunRequest {
             app_name: "a".into(), user_id: "u".into(), session_id: "s".into(),
             invocation_id: "inv".into(), lease_owner: "t".into(), lease_ttl_ms: 60_000,
+            ..Default::default()
         })).await.unwrap().into_inner();
         assert!(again.resumed);
         assert_eq!(again.run_id, rid);
