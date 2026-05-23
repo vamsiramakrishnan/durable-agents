@@ -67,6 +67,15 @@ from .scenarios import (
     failpoints_env,
 )
 from . import invariants as invariant
+from .invariants import (
+    Invariant,
+    InvariantResult,
+    no_stuck_obligations,
+    no_blind_non_idempotent_retry,
+    no_budget_overrun,
+    no_orphan_compensation,
+    exactly_one,
+)
 from .connectors import wrap_connector, ChaosConnector
 from .snapshot import (
     Snapshot,
@@ -116,8 +125,15 @@ __all__ = [
     # connector wrap
     "wrap_connector",
     "ChaosConnector",
-    # invariants namespace
-    "invariant",
+    # invariants — class, factories, and a namespace alias
+    "Invariant",
+    "InvariantResult",
+    "no_stuck_obligations",
+    "no_blind_non_idempotent_retry",
+    "no_budget_overrun",
+    "no_orphan_compensation",
+    "exactly_one",
+    "invariant",   # kept as a namespace alias for `tape.chaos.invariants`
     # snapshot + replay (Phase 2 — bit-for-bit determinism check)
     "Snapshot",
     "JournalLine",
