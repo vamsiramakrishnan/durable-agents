@@ -31,6 +31,7 @@ from ..budget import Budget, budget_from_run_config
 from ..effect import (effect_meta_of, tool_name_of, register_compensator,
                       _semantics_to_pb, _dispatch_to_pb, _resolve_business_key)
 from ..gates import AckLost
+from .identity import RunIdentity
 
 def _default_lease_ms() -> int:
     try:
@@ -61,6 +62,7 @@ class TapePlugin(BasePlugin):
                  budget: Optional[Budget] = None, lease_owner: Optional[str] = None,
                  lease_ttl_ms: Optional[int] = None,
                  check_cancellation: bool = False, cancel_check_interval_s: float = 5.0,
+                 identity: Optional[RunIdentity] = None,
                  name: str = "tape"):
         super().__init__(name=name)
         self._client = client or TapeClient(url)
@@ -69,6 +71,10 @@ class TapePlugin(BasePlugin):
         self._lease_ttl_ms = lease_ttl_ms if lease_ttl_ms is not None else _default_lease_ms()
         self._check_cancel = check_cancellation
         self._cancel_check_interval_s = cancel_check_interval_s
+        # Identity is attached to every BeginRun this plugin issues. Defaults
+        # to an empty RunIdentity (works for local dev / non-AIPlex callers);
+        # AIPlex-deployed agents pass `RunIdentity.from_env()`.
+        self._identity = identity if identity is not None else RunIdentity()
         self._last_cancel_check: dict[str, float] = {}    # invocation_id -> ts
         # per-invocation bookkeeping
         self._run: dict[str, str] = {}            # invocation_id -> run_id
@@ -94,7 +100,15 @@ class TapePlugin(BasePlugin):
         inv = invocation_context.invocation_id
         resp = self._client.begin_run(
             app_name=s.app_name, user_id=s.user_id, session_id=s.id, invocation_id=inv,
-            lease_owner=self._owner, lease_ttl_ms=self._lease_ttl_ms)
+            lease_owner=self._owner, lease_ttl_ms=self._lease_ttl_ms,
+            tenant_id=self._identity.tenant_id,
+            actor=self._identity.actor,
+            subject=self._identity.subject,
+            agent_id=self._identity.agent_id,
+            aiplex_instance_id=self._identity.aiplex_instance_id,
+            gateway_route=self._identity.gateway_route,
+            scopes=self._identity.scopes,
+            labels=self._identity.labels)
         self._run[inv] = resp.run_id
         # On a re-drive, the next model call is NOT decision 0 — it's whatever
         # comes after the decisions already recorded. Count them so before_model

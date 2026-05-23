@@ -53,6 +53,25 @@ impl StoreError {
     }
 }
 
+/// Identity & authorization context attached to a run. Populated from
+/// `BeginRunRequest`'s identity fields and persisted on `tape_runs`. Empty
+/// strings / arrays / objects are valid (a non-AIPlex caller may pass
+/// nothing); AIPlex-managed deployments populate every field via the
+/// AIPLEX_* env vars.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunIdentity<'a> {
+    pub tenant_id: &'a str,
+    pub actor: &'a str,
+    pub subject: &'a str,
+    pub agent_id: &'a str,
+    pub aiplex_instance_id: &'a str,
+    pub gateway_route: &'a str,
+    /// JSON-encoded `string[]` of scope strings (e.g. `["mcp:tools:bank_wire"]`).
+    pub scopes_json: &'a str,
+    /// JSON-encoded `map<string,string>` of free-form labels.
+    pub labels_json: &'a str,
+}
+
 /// Tape's logical operations. A backend that implements this is a complete
 /// storage layer. All ordering, sequencing and journaling lives inside the
 /// implementation — the gRPC layer above is pure plumbing.
@@ -60,6 +79,7 @@ impl StoreError {
 pub trait RunStore: Send + Sync {
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
+                       identity: &RunIdentity<'_>,
                        lease_owner: &str, lease_ttl_ms: i64) -> StoreResult<BeginRunResponse>;
     async fn resume_run(&self, run_id: &str, lease_owner: &str, lease_ttl_ms: i64)
         -> StoreResult<Option<RunState>>;

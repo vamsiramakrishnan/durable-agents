@@ -124,6 +124,21 @@ message BeginRunRequest {
   string invocation_id = 4;
   string lease_owner = 5;       // who is driving this run right now
   int64  lease_ttl_ms = 6;
+
+  // Identity & authorization context. Populated by AIPlex-managed deployments
+  // (via the AIPLEX_* env vars, threaded through `tape.adk.identity.from_env()`)
+  // and by anyone else who wants their runs to be queryable by tenant / agent /
+  // principal in the run timeline. Tape does not depend on AIPlex — these are
+  // generic fields with conventional AIPlex env-var population.
+  string tenant_id           = 20;  // tenant identifier (AIPlex tenant, organisation, …)
+  string actor               = 21;  // SPIFFE-style workload identity ("who is acting")
+  string subject             = 22;  // human principal label, distinct from ADK's user_id
+                                    //   (e.g. "spiffe://.../user/alice", an OIDC sub, etc.)
+  string agent_id            = 23;  // stable agent kind id (the AIPlex catalog id)
+  string aiplex_instance_id  = 24;  // AIPlex Instance.ID — joins back to AIPlex's deploy record
+  string gateway_route       = 25;  // the gateway route this run came in on
+  repeated string scopes     = 26;  // authorized scopes (e.g. "mcp:tools:bank_wire")
+  map<string, string> labels = 27;  // free-form key/value labels (aiplex.plane, …)
 }
 message BeginRunResponse {
   string run_id = 1;
@@ -188,6 +203,18 @@ message RunState {
   int64  started_at_ms = 10;
   int64  ended_at_ms = 11;
   string waiting_on_gate = 12;     // set iff status == WAITING
+
+  // Identity & authorization context, mirrored from BeginRunRequest. Indexable
+  // columns (tenant_id, actor, agent_id) drive the AIPlex run timeline queries;
+  // labels stays free-form (JSON in storage).
+  string tenant_id           = 20;
+  string actor               = 21;
+  string subject             = 22;
+  string agent_id            = 23;
+  string aiplex_instance_id  = 24;
+  string gateway_route       = 25;
+  repeated string scopes     = 26;
+  map<string, string> labels = 27;
 }
 
 message JournalEntry {

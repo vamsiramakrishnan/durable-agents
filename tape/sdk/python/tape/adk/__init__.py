@@ -10,5 +10,7 @@ Two lines wire Tape into an ADK runner::
 from .plugin import TapePlugin
 from .session import TapeSessionService
 from .durable import durable_app, DEFAULT_TAPE_URL
+from .identity import RunIdentity
 
-__all__ = ["TapePlugin", "TapeSessionService", "durable_app", "DEFAULT_TAPE_URL"]
+__all__ = ["TapePlugin", "TapeSessionService", "durable_app",
+           "DEFAULT_TAPE_URL", "RunIdentity"]

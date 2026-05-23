@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional, Tuple
 
+from .identity import RunIdentity
 from .plugin import TapePlugin
 from .session import TapeSessionService
 
@@ -48,6 +49,7 @@ def durable_app(
     budget: Optional[Any] = None,
     resumable: bool = True,
     check_cancellation: bool = True,
+    identity: Optional[RunIdentity] = None,
     app_kwargs: Optional[dict] = None,
     runner_kwargs: Optional[dict] = None,
 ) -> Tuple[Any, Any]:
@@ -57,17 +59,29 @@ def durable_app(
     tools whose UNKNOWN you want resolved or whose forward action needs an
     inverse; pass `@tape.outbox_tool(...)` for non-idempotent upstreams that must
     be journaled-first, dispatched-by-reactor.
+
+    Identity:
+      `identity` attaches AIPlex-style tenant / actor / subject / agent_id /
+      scopes / labels to every run this app starts. If unset, defaults to
+      `RunIdentity.from_env()` — so an AIPlex-deployed agent gets its identity
+      "for free" from the `AIPLEX_*` env vars without the user code having to
+      know about them. Pass `identity=RunIdentity()` (empty) to opt out
+      explicitly.
     """
     from google.adk.apps import App
     from google.adk.apps.app import ResumabilityConfig
     from google.adk.runners import Runner
 
     url = _resolve_url(tape_url)
+    if identity is None:
+        identity = RunIdentity.from_env()
 
     plugins = []
     if app_kwargs and app_kwargs.get("plugins"):
         plugins.extend(app_kwargs["plugins"])
-    plugins.append(TapePlugin(url, budget=budget, check_cancellation=check_cancellation))
+    plugins.append(TapePlugin(url, budget=budget,
+                              check_cancellation=check_cancellation,
+                              identity=identity))
 
     app_init: dict = dict(app_kwargs or {})
     app_init.pop("plugins", None)
@@ -86,4 +100,4 @@ def durable_app(
     return app, runner
 
 
-__all__ = ["durable_app", "DEFAULT_TAPE_URL"]
+__all__ = ["durable_app", "DEFAULT_TAPE_URL", "RunIdentity"]

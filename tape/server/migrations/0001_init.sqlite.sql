@@ -20,10 +20,26 @@ CREATE TABLE IF NOT EXISTS tape_runs (
   detail_json         TEXT NOT NULL DEFAULT '',
   started_at_ms       INTEGER NOT NULL,
   ended_at_ms         INTEGER NOT NULL DEFAULT 0,
+  -- Identity & authorization context (BeginRunRequest §"Identity"). The first
+  -- five are indexable; scopes and labels are JSON blobs (arrays / objects) so
+  -- the column count stays sane across SQLite / Postgres / Bigtable.
+  tenant_id           TEXT NOT NULL DEFAULT '',
+  actor               TEXT NOT NULL DEFAULT '',
+  subject             TEXT NOT NULL DEFAULT '',
+  agent_id            TEXT NOT NULL DEFAULT '',
+  aiplex_instance_id  TEXT NOT NULL DEFAULT '',
+  gateway_route       TEXT NOT NULL DEFAULT '',
+  scopes_json         TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
+  labels_json         TEXT NOT NULL DEFAULT '{}',  -- JSON-encoded map<string,string>
   UNIQUE(app_name, user_id, session_id, invocation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_recover ON tape_runs(status, lease_expires_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runs_route ON tape_runs(app_name, user_id, session_id);
+-- AIPlex run timeline: list runs by (tenant, agent) ordered by start time.
+CREATE INDEX IF NOT EXISTS idx_runs_tenant ON tape_runs(tenant_id, agent_id, started_at_ms);
+-- Operator queries: who acted, or which subject did this work for.
+CREATE INDEX IF NOT EXISTS idx_runs_actor   ON tape_runs(actor, started_at_ms);
+CREATE INDEX IF NOT EXISTS idx_runs_subject ON tape_runs(subject, started_at_ms);
 
 -- The journal: one row per durable step, in (run_id, seq) order. The decision,
 -- effect, and obligation projections below carry the typed detail; this table

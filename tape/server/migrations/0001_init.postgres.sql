@@ -16,10 +16,22 @@ CREATE TABLE IF NOT EXISTS tape_runs (
   detail_json         TEXT NOT NULL DEFAULT '',
   started_at_ms       BIGINT NOT NULL,
   ended_at_ms         BIGINT NOT NULL DEFAULT 0,
+  -- Identity & authorization context (BeginRunRequest §"Identity").
+  tenant_id           TEXT NOT NULL DEFAULT '',
+  actor               TEXT NOT NULL DEFAULT '',
+  subject             TEXT NOT NULL DEFAULT '',
+  agent_id            TEXT NOT NULL DEFAULT '',
+  aiplex_instance_id  TEXT NOT NULL DEFAULT '',
+  gateway_route       TEXT NOT NULL DEFAULT '',
+  scopes_json         TEXT NOT NULL DEFAULT '[]',
+  labels_json         TEXT NOT NULL DEFAULT '{}',
   UNIQUE(app_name, user_id, session_id, invocation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_recover ON tape_runs(status, lease_expires_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runs_route ON tape_runs(app_name, user_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_runs_tenant  ON tape_runs(tenant_id, agent_id, started_at_ms);
+CREATE INDEX IF NOT EXISTS idx_runs_actor   ON tape_runs(actor, started_at_ms);
+CREATE INDEX IF NOT EXISTS idx_runs_subject ON tape_runs(subject, started_at_ms);
 
 CREATE TABLE IF NOT EXISTS tape_journal (
   run_id       TEXT NOT NULL,

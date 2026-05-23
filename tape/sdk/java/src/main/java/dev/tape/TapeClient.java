@@ -75,9 +75,29 @@ public final class TapeClient implements AutoCloseable {
 
     public BeginRunResponse beginRun(String app, String user, String session, String invocation,
                                      String leaseOwner, long leaseTtlMs) {
-        return stub.beginRun(BeginRunRequest.newBuilder()
+        return beginRun(app, user, session, invocation, leaseOwner, leaseTtlMs, RunIdentity.EMPTY);
+    }
+
+    /**
+     * BeginRun with explicit identity & authorization context. AIPlex-managed
+     * deployments populate {@link RunIdentity} from the {@code AIPLEX_*} env
+     * vars; non-AIPlex callers may use {@link RunIdentity#EMPTY}. See
+     * {@code tape/proto/tape.proto} §BeginRunRequest.
+     */
+    public BeginRunResponse beginRun(String app, String user, String session, String invocation,
+                                     String leaseOwner, long leaseTtlMs, RunIdentity identity) {
+        BeginRunRequest.Builder b = BeginRunRequest.newBuilder()
                 .setAppName(app).setUserId(user).setSessionId(session).setInvocationId(invocation)
-                .setLeaseOwner(leaseOwner).setLeaseTtlMs(leaseTtlMs == 0 ? 120_000 : leaseTtlMs).build());
+                .setLeaseOwner(leaseOwner).setLeaseTtlMs(leaseTtlMs == 0 ? 120_000 : leaseTtlMs)
+                .setTenantId(identity.tenantId)
+                .setActor(identity.actor)
+                .setSubject(identity.subject)
+                .setAgentId(identity.agentId)
+                .setAiplexInstanceId(identity.aiplexInstanceId)
+                .setGatewayRoute(identity.gatewayRoute);
+        if (identity.scopes != null) b.addAllScopes(identity.scopes);
+        if (identity.labels != null) b.putAllLabels(identity.labels);
+        return stub.beginRun(b.build());
     }
 
     public EndRunResponse endRun(String runId, RunStatus status, String detailJson) {

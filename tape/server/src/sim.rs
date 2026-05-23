@@ -164,6 +164,7 @@ async fn store_based_lease_expiry() {
             invocation_id: "inv-pass".into(),
             lease_owner: "driver-A".into(),
             lease_ttl_ms: 500,
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -213,6 +214,7 @@ async fn real_cas_against_tape_service_exactly_one_wins() {
         app_name: "sim".into(), user_id: "u".into(),
         session_id: "s".into(), invocation_id: "inv-cas".into(),
         lease_owner: "driver".into(), lease_ttl_ms: 60_000,
+        ..Default::default()
     })).await.unwrap().into_inner();
     let run_id = r.run_id;
 
@@ -288,6 +290,7 @@ async fn lease_history_is_linearizable() {
         app_name: "sim".into(), user_id: "u".into(),
         session_id: "s".into(), invocation_id: "inv-lin".into(),
         lease_owner: "driver".into(), lease_ttl_ms: 60_000,
+        ..Default::default()
     })).await.unwrap();
     let run_id_setup = svc.list_runs_to_recover(tonic::Request::new(
         ListRunsToRecoverRequest { limit: 1, now_ms: crate::store::now_ms() + 1_000_000 }

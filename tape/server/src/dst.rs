@@ -138,6 +138,7 @@ async fn drive_workload(workload: &Workload) -> Vec<CanonicalLine> {
                         invocation_id: invocation.clone(),
                         lease_owner: "dst-driver".into(),
                         lease_ttl_ms: 60_000,
+                        ..Default::default()
                     }))
                     .await
                     .unwrap()

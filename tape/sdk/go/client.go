@@ -173,6 +173,12 @@ func (c *Client) PB() pb.TapeClient { return c.pb }
 type BeginRunOpts struct {
 	AppName, UserID, SessionID, InvocationID, LeaseOwner string
 	LeaseTTLMs                                           int64
+	// Identity & authorization context. AIPlex-managed deployments populate
+	// these from the AIPLEX_* env vars; non-AIPlex callers may leave them
+	// empty. See tape/proto/tape.proto §BeginRunRequest.
+	TenantID, Actor, Subject, AgentID, AIPlexInstanceID, GatewayRoute string
+	Scopes                                                            []string
+	Labels                                                            map[string]string
 }
 
 func (c *Client) BeginRun(ctx context.Context, o BeginRunOpts) (*pb.BeginRunResponse, error) {
@@ -182,6 +188,9 @@ func (c *Client) BeginRun(ctx context.Context, o BeginRunOpts) (*pb.BeginRunResp
 	return c.pb.BeginRun(ctx, &pb.BeginRunRequest{
 		AppName: o.AppName, UserId: o.UserID, SessionId: o.SessionID,
 		InvocationId: o.InvocationID, LeaseOwner: o.LeaseOwner, LeaseTtlMs: o.LeaseTTLMs,
+		TenantId: o.TenantID, Actor: o.Actor, Subject: o.Subject,
+		AgentId: o.AgentID, AiplexInstanceId: o.AIPlexInstanceID,
+		GatewayRoute: o.GatewayRoute, Scopes: o.Scopes, Labels: o.Labels,
 	})
 }
 

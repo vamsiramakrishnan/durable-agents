@@ -121,6 +121,53 @@ trip.
 
 ## Open gaps (the roadmap)
 
+### G8. Run identity (AIPlex integration PR 1) — partial
+`BeginRunRequest` and `RunState` gained seven identity fields (`tenant_id`,
+`actor`, `subject`, `agent_id`, `aiplex_instance_id`, `gateway_route`,
+`scopes`, `labels`). Python is the reference; the other three SDKs have the
+call-surface plumbed but the developer-ergonomics layer varies.
+
+| SDK        | Wire fields exposed | Env-derived `RunIdentity` helper |
+| ---------- | :-----------------: | :------------------------------: |
+| Python     |          ✅          |  ✅ `tape.adk.identity.RunIdentity.from_env()`  |
+| Java       |          ✅          |  ✅ `dev.tape.RunIdentity.fromEnv()`            |
+| Go         |          ✅          |  ✖ (callers thread fields into `BeginRunOpts` manually) |
+| TypeScript |          ✅          |  ✖ (dynamic `beginRun({...})` call surface)     |
+
+**To close:** add a `RunIdentity` helper to Go (`tape/sdk/go/identity.go`)
+and TS (`tape/sdk/typescript/src/identity.ts`) mirroring the Python /
+Java surfaces. Tracked alongside AIPlex integration PR 1.
+
+---
+
+### G9. Run identity in the `tape-adk` embedded tier
+The scale-tier wire protocol (`BeginRunRequest` / `RunState`) carries
+identity (G8). The default-tier `tape-adk` package — which extends
+ADK's `DatabaseSessionService` directly without going through the gRPC
+server — does not yet. Its embedded SQL schema and `begin_*` paths
+have no `tenant_id` / `actor` / `subject` / `agent_id` columns, so
+runs that live in the embedded tier cannot be queried by AIPlex along
+those axes.
+
+| Surface | Scale tier (gRPC) | Default tier (`tape-adk`) |
+| --- | :---: | :---: |
+| Identity on `BeginRunRequest` / `begin_run`         | ✅ | ✖ |
+| Identity columns on the run/effect SQL schema       | ✅ | ✖ |
+| Indexed by `(tenant_id, agent_id)` for run timeline | ✅ | ✖ |
+
+**Not blocking for AIPlex integration:** AIPlex targets the scale tier
+(Tape server + gRPC), so PRs 4–10 land against the gRPC contract that
+already has identity. This gap only matters if someone wants to use
+the embedded tier behind AIPlex.
+
+**To close:** mirror the scale-tier columns onto `tape_adk`'s
+embedded SQL schema, thread identity through `begin_effect` and the
+session writes, and add a `from_env()`-equivalent on the Python /
+TS / Go / Java embedded clients. Open as a follow-up PR after PR 1
+merges.
+
+---
+
 ### ~~G1. Outbox-reactor runners in TS / Go / Java~~ ✅ Shipped
 Python's `tape.reactors.outbox` is the reference. Each of TS/Go/Java now
 ships a packaged daemon entrypoint with the same dispatch loop and the same
