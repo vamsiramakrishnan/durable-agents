@@ -15,9 +15,13 @@ The guiding invariant:
 > AIPlex decides whether an agent is allowed to act.
 > Tape proves what happened when it acted.
 
-Tape stays independently usable. AIPlex-specific context flows in as
-generic run metadata + labels — Tape does not take a build-time
-dependency on AIPlex.
+Tape stays independently usable but is **not** treating any current
+caller as a fixed constraint. Both projects are pre-users, so this
+integration redesigns the shapes that need redesigning — protos, store
+schema, SDK signatures — without migration shims or optional fallbacks.
+AIPlex-specific values still live in label keys (`aiplex.agent_id`,
+`aiplex.plane`, etc.) so Tape itself takes no build-time dependency on
+AIPlex.
 
 ---
 
@@ -35,12 +39,42 @@ dependency on AIPlex.
   `dispatch_mode`, `business_key`, `connector`, `external_ref`,
   `dispatch_claimed_by`.
 
-Extension shape (PR 1): add an optional `RunMetadata` message
-(`tenant_id`, `actor`, `subject`, `gateway_route`, `aiplex_instance_id`,
-`scopes`, `labels`) and reference it from `BeginRunRequest` and
-`RunState`. New field numbers must sit above the current max. The name
-stays generic — AIPlex-specific values live in `labels` (e.g.
-`aiplex.agent_id`, `aiplex.plane`, `aiplex.route`).
+Reshape for PR 1 (greenfield rework): promote identity, authorization
+and routing context to first-class fields on `BeginRunRequest` and
+`RunState` directly — no sub-message, no optional metadata bag. Target
+shape:
+
+```proto
+message BeginRunRequest {
+  // identity / addressing
+  string tenant_id = 1;
+  string actor = 2;               // SPIFFE-style workload identity
+  string subject = 3;             // human principal (email, sub, ...)
+  string aiplex_instance_id = 4;
+  string gateway_route = 5;
+
+  // agent + run identity (renamed: user_id → subject above)
+  string app_name = 10;
+  string agent_id = 11;
+  string session_id = 12;
+  string invocation_id = 13;
+
+  // authorization context
+  repeated string scopes = 20;
+  map<string, string> labels = 21;
+
+  // lease
+  string lease_owner = 30;
+  uint64 lease_ttl_ms = 31;
+}
+```
+
+`RunState` mirrors these as columns. Field numbers are reassigned
+freely — no requirement to sit above the current max. The ADK adapter
+maps ADK's `user_id` callback into `subject`. `actor` is distinct from
+`lease_owner`: `actor` is the principal who initiated the run, while
+`lease_owner` is the worker process that currently holds at-most-one
+execution rights.
 
 ## 2. Server run creation path
 
@@ -60,9 +94,14 @@ stays generic — AIPlex-specific values live in `labels` (e.g.
   );
   ```
 
-Persistence choice for PR 1: add a single `metadata_json` (JSONB-shaped)
-column rather than expanding the column list. Mechanical migration per
-backend, no schema explosion when AIPlex adds labels later.
+Persistence choice for PR 1: rewrite the initial migration in place
+(no chained `0002_*.sql`). The new `tape_runs` schema gains explicit
+columns for `tenant_id`, `actor`, `subject`, `aiplex_instance_id`,
+`gateway_route`, `agent_id`, `scopes` (text array or join table per
+backend), and a `labels_json` blob for the open-ended `map<string,
+string>`. Indexes on `(tenant_id, agent_id)` and `(actor, started_at_ms)`
+so the AIPlex run timeline queries are cheap. Mirror in `sql.rs`,
+`bigtable.rs`, `mem.rs`.
 
 ## 3. Python SDK run creation entry point
 
@@ -74,13 +113,19 @@ backend, no schema explosion when AIPlex adds labels later.
 - BeginRun is fired in `TapePlugin.before_run_callback`
   (`plugin.py` lines 92–107).
 
-PR 1 surface: thread an optional `metadata: RunMetadata` kwarg through
-`durable_app`, `TapePlugin.__init__`, `before_run_callback`, and the
-`BeginRunRequest` builder. Also add an env-derived helper
-(`tape.adk.metadata.from_env()`) that reads `AIPLEX_TENANT_ID`,
+PR 1 surface: extend `durable_app`, `TapePlugin.__init__` and the
+`BeginRunRequest` builder with the new first-class arguments
+(`tenant_id`, `actor`, `subject`, `agent_id`, `scopes`, `labels`,
+`aiplex_instance_id`, `gateway_route`). `tenant_id`, `actor` and
+`agent_id` are **required**; the SDK raises at startup if they are
+missing rather than letting a malformed run reach the server.
+
+Add `tape.adk.identity.from_env()` returning a typed
+`RunIdentity` dataclass populated from `AIPLEX_TENANT_ID`,
 `AIPLEX_AGENT_ID`, `AIPLEX_ACTOR`, `AIPLEX_SUBJECT`, `AIPLEX_ROUTE`,
-`AIPLEX_SCOPES`. The helper lives in the SDK but is generic — env names
-are AIPlex-prefixed by convention, not by code dependency.
+`AIPLEX_INSTANCE_ID`, `AIPLEX_SCOPES`. The helper lives in the SDK but
+is generic — env-var prefixing is convention only, not a code
+dependency on AIPlex.
 
 ## 4. ADK adapter
 
@@ -106,11 +151,11 @@ Same files as §3. The hook surface is:
   `WebhookSink`, `PubSubSink`. Wired via
   `tape.reactors.run_event_fanout(url, sink)`.
 
-PR 3 surface: ensure `RunMetadata` is included in the payload emitted to
-sinks (most reactors today only carry the journal payload; AIPlex needs
-tenant/agent/actor on every event for routing and authz on the ingest
-side). The simplest path is to enrich the outbox event in the relay
-loop with the run's metadata, not on every BeginEffect record.
+PR 3 surface: enrich the outbox event envelope so every sink sees
+`tenant_id`, `actor`, `subject`, `agent_id` and `aiplex_instance_id`
+without having to round-trip back to `RunState`. The relay loop joins
+the run's identity columns into each event before fan-out — keeps the
+journal entry itself lean while the egress envelope is self-contained.
 
 ## 6. Effect decorator
 
@@ -121,12 +166,17 @@ loop with the run's metadata, not on every BeginEffect record.
   enforces non-idempotent → status_check | compensate | business_key.
   Server re-validates at `BeginEffectRequest`.
 
-PR 2 surface: add an optional `scope: str` parameter. Persist on
-`_tape_effect`. In `TapePlugin.before_tool_callback`, look up the
-effect's scope and verify membership in `run.metadata.scopes` before
-calling `begin_effect`. On failure, append a `policy.violation` journal
-entry and raise a typed SDK error — do not invoke the tool body. Server
-should re-check at BeginEffect for defence-in-depth.
+PR 2 surface: add a `scope: str` parameter that is **required for
+`semantics="non_idempotent"`**. `_validate_semantics()` grows a fourth
+clause: non-idempotent without scope raises at decoration time, not at
+call time. Persist on `_tape_effect`. In
+`TapePlugin.before_tool_callback`, verify membership in `run.scopes`
+(now a top-level run field per §1) before calling `begin_effect`. On
+failure, append a `policy.violation` journal entry and raise a typed
+SDK error — the tool body never executes. Server re-checks at
+`BeginEffectRequest` for defence-in-depth; defence-in-depth is not
+optional here since AIPlex's gateway authz and Tape's effect authz are
+expected to drift unless one re-validates the other.
 
 ## 7. Reactor lifecycle
 
@@ -193,28 +243,34 @@ this layout: reads AIPlex env vars, threads `RunMetadata` into
   using `#[test]` / `tokio::test`.
 - Cross-SDK parity harness: `tape/tests/parity/`.
 
-PR 1 needs tests for empty vs populated metadata round-trip, plus a
-parity update. PR 2 needs allowed / missing-scope / legacy-effect
-tests.
+PR 1 needs tests asserting the new required fields reject empty input
+at SDK construction and at the server, plus a parity update. PR 2 needs
+allowed-scope, missing-scope, and "non-idempotent without scope fails
+at decoration" tests.
 
-## 12. Backward-compatibility signals
+## 12. Cross-cutting docs to update
 
-Repo-level docs that gate the integration:
+No backward-compatibility constraints — Tape and AIPlex have no users
+yet, so this integration takes the right shape directly rather than
+chaining migrations on top of a placeholder design. Repo-level docs
+that still need touching:
 
-- `CHANGELOG.md` — "Unreleased" section is the destination for new
-  notes.
-- `SDK_PARITY.md` (root) — feature matrix across Python, Go, Java, .NET
-  SDKs. Adding `RunMetadata` and effect `scope` requires new rows.
-- `CLAUDE.md` — "What *not* to do" section.
+- `CHANGELOG.md` — "Unreleased" entry per PR. No "BREAKING" warnings
+  needed; everything pre-1.0 is implicitly under the same banner.
+- `SDK_PARITY.md` — Python is the integration target; Go / Java / .NET
+  SDKs gain new rows tracking what's still to port, but are not
+  blockers for AIPlex onboarding.
+- `CLAUDE.md` — refresh the "what *not* to do" section if PR 2's
+  scoped-effects model affects existing guidance.
 
-Caution by surface:
+Reshape per surface:
 
-| Surface           | Risk        | Notes                                       |
-| ----------------- | ----------- | ------------------------------------------- |
-| Proto fields      | Mechanical  | Use field numbers above current max.        |
-| `RunState` fields | Moderate    | Touches all four SDKs + parity matrix.      |
-| Storage schema    | Invasive    | Migrations for SQLite/Postgres/Bigtable.    |
-| Plugin signature  | Moderate    | New params must be optional and defaulted.  |
+| Surface           | PR 1 action                                                            |
+| ----------------- | ---------------------------------------------------------------------- |
+| Proto fields      | Reassign field numbers freely; inline identity onto `BeginRunRequest`. |
+| `RunState` fields | Promote identity to first-class columns; rewrite the type.             |
+| Storage schema    | Rewrite `0001_init.*.sql` in place; no chained migrations.             |
+| Plugin signature  | New required params; SDK raises if caller omits them.                  |
 
 ## PR breakdown (Tape side)
 
