@@ -607,7 +607,12 @@ class TapeInspectorApp(App):
         if --raw was set instead. The interactive path is best paired with
         `tape inspect <id> --raw | jq` for serious inspection."""
         table = self.query_one(DataTable)
-        if table.cursor_row < 0 or table.cursor_row >= len(self.entries):
+        # Bound against `row_count`, not `len(self.entries)` — once the
+        # history/live divider lands the table is one row longer than the
+        # entries list, so a `>= len(...)` guard silently swallows the
+        # bottom live row. The `seq-` prefix check below already filters
+        # out the divider row by its key.
+        if table.cursor_row < 0 or table.cursor_row >= table.row_count:
             return
         key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key
         if not key or not key.value or not key.value.startswith("seq-"):
@@ -632,7 +637,9 @@ class TapeInspectorApp(App):
         """Push the selected entry's full JSON to the system clipboard
         (best effort — Textual's clipboard works in most terminals)."""
         table = self.query_one(DataTable)
-        if table.cursor_row < 0 or table.cursor_row >= len(self.entries):
+        # See action_dump_raw — the divider row inflates row_count above
+        # len(self.entries) so this must bound against row_count.
+        if table.cursor_row < 0 or table.cursor_row >= table.row_count:
             return
         key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key
         if not key or not key.value or not key.value.startswith("seq-"):
