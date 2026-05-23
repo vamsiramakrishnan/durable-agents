@@ -26,7 +26,7 @@
     "regen-proto": "cp ../../proto/tape.proto ./proto/tape.proto"
   },
   "optionalDependencies": {
-    "@google-cloud/pubsub": "^4.7.0",
+    "@google-cloud/pubsub": "^5.3.0",
     "better-sqlite3": "^11.0.0",
     "google-auth-library": "^9.0.0",
     "pg": "^8.11.0"
