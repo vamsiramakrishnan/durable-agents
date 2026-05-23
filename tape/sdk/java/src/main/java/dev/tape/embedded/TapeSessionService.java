@@ -868,6 +868,161 @@ public final class TapeSessionService {
         }
     }
 
+    // ── continue-as-new (mechanism #4 in the compaction roadmap) ──────────
+
+    /** Result of {@link #continueAsNew}: per-counter audit. */
+    public record ContinueAsNewResult(
+            int effectsPruned, boolean stateWritten, int obligationsKept) {}
+
+    /**
+     * End one invocation chapter, start a new one in the same session,
+     * with optional state carried forward — Java port of
+     * {@code TapeSessionService.continue_as_new}.
+     *
+     * <p>Atomic — one transaction commits the prune + the carried-state
+     * write together. {@code pruneOld=true} (default) deletes the old
+     * invocation's terminal effects that aren't pinned by an active
+     * obligation; the pinning predicate is the same {@code NOT EXISTS}
+     * subquery the compactor uses (this is the load-bearing safety
+     * invariant — copy it verbatim).
+     *
+     * <p>{@code obligationsKept} reports the number of still-active
+     * obligations that pin old-invocation effects (the reason
+     * continue_as_new didn't fully reset the slate). The pinning
+     * relationship is via {@code effect_key} → {@code idempotency_key},
+     * NOT via the obligation's own {@code invocation_id} — an obligation
+     * registered under a later invocation can still pin an earlier
+     * invocation's row.
+     *
+     * <p>{@code carriedState}, when non-null, is written to a
+     * {@code tape_values} row at
+     * {@code namespace='tape:continue-as-new:<sessionId>'},
+     * {@code key=<newInvocationId>}. The new invocation can read it on
+     * startup to pick up where the old one left off.
+     */
+    public ContinueAsNewResult continueAsNew(
+            String appName, String userId, String sessionId,
+            String oldInvocationId, String newInvocationId,
+            String carriedStateJson, boolean pruneOld) throws SQLException {
+
+        prepareTables();
+        int effectsPruned = 0;
+        int obligationsKept = 0;
+        boolean stateWritten = false;
+        long now = nowMs();
+
+        try (Connection c = acquireConn()) {
+            boolean priorAuto = c.getAutoCommit();
+            c.setAutoCommit(false);
+            try {
+                if (pruneOld) {
+                    // The NOT EXISTS pinning predicate — same shape as the
+                    // compactor. The "pin" here is "an active obligation
+                    // references this effect via effect_key=idempotency_key".
+                    String del =
+                        "DELETE FROM tape_effects" +
+                        " WHERE app_name=? AND user_id=? AND session_id=?" +
+                        "   AND invocation_id=?" +
+                        "   AND status IN ('confirmed','failed')" +
+                        "   AND NOT EXISTS (" +
+                        "     SELECT 1 FROM tape_obligations o" +
+                        "      WHERE o.session_id  = tape_effects.session_id" +
+                        "        AND o.effect_key  = tape_effects.idempotency_key" +
+                        "        AND o.status IN ('pending','committed'))";
+                    try (PreparedStatement ps = c.prepareStatement(del)) {
+                        ps.setString(1, appName);
+                        ps.setString(2, userId);
+                        ps.setString(3, sessionId);
+                        ps.setString(4, oldInvocationId);
+                        effectsPruned = ps.executeUpdate();
+                    }
+
+                    // Obligations that still pin OLD-invocation effects.
+                    // Via effect_key membership — NOT via obligation
+                    // invocation_id (matching Python exactly).
+                    String pinnedSql =
+                        "SELECT COUNT(*) FROM tape_obligations" +
+                        " WHERE app_name=? AND user_id=? AND session_id=?" +
+                        "   AND status IN ('pending','committed')" +
+                        "   AND effect_key IN (" +
+                        "     SELECT idempotency_key FROM tape_effects" +
+                        "      WHERE app_name=? AND user_id=? AND session_id=?" +
+                        "        AND invocation_id=?)";
+                    try (PreparedStatement ps = c.prepareStatement(pinnedSql)) {
+                        ps.setString(1, appName);
+                        ps.setString(2, userId);
+                        ps.setString(3, sessionId);
+                        ps.setString(4, appName);
+                        ps.setString(5, userId);
+                        ps.setString(6, sessionId);
+                        ps.setString(7, oldInvocationId);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) obligationsKept = rs.getInt(1);
+                        }
+                    }
+                }
+
+                if (carriedStateJson != null) {
+                    String ns = "tape:continue-as-new:" + sessionId;
+                    // Try insert; on UNIQUE clash do update — same "update on
+                    // repeat" semantics as Python.
+                    ValueRecord existing = selectValue(c, ns, newInvocationId);
+                    if (existing == null) {
+                        try (PreparedStatement ps = c.prepareStatement(
+                                "INSERT INTO tape_values"
+                                + " (namespace, key, value_json, version, ts_ms, writer, deleted)"
+                                + " VALUES (?,?,?,?,?,?,?)")) {
+                            ps.setString(1, ns);
+                            ps.setString(2, newInvocationId);
+                            setNullableString(ps, 3, carriedStateJson);
+                            ps.setInt(4, 1);
+                            ps.setLong(5, now);
+                            ps.setString(6, "continue_as_new");
+                            ps.setInt(7, 0);
+                            ps.executeUpdate();
+                        }
+                    } else {
+                        try (PreparedStatement ps = c.prepareStatement(
+                                "UPDATE tape_values SET"
+                                + " value_json=?, version=?, ts_ms=?, writer=?, deleted=0"
+                                + " WHERE namespace=? AND key=?")) {
+                            setNullableString(ps, 1, carriedStateJson);
+                            ps.setInt(2, existing.version() + 1);
+                            ps.setLong(3, now);
+                            ps.setString(4, "continue_as_new");
+                            ps.setString(5, ns);
+                            ps.setString(6, newInvocationId);
+                            ps.executeUpdate();
+                        }
+                    }
+                    stateWritten = true;
+                }
+
+                c.commit();
+            } catch (SQLException | RuntimeException ex) {
+                try { c.rollback(); } catch (SQLException ignore) {}
+                throw ex;
+            } finally {
+                try { c.setAutoCommit(priorAuto); } catch (SQLException ignore) {}
+            }
+        }
+        return new ContinueAsNewResult(effectsPruned, stateWritten, obligationsKept);
+    }
+
+    /**
+     * Acquire a lock-aware {@link Connection} for maintenance operations
+     * (compaction, doctor) that need raw SQL access while honouring the
+     * SQLite serialisation invariant. Public because the in-repo
+     * {@code dev.tape.embedded.compact.Compactor} (a sibling package)
+     * needs it, but intended for maintenance code only — application
+     * code should go through the typed public methods on this class.
+     * Mirrors how Python's {@code _write_lock()} +
+     * {@code _rollback_on_exception_session()} compose for the compactor.
+     */
+    public Connection acquireMaintenanceConnection() throws SQLException {
+        return acquireConn();
+    }
+
     // ── private helpers ───────────────────────────────────────────────────
 
     private static String emptyToNull(String s) {

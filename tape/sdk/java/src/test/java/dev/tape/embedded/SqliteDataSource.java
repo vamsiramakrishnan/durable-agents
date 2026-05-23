@@ -17,13 +17,16 @@ import java.util.logging.Logger;
  *  locking + WAL mode — the same posture the production embedded path
  *  uses, and which the Python reference's CAS lock + StaticPool also
  *  effectively serialises. Sets {@code busy_timeout=5000} so writers
- *  wait briefly under contention instead of throwing immediately. */
-final class SqliteDataSource implements DataSource {
+ *  wait briefly under contention instead of throwing immediately.
+ *
+ *  <p>Public so sibling test packages ({@code .chaos}, {@code .compact})
+ *  can construct one — keeps the test infra a single shared file. */
+public final class SqliteDataSource implements DataSource {
 
     private final String url;
     private final Path dbFile;
 
-    SqliteDataSource() {
+    public SqliteDataSource() {
         try {
             this.dbFile = Files.createTempFile(
                 "tape-test-" + UUID.randomUUID().toString().substring(0, 8), ".db");
@@ -46,7 +49,7 @@ final class SqliteDataSource implements DataSource {
     @SuppressWarnings("unused") // intentionally retained
     private final Connection keepalive;
 
-    String url() { return url; }
+    public String url() { return url; }
 
     private Connection openConnection() throws SQLException {
         Connection c = DriverManager.getConnection(url);
@@ -64,7 +67,7 @@ final class SqliteDataSource implements DataSource {
         return openConnection();
     }
 
-    void shutdown() {
+    public void shutdown() {
         try { keepalive.close(); } catch (SQLException ignore) {}
         try { Files.deleteIfExists(dbFile); } catch (java.io.IOException ignore) {}
         try { Files.deleteIfExists(Path.of(dbFile.toString() + "-wal")); } catch (java.io.IOException ignore) {}
