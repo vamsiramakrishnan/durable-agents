@@ -175,6 +175,19 @@ public final class TapeSessionService {
             EffectRecord existing = selectEffect(c, appName, userId, sessionId, key);
             if (existing != null) return existing;
 
+            // Snapshot fallback: the live row may have been pruned by the
+            // compactor. If we have a terminal-state snapshot for this key,
+            // synthesise the short-circuit EffectRecord from it so the
+            // caller sees the same idempotent behaviour they'd see with the
+            // row still present. No row is created here — the snapshot IS
+            // the durable record. The live row is checked FIRST (above) so
+            // a still-live row always wins over a (possibly stale) snapshot
+            // entry.
+            EffectRecord synthesised = synthesiseFromSnapshot(
+                c, appName, userId, sessionId, key,
+                toolName, callIndex, semantics, dispatchMode);
+            if (synthesised != null) return synthesised;
+
             long now = nowMs();
             String sql = "INSERT INTO tape_effects ("
                 + " app_name, user_id, session_id, idempotency_key,"
@@ -1009,6 +1022,176 @@ public final class TapeSessionService {
         return new ContinueAsNewResult(effectsPruned, stateWritten, obligationsKept);
     }
 
+    // ── effect-ledger snapshot (mechanism #3 in the compaction roadmap) ───
+
+    /** Result of {@link #takeSnapshot}: per-call audit counters. */
+    public record TakeSnapshotResult(
+            int captured, int mergedTotal, long upToTsMs) {}
+
+    /** Decoded snapshot row returned by {@link #getSnapshot}.
+     *
+     *  <p>{@code effectsJson} is parsed into an in-memory map of
+     *  {@code idempotency_key → CapturedEffect} — the caller never sees the
+     *  raw JSON string. */
+    public record EffectSnapshot(
+            String appName,
+            String userId,
+            String sessionId,
+            java.util.Map<String, Schema.CapturedEffect> effectsJson,
+            long upToTsMs,
+            int effectsCount,
+            long createdAtMs,
+            long updatedAtMs) {}
+
+    /**
+     * Capture terminal effects under this session into the per-session
+     * snapshot row. Merges with the existing snapshot — re-calling this is
+     * the cumulative way to keep the snapshot current as new effects
+     * confirm.
+     *
+     * <p>After a snapshot, the compactor can safely prune the underlying
+     * terminal effect rows: {@link #beginEffect} falls back to the
+     * snapshot's JSON map for the idempotency-key short-circuit, so
+     * re-dispatch is prevented even when the source row is gone.
+     *
+     * <p>{@code upToTsMs ≤ 0} captures everything with a terminal status
+     * up to "now". Pass an explicit watermark to bound the snapshot for
+     * large sessions; the watermark goes into the row so operators can see
+     * how fresh the snapshot is.
+     *
+     * <p>Runs holding the existing CAS lock (the SQLite serialisation
+     * mechanism), in one transaction with the merge → re-encode → write
+     * cycle, mirroring the Python reference exactly.
+     */
+    public TakeSnapshotResult takeSnapshot(
+            String appName, String userId, String sessionId,
+            long upToTsMs) throws SQLException {
+        prepareTables();
+        long watermark = upToTsMs > 0 ? upToTsMs : nowMs();
+
+        try (Connection c = acquireConn()) {
+            boolean priorAuto = c.getAutoCommit();
+            c.setAutoCommit(false);
+            try {
+                // 1) Read all terminal effects up to the watermark. The set
+                //    is bounded by the session's effect count — operators
+                //    with very large sessions should pass a watermark to
+                //    limit the read window.
+                java.util.Map<String, Schema.CapturedEffect> captured =
+                    new java.util.LinkedHashMap<>();
+                String readSql =
+                    "SELECT * FROM tape_effects" +
+                    " WHERE app_name=? AND user_id=? AND session_id=?" +
+                    "   AND status IN ('confirmed','failed')" +
+                    "   AND ts_ms <= ?";
+                try (PreparedStatement ps = c.prepareStatement(readSql)) {
+                    ps.setString(1, appName);
+                    ps.setString(2, userId);
+                    ps.setString(3, sessionId);
+                    ps.setLong(4, watermark);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            EffectRecord r = mapEffect(rs);
+                            captured.put(r.idempotencyKey(),
+                                new Schema.CapturedEffect(
+                                    r.status(),
+                                    r.semantics(),
+                                    r.dispatchMode(),
+                                    r.businessKey(),
+                                    r.connector(),
+                                    r.externalRef(),
+                                    r.requestJson(),
+                                    r.responseJson(),
+                                    r.errorJson(),
+                                    r.invocationId(),
+                                    r.decisionIndex(),
+                                    r.toolName(),
+                                    r.callIndex(),
+                                    r.tsMs()));
+                        }
+                    }
+                }
+
+                // 2) Merge with the existing snapshot (last-write-wins per
+                //    key). Decode → merge → re-encode → write back, same
+                //    semantics as Python's `dict(snap).update(captured)`.
+                Schema.EffectSnapshotRecord existing = selectSnapshotRow(
+                    c, appName, userId, sessionId);
+                java.util.Map<String, Schema.CapturedEffect> merged =
+                    existing == null
+                        ? new java.util.LinkedHashMap<>()
+                        : decodeSnapshotMap(existing.effectsJson());
+                merged.putAll(captured);
+                String mergedJson = encodeSnapshotMap(merged);
+
+                long now = nowMs();
+                if (existing == null) {
+                    String ins = "INSERT INTO tape_effect_snapshots ("
+                        + " app_name, user_id, session_id,"
+                        + " effects_json, up_to_ts_ms, effects_count,"
+                        + " created_at_ms, updated_at_ms)"
+                        + " VALUES (?,?,?, ?,?,?, ?,?)";
+                    try (PreparedStatement ps = c.prepareStatement(ins)) {
+                        ps.setString(1, appName);
+                        ps.setString(2, userId);
+                        ps.setString(3, sessionId);
+                        ps.setString(4, mergedJson);
+                        ps.setLong(5, watermark);
+                        ps.setInt(6, merged.size());
+                        ps.setLong(7, now);
+                        ps.setLong(8, now);
+                        ps.executeUpdate();
+                    }
+                } else {
+                    long newWatermark = Math.max(existing.upToTsMs(), watermark);
+                    String upd = "UPDATE tape_effect_snapshots SET"
+                        + " effects_json=?, up_to_ts_ms=?, effects_count=?,"
+                        + " updated_at_ms=?"
+                        + " WHERE app_name=? AND user_id=? AND session_id=?";
+                    try (PreparedStatement ps = c.prepareStatement(upd)) {
+                        ps.setString(1, mergedJson);
+                        ps.setLong(2, newWatermark);
+                        ps.setInt(3, merged.size());
+                        ps.setLong(4, now);
+                        ps.setString(5, appName);
+                        ps.setString(6, userId);
+                        ps.setString(7, sessionId);
+                        ps.executeUpdate();
+                    }
+                }
+
+                c.commit();
+                return new TakeSnapshotResult(
+                    captured.size(), merged.size(), watermark);
+            } catch (SQLException | RuntimeException ex) {
+                try { c.rollback(); } catch (SQLException ignore) {}
+                throw ex;
+            } finally {
+                try { c.setAutoCommit(priorAuto); } catch (SQLException ignore) {}
+            }
+        }
+    }
+
+    /**
+     * Read the snapshot row for inspection / debugging. Returns the decoded
+     * record (with {@code effectsJson} already a map). {@code Optional.empty()}
+     * if no snapshot has been taken for this session.
+     */
+    public Optional<EffectSnapshot> getSnapshot(
+            String appName, String userId, String sessionId) throws SQLException {
+        prepareTables();
+        try (Connection c = acquireConn()) {
+            Schema.EffectSnapshotRecord row = selectSnapshotRow(
+                c, appName, userId, sessionId);
+            if (row == null) return Optional.empty();
+            return Optional.of(new EffectSnapshot(
+                row.appName(), row.userId(), row.sessionId(),
+                decodeSnapshotMap(row.effectsJson()),
+                row.upToTsMs(), row.effectsCount(),
+                row.createdAtMs(), row.updatedAtMs()));
+        }
+    }
+
     /**
      * Acquire a lock-aware {@link Connection} for maintenance operations
      * (compaction, doctor) that need raw SQL access while honouring the
@@ -1266,6 +1449,200 @@ public final class TapeSessionService {
             rs.getInt("fired") != 0,
             rs.getLong("created_at_ms")
         );
+    }
+
+    // ── snapshot helpers ───────────────────────────────────────────────────
+
+    /**
+     * Look up a snapshot entry for {@code key} and synthesise a fresh
+     * {@link EffectRecord} from it. Returns {@code null} when no snapshot
+     * row exists, the blob is empty, or the key isn't present.
+     *
+     * <p>Mirrors the Python {@code begin_effect} "Snapshot fallback" block
+     * verbatim: same field-by-field reconstruction, same default fallbacks
+     * for the post-dispatch counters (zero attempts, no claim).
+     */
+    private EffectRecord synthesiseFromSnapshot(
+            Connection c, String appName, String userId, String sessionId,
+            String key, String toolName, int callIndex,
+            String semantics, String dispatchMode) throws SQLException {
+        Schema.EffectSnapshotRecord snapRow = selectSnapshotRow(
+            c, appName, userId, sessionId);
+        if (snapRow == null) return null;
+        java.util.Map<String, Schema.CapturedEffect> map =
+            decodeSnapshotMap(snapRow.effectsJson());
+        Schema.CapturedEffect captured = map.get(key);
+        if (captured == null) return null;
+        return new EffectRecord(
+            appName, userId, sessionId, key,
+            captured.invocationId() == null ? "" : captured.invocationId(),
+            captured.decisionIndex(),
+            captured.toolName() == null ? toolName : captured.toolName(),
+            captured.callIndex(),
+            captured.status() == null ? EffectRecord.CONFIRMED : captured.status(),
+            captured.semantics() == null ? semantics : captured.semantics(),
+            captured.dispatchMode() == null ? dispatchMode : captured.dispatchMode(),
+            captured.businessKey(),
+            captured.connector(),
+            captured.externalRef(),
+            0, 0L, null, 0L, null,
+            captured.requestJson(),
+            captured.responseJson(),
+            captured.errorJson(),
+            captured.tsMs());
+    }
+
+    private Schema.EffectSnapshotRecord selectSnapshotRow(
+            Connection c, String appName, String userId, String sessionId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT * FROM tape_effect_snapshots"
+                + " WHERE app_name=? AND user_id=? AND session_id=?")) {
+            ps.setString(1, appName);
+            ps.setString(2, userId);
+            ps.setString(3, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return new Schema.EffectSnapshotRecord(
+                    rs.getString("app_name"),
+                    rs.getString("user_id"),
+                    rs.getString("session_id"),
+                    rs.getString("effects_json"),
+                    rs.getLong("up_to_ts_ms"),
+                    rs.getInt("effects_count"),
+                    rs.getLong("created_at_ms"),
+                    rs.getLong("updated_at_ms"));
+            }
+        }
+    }
+
+    /** Decode the JSON blob into a key→CapturedEffect map. Returns an empty
+     *  map for null/empty input, mirroring Python's {@code dict(snap or {})}.
+     *
+     *  <p>Field names in the JSON are snake_case (matches the Python writer
+     *  exactly) so a snapshot blob is portable across SDKs. */
+    private static java.util.Map<String, Schema.CapturedEffect> decodeSnapshotMap(
+            String json) {
+        java.util.LinkedHashMap<String, Schema.CapturedEffect> out =
+            new java.util.LinkedHashMap<>();
+        if (json == null || json.isEmpty()) return out;
+        try {
+            com.google.gson.JsonElement root =
+                com.google.gson.JsonParser.parseString(json);
+            if (!root.isJsonObject()) return out;
+            for (java.util.Map.Entry<String, com.google.gson.JsonElement> e
+                    : root.getAsJsonObject().entrySet()) {
+                if (!e.getValue().isJsonObject()) continue;
+                com.google.gson.JsonObject v = e.getValue().getAsJsonObject();
+                out.put(e.getKey(), new Schema.CapturedEffect(
+                    jsonStringOrNull(v, "status"),
+                    jsonStringOrNull(v, "semantics"),
+                    jsonStringOrNull(v, "dispatch_mode"),
+                    jsonStringOrNull(v, "business_key"),
+                    jsonStringOrNull(v, "connector"),
+                    jsonStringOrNull(v, "external_ref"),
+                    jsonNestedOrNull(v, "request_json"),
+                    jsonNestedOrNull(v, "response_json"),
+                    jsonNestedOrNull(v, "error_json"),
+                    jsonStringOrEmpty(v, "invocation_id"),
+                    jsonIntOrDefault(v, "decision_index", -1),
+                    jsonStringOrNull(v, "tool_name"),
+                    jsonIntOrDefault(v, "call_index", 0),
+                    jsonLongOrDefault(v, "ts_ms", 0L)));
+            }
+        } catch (com.google.gson.JsonSyntaxException ignore) {
+            // Malformed blob — treat as empty so we don't crash the
+            // fallback path. The Python reference's `dict(snap or {})`
+            // also coerces to empty on a non-dict.
+        }
+        return out;
+    }
+
+    /** Encode a key→CapturedEffect map to JSON. Keys are sorted by
+     *  insertion order (LinkedHashMap); values use snake_case field names
+     *  so the blob is portable across SDKs. */
+    private static String encodeSnapshotMap(
+            java.util.Map<String, Schema.CapturedEffect> map) {
+        com.google.gson.JsonObject root = new com.google.gson.JsonObject();
+        for (java.util.Map.Entry<String, Schema.CapturedEffect> e : map.entrySet()) {
+            com.google.gson.JsonObject v = new com.google.gson.JsonObject();
+            Schema.CapturedEffect c = e.getValue();
+            v.add("status", strOrNull(c.status()));
+            v.add("semantics", strOrNull(c.semantics()));
+            v.add("dispatch_mode", strOrNull(c.dispatchMode()));
+            v.add("business_key", strOrNull(c.businessKey()));
+            v.add("connector", strOrNull(c.connector()));
+            v.add("external_ref", strOrNull(c.externalRef()));
+            v.add("request_json", parsedOrNull(c.requestJson()));
+            v.add("response_json", parsedOrNull(c.responseJson()));
+            v.add("error_json", parsedOrNull(c.errorJson()));
+            v.add("invocation_id", strOrNull(c.invocationId()));
+            v.addProperty("decision_index", c.decisionIndex());
+            v.add("tool_name", strOrNull(c.toolName()));
+            v.addProperty("call_index", c.callIndex());
+            v.addProperty("ts_ms", c.tsMs());
+            root.add(e.getKey(), v);
+        }
+        return root.toString();
+    }
+
+    private static com.google.gson.JsonElement strOrNull(String s) {
+        return s == null
+            ? com.google.gson.JsonNull.INSTANCE
+            : new com.google.gson.JsonPrimitive(s);
+    }
+
+    /** A JSON-shaped column (e.g. {@code response_json}) is stored as a
+     *  TEXT-encoded JSON string in the row. When we put it into the
+     *  snapshot blob we want the JSON value INLINE (not a doubly-quoted
+     *  string) so the blob matches the Python reference's shape exactly
+     *  (where DynamicJSON deserialises to a dict before storage). */
+    private static com.google.gson.JsonElement parsedOrNull(String jsonText) {
+        if (jsonText == null) return com.google.gson.JsonNull.INSTANCE;
+        try {
+            return com.google.gson.JsonParser.parseString(jsonText);
+        } catch (com.google.gson.JsonSyntaxException ex) {
+            // Fall back to storing the raw string — defensive: we'd rather
+            // round-trip imperfectly than crash the snapshot path.
+            return new com.google.gson.JsonPrimitive(jsonText);
+        }
+    }
+
+    private static String jsonStringOrNull(com.google.gson.JsonObject o, String k) {
+        com.google.gson.JsonElement v = o.get(k);
+        if (v == null || v.isJsonNull()) return null;
+        if (v.isJsonPrimitive() && v.getAsJsonPrimitive().isString()) return v.getAsString();
+        return v.toString();
+    }
+
+    private static String jsonStringOrEmpty(com.google.gson.JsonObject o, String k) {
+        String v = jsonStringOrNull(o, k);
+        return v == null ? "" : v;
+    }
+
+    /** For JSON-shaped columns: read the inline JSON value back out as a
+     *  JSON-encoded string (the Java EffectRecord.responseJson() field is a
+     *  String containing the column's TEXT contents). */
+    private static String jsonNestedOrNull(com.google.gson.JsonObject o, String k) {
+        com.google.gson.JsonElement v = o.get(k);
+        if (v == null || v.isJsonNull()) return null;
+        if (v.isJsonPrimitive() && v.getAsJsonPrimitive().isString()) {
+            // Legacy / cross-SDK path: a Python writer may have stored the
+            // raw JSON string here. Return it as-is.
+            return v.getAsString();
+        }
+        return v.toString();
+    }
+
+    private static int jsonIntOrDefault(com.google.gson.JsonObject o, String k, int dflt) {
+        com.google.gson.JsonElement v = o.get(k);
+        if (v == null || v.isJsonNull()) return dflt;
+        try { return v.getAsInt(); } catch (Exception ex) { return dflt; }
+    }
+
+    private static long jsonLongOrDefault(com.google.gson.JsonObject o, String k, long dflt) {
+        com.google.gson.JsonElement v = o.get(k);
+        if (v == null || v.isJsonNull()) return dflt;
+        try { return v.getAsLong(); } catch (Exception ex) { return dflt; }
     }
 
     private ValueRecord selectValue(Connection c, String namespace, String key) throws SQLException {
