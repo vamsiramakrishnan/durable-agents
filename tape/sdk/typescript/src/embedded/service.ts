@@ -1066,4 +1066,129 @@ export class TapeSessionService {
     `).get(args.namespace, args.key) as ValueRow | undefined;
     return row ? valueFromRow(row) : null;
   }
+
+  // ── continue-as-new (mechanism #4 in the compaction roadmap) ────────────
+
+  /**
+   * End one invocation chapter, start a new one in the same session, with
+   * optional state carried forward.
+   *
+   * Atomic — one SQL transaction commits the prune + the carried-state
+   * write together. Temporal's `continue-as-new` mapped onto the embedded
+   * model: there's no separate "run" lifecycle to close (the ADK session
+   * is the long-lived unit), only an `invocation_id` to retire.
+   *
+   * `pruneOld=true` (default): delete the old invocation's terminal
+   * effects that aren't pinned by an active obligation. Same NOT EXISTS
+   * guard as the compactor — the pinning mechanism doesn't get a special
+   * case here. Effects in non-terminal states under the old invocation
+   * are kept (a still-PENDING effect under a retired invocation is a bug
+   * elsewhere; surface it, don't silently delete it).
+   *
+   * `carriedState`, when provided, is written to a `tape_values` row at
+   * `namespace='tape:continue-as-new:<sessionId>'`, `key=<newInvocationId>`
+   * — a small protocol the new invocation can read on startup to pick up
+   * where the old one left off.
+   *
+   * Returns `{effectsPruned, stateWritten, obligationsKept}` for the
+   * audit log.
+   */
+  async continueAsNew(args: {
+    appName: string;
+    userId: string;
+    sessionId: string;
+    oldInvocationId: string;
+    newInvocationId: string;
+    carriedState?: unknown;
+    pruneOld?: boolean;
+  }): Promise<{ effectsPruned: number; stateWritten: boolean; obligationsKept: number }> {
+    await this.ensureTables();
+    const pruneOld = args.pruneOld ?? true;
+    const now = nowMs();
+    let effectsPruned = 0;
+    let stateWritten = false;
+    let obligationsKept = 0;
+
+    const txn = this.db.transaction(() => {
+      if (pruneOld) {
+        // Prune the old invocation's terminal effects, pinning-respecting.
+        // Same NOT EXISTS subquery as the compactor — the pinning
+        // mechanism is the WHERE clause, not application code.
+        const r = this.db.prepare(`
+          DELETE FROM tape_effects
+           WHERE app_name = ?
+             AND user_id = ?
+             AND session_id = ?
+             AND invocation_id = ?
+             AND status IN (?, ?)
+             AND NOT EXISTS (
+               SELECT 1 FROM tape_obligations o
+                WHERE o.session_id = tape_effects.session_id
+                  AND o.effect_key = tape_effects.idempotency_key
+                  AND o.status IN (?, ?)
+             )
+        `).run(
+          args.appName, args.userId, args.sessionId, args.oldInvocationId,
+          EffectStatus.CONFIRMED, EffectStatus.FAILED,
+          ObligationStatus.PENDING, ObligationStatus.COMMITTED,
+        );
+        effectsPruned = Number(r.changes ?? 0);
+
+        // Surface any obligations that still pin OLD-invocation effects
+        // — the reason this continue_as_new didn't fully reset the slate.
+        // The pinning relationship is via `effect_key` → `idempotency_key`,
+        // NOT via the obligation's own invocation_id; an obligation
+        // registered in a later invocation can still pin an earlier
+        // invocation's row. Match the Python query exactly.
+        const pinned = this.db.prepare(`
+          SELECT seq FROM tape_obligations
+           WHERE app_name = ? AND user_id = ? AND session_id = ?
+             AND status IN (?, ?)
+             AND effect_key IN (
+               SELECT idempotency_key FROM tape_effects
+                WHERE app_name = ? AND user_id = ? AND session_id = ?
+                  AND invocation_id = ?
+             )
+        `).all(
+          args.appName, args.userId, args.sessionId,
+          ObligationStatus.PENDING, ObligationStatus.COMMITTED,
+          args.appName, args.userId, args.sessionId, args.oldInvocationId,
+        ) as Array<{ seq: number }>;
+        obligationsKept = pinned.length;
+      }
+
+      // Carry state forward as a tape_value if requested.
+      if (args.carriedState !== undefined && args.carriedState !== null) {
+        const ns = `tape:continue-as-new:${args.sessionId}`;
+        const existing = this.db.prepare(`
+          SELECT * FROM tape_values WHERE namespace = ? AND key = ?
+        `).get(ns, args.newInvocationId) as ValueRow | undefined;
+        if (!existing) {
+          this.db.prepare(`
+            INSERT INTO tape_values
+              (namespace, key, value_json, version, ts_ms, writer, deleted)
+            VALUES (?, ?, ?, 1, ?, ?, 0)
+          `).run(
+            ns, args.newInvocationId, stringifyJson(args.carriedState),
+            now, 'continue_as_new',
+          );
+        } else {
+          const newVersion = (Number(existing.version) || 0) + 1;
+          this.db.prepare(`
+            UPDATE tape_values
+            SET value_json = ?, version = ?, ts_ms = ?,
+                writer = ?, deleted = 0
+            WHERE namespace = ? AND key = ?
+          `).run(
+            stringifyJson(args.carriedState), newVersion, now,
+            'continue_as_new', ns, args.newInvocationId,
+          );
+        }
+        stateWritten = true;
+      }
+    });
+    txn();
+
+    return { effectsPruned, stateWritten, obligationsKept };
+  }
 }

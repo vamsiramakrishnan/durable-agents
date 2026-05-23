@@ -38,3 +38,20 @@ export {
   effect, outboxTool, metaOf,
   type EffectMeta,
 } from './decorators.ts';
+
+export {
+  ChaosConnector,
+  Invariant,
+  chaosRun, openChaosSession,
+  scenario,
+  loseAck, duplicate, delayConnector,
+  noStuckObligations, noBlindNonIdempotentRetry, exactlyOne,
+  reportToString, fmtResult,
+  type Fault, type Scenario, type InvariantResult,
+  type ChaosReport, type Session,
+} from './chaos.ts';
+
+export {
+  compactOnce, compactionPolicy, DEFAULT_COMPACTION_POLICY,
+  type CompactionPolicy, type CompactionResult,
+} from './compact.ts';
