@@ -42,6 +42,7 @@ from .reactors import (
 )
 from .decorators import effect, meta_of, outbox_tool
 from .plugin import AckLost, NonIdempotentSafetyPlugin
+from .compact import CompactionPolicy, CompactionResult, compact_once
 from . import chaos
 
 __all__ = [
@@ -75,4 +76,8 @@ __all__ = [
     "AckLost",
     # chaos
     "chaos",
+    # compaction
+    "CompactionPolicy",
+    "CompactionResult",
+    "compact_once",
 ]

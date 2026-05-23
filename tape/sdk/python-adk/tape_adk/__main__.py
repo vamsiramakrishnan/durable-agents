@@ -34,6 +34,7 @@ import socket
 import sys
 from typing import Any, Mapping
 
+from .compact import CompactionPolicy, compact_once
 from .connectors import Connector
 from .reactors import (
     dispatch_outbox_once,
@@ -76,7 +77,8 @@ async def _tick(svc: TapeSessionService, *,
                 connectors: dict[str, Connector],
                 claimer: str,
                 enable_outbox: bool, enable_reconcile: bool,
-                enable_drain: bool, enable_timers: bool) -> None:
+                enable_drain: bool, enable_timers: bool,
+                enable_compact: bool, compact_policy: CompactionPolicy) -> None:
     """One pass through every enabled reactor. Each step is best-effort:
     if one raises, we log + continue. The reactors themselves are
     idempotent so a partial tick doesn't corrupt state."""
@@ -110,6 +112,16 @@ async def _tick(svc: TapeSessionService, *,
                 log.info("timers: %d action(s)", len(r))
         except Exception as ex:  # noqa: BLE001
             log.exception("timers tick crashed: %s", ex)
+    if enable_compact:
+        try:
+            r = await compact_once(svc, policy=compact_policy)
+            if r.total():
+                log.info("compact: pruned %d effects, %d obligations, "
+                          "%d timers; archived %d sessions",
+                          r.effects_pruned, r.obligations_pruned,
+                          r.timers_pruned, r.sessions_archived)
+        except Exception as ex:  # noqa: BLE001
+            log.exception("compact tick crashed: %s", ex)
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -137,6 +149,11 @@ async def _run(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, _on_signal)
 
     tick_s = max(args.tick_ms / 1000.0, 0.05)
+    compact_policy = CompactionPolicy(
+        effect_ttl_ms=args.compact_effect_ttl_ms,
+        session_ttl_ms=args.compact_session_ttl_ms,
+        max_per_tick=args.compact_max_per_tick,
+    )
     try:
         while not stop_event.is_set():
             await _tick(svc,
@@ -145,7 +162,9 @@ async def _run(args: argparse.Namespace) -> int:
                         enable_outbox=not args.no_outbox,
                         enable_reconcile=not args.no_reconcile,
                         enable_drain=not args.no_drain,
-                        enable_timers=not args.no_timers)
+                        enable_timers=not args.no_timers,
+                        enable_compact=args.compact,
+                        compact_policy=compact_policy)
             if args.once:
                 break
             try:
@@ -196,6 +215,22 @@ def main() -> int:
     p.add_argument(
         "--no-timers", action="store_true",
         help="Skip the timer firer tick.")
+    p.add_argument(
+        "--compact", action="store_true",
+        help="Run the compactor tick (the fifth reactor) — prunes "
+             "terminal, old, unpinned tape rows and archives idle "
+             "sessions. Off by default; opt in.")
+    p.add_argument(
+        "--compact-effect-ttl-ms", type=int,
+        default=7 * 24 * 60 * 60 * 1000,
+        help="Prune CONFIRMED/FAILED effects older than this. Default: 7d.")
+    p.add_argument(
+        "--compact-session-ttl-ms", type=int,
+        default=30 * 24 * 60 * 60 * 1000,
+        help="Archive entire sessions with no recent activity. Default: 30d.")
+    p.add_argument(
+        "--compact-max-per-tick", type=int, default=1000,
+        help="Cap on rows touched per compact tick. Default: 1000.")
     p.add_argument("--log-level", default="INFO",
                     help="DEBUG | INFO | WARNING | ERROR. Default: INFO.")
 
