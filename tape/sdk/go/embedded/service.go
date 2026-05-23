@@ -1130,6 +1130,178 @@ WHERE namespace = ? AND key = ?`)
 	}, nil
 }
 
+// ── continue-as-new (mechanism #4 in the compaction roadmap) ────────────
+
+// ContinueAsNewOpts — options for `ContinueAsNew`.
+type ContinueAsNewOpts struct {
+	AppName         string
+	UserID          string
+	SessionID       string
+	OldInvocationID string
+	NewInvocationID string
+	CarriedState    any  // when nil, no `tape_values` write happens
+	HasCarriedState bool // discriminator for "I want to write a nil/0 state" vs "skip"
+	PruneOld        bool // default true via NewContinueAsNewOpts
+	prunePolicySet  bool
+}
+
+// NewContinueAsNewOpts — builds an opts value with PruneOld defaulted to
+// true (matching the Python signature default).
+func NewContinueAsNewOpts(appName, userID, sessionID, oldInv, newInv string) ContinueAsNewOpts {
+	return ContinueAsNewOpts{
+		AppName:         appName,
+		UserID:          userID,
+		SessionID:       sessionID,
+		OldInvocationID: oldInv,
+		NewInvocationID: newInv,
+		PruneOld:        true,
+		prunePolicySet:  true,
+	}
+}
+
+// ContinueAsNewResult — what one `ContinueAsNew` call did. Mirrors the
+// Python dict return type so callers can audit-log it.
+type ContinueAsNewResult struct {
+	EffectsPruned   int
+	ObligationsKept int
+	StateWritten    bool
+}
+
+// ContinueAsNew — end one invocation chapter, start a new one in the
+// same session, with optional state carried forward.
+//
+// Atomic: one SQL transaction commits the prune + the carried-state
+// write together. Temporal's `continue-as-new` mapped onto the embedded
+// model: there's no separate "run" lifecycle to close (the session is
+// the long-lived unit), only an `invocation_id` to retire. The caller
+// continues issuing RPCs under `NewInvocationID`.
+//
+// `PruneOld=true` (default, via `NewContinueAsNewOpts`): delete the old
+// invocation's terminal effects that aren't pinned by an active
+// obligation. Same NOT EXISTS guard as the compactor — the pinning
+// mechanism doesn't get a special case here. Effects in non-terminal
+// states under the old invocation are kept (a still-PENDING effect
+// under a retired invocation is a bug elsewhere; surface it, don't
+// silently delete it).
+//
+// `CarriedState`, when set via `HasCarriedState=true` or via
+// `o.CarriedState != nil` shorthand, is written to a `tape_values` row
+// at `namespace='tape:continue-as-new:<SessionID>'`,
+// `key=<NewInvocationID>` — a small protocol the new invocation can
+// read on startup to pick up where the old one left off.
+func (s *TapeSessionService) ContinueAsNew(ctx context.Context, o ContinueAsNewOpts) (ContinueAsNewResult, error) {
+	// Default PruneOld to true when the caller used a literal
+	// `ContinueAsNewOpts{}` (so the zero-value of bool, false, is
+	// indistinguishable from "they didn't set it").
+	if !o.prunePolicySet {
+		o.PruneOld = true
+	}
+	hasState := o.HasCarriedState || o.CarriedState != nil
+
+	var result ContinueAsNewResult
+	now := nowMs()
+	ns := fmt.Sprintf("tape:continue-as-new:%s", o.SessionID)
+
+	err := s.withCASLock(func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		if o.PruneOld {
+			// Prune old-invocation terminal effects, pinning-respecting.
+			// The NOT EXISTS predicate is identical to the compactor's
+			// — the pinning mechanism lives in the WHERE clause.
+			pruneQ := s.rew(`DELETE FROM tape_effects
+WHERE app_name = ? AND user_id = ? AND session_id = ?
+  AND invocation_id = ?
+  AND status IN (?, ?)
+  AND NOT EXISTS (
+    SELECT 1 FROM tape_obligations o
+     WHERE o.session_id = tape_effects.session_id
+       AND o.effect_key = tape_effects.idempotency_key
+       AND o.status IN (?, ?)
+  )`)
+			r, err := tx.ExecContext(ctx, pruneQ,
+				o.AppName, o.UserID, o.SessionID,
+				o.OldInvocationID,
+				EffectStatusConfirmed, EffectStatusFailed,
+				ObligationStatusPending, ObligationStatusCommitted)
+			if err != nil {
+				return fmt.Errorf("ContinueAsNew: prune: %w", err)
+			}
+			n, _ := r.RowsAffected()
+			result.EffectsPruned = int(n)
+
+			// Surface any obligations that still pin OLD-invocation
+			// effects — they're the reason this continue_as_new didn't
+			// fully reset the slate. The pinning relationship is via
+			// `effect_key` → `idempotency_key`, NOT the obligation's own
+			// invocation_id; an obligation registered in a later
+			// invocation can still pin an earlier invocation's row.
+			keptQ := s.rew(`SELECT COUNT(*) FROM tape_obligations
+WHERE app_name = ? AND user_id = ? AND session_id = ?
+  AND status IN (?, ?)
+  AND effect_key IN (
+    SELECT idempotency_key FROM tape_effects
+     WHERE app_name = ? AND user_id = ? AND session_id = ?
+       AND invocation_id = ?
+  )`)
+			var kept int
+			if err := tx.QueryRowContext(ctx, keptQ,
+				o.AppName, o.UserID, o.SessionID,
+				ObligationStatusPending, ObligationStatusCommitted,
+				o.AppName, o.UserID, o.SessionID, o.OldInvocationID,
+			).Scan(&kept); err != nil {
+				return fmt.Errorf("ContinueAsNew: count-kept: %w", err)
+			}
+			result.ObligationsKept = kept
+		}
+
+		if hasState {
+			// Carry state forward as a tape_value row. Idempotent on
+			// (namespace, key): a repeat call updates the existing row
+			// (version++), so callers driving continue_as_new twice with
+			// the same new invocation id get last-writer-wins semantics.
+			selQ := s.rew(`SELECT namespace, key, value_json, version, ts_ms, writer, deleted
+FROM tape_values WHERE namespace = ? AND key = ?`)
+			row := tx.QueryRowContext(ctx, selQ, ns, o.NewInvocationID)
+			existing, err := scanValue(row)
+			notFound := errors.Is(err, sql.ErrNoRows)
+			if err != nil && !notFound {
+				return fmt.Errorf("ContinueAsNew: select-value: %w", err)
+			}
+			if notFound {
+				ins := s.rew(`INSERT INTO tape_values
+(namespace, key, value_json, version, ts_ms, writer, deleted)
+VALUES (?, ?, ?, ?, ?, ?, ?)`)
+				if _, err := tx.ExecContext(ctx, ins,
+					ns, o.NewInvocationID, jsonOrNil(o.CarriedState),
+					1, now, "continue_as_new", false); err != nil {
+					return fmt.Errorf("ContinueAsNew: insert-value: %w", err)
+				}
+			} else {
+				upd := s.rew(`UPDATE tape_values
+SET value_json = ?, version = ?, ts_ms = ?, writer = ?, deleted = ?
+WHERE namespace = ? AND key = ?`)
+				if _, err := tx.ExecContext(ctx, upd,
+					jsonOrNil(o.CarriedState), existing.Version+1, now,
+					"continue_as_new", false,
+					ns, o.NewInvocationID); err != nil {
+					return fmt.Errorf("ContinueAsNew: update-value: %w", err)
+				}
+			}
+			result.StateWritten = true
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		return ContinueAsNewResult{}, err
+	}
+	return result, nil
+}
+
 // GetValue — single-row read.
 func (s *TapeSessionService) GetValue(ctx context.Context, namespace, key string) (*ValueRecord, error) {
 	q := s.rew(`SELECT namespace, key, value_json, version, ts_ms, writer, deleted
