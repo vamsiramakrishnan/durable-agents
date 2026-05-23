@@ -1,7 +1,7 @@
 # Pinned versions for the docs build. Used by CI + `pip install -r docs/requirements.txt`
 # for local previews (`mkdocs serve`).
 mkdocs==1.6.1
-mkdocs-material==9.5.49
+mkdocs-material==9.7.6
 mkdocstrings[python]==0.27.0
 mkdocs-autorefs==1.2.0
 # pymdown-extensions <10.21 + Pygments >=2.20 crashes with `AttributeError:
