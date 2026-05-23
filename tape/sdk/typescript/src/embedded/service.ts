@@ -10,6 +10,7 @@
 import {
   createAllTables,
   type EffectRow,
+  type EffectSnapshotRow,
   type EmbeddedDb,
   type ObligationRow,
   type TimerRow,
@@ -127,6 +128,41 @@ export interface ValueRecord {
   deleted: boolean;
 }
 
+/** One captured effect inside the per-session snapshot blob. Mirrors the
+ *  per-key value shape in Python's `take_snapshot`: the minimum data the
+ *  idempotency-key short-circuit in `beginEffect` needs to reconstruct a
+ *  synthetic `EffectRecord`. */
+export interface CapturedEffect {
+  status: string;
+  semantics: string;
+  dispatch_mode: string;
+  business_key: string | null;
+  connector: string | null;
+  external_ref: string | null;
+  request_json: unknown;
+  response_json: unknown;
+  error_json: unknown;
+  invocation_id: string;
+  decision_index: number;
+  tool_name: string;
+  call_index: number;
+  ts_ms: number;
+}
+
+/** The hydrated snapshot row returned by `getSnapshot`. `effectsJson` is
+ *  decoded into an object map of `{idempotency_key: CapturedEffect}` — the
+ *  caller never sees the raw JSON string. */
+export interface EffectSnapshotRecord {
+  appName: string;
+  userId: string;
+  sessionId: string;
+  effectsJson: Record<string, CapturedEffect>;
+  upToTsMs: number;
+  effectsCount: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
 // ── row → record converters ────────────────────────────────────────────────
 
 function parseJson(s: string | null): unknown {
@@ -214,6 +250,32 @@ function valueFromRow(r: ValueRow): ValueRecord {
     tsMs: Number(r.ts_ms),
     writer: r.writer,
     deleted: Boolean(r.deleted),
+  };
+}
+
+function snapshotMapFromRow(r: EffectSnapshotRow): Record<string, CapturedEffect> {
+  if (r.effects_json === null || r.effects_json === undefined) return {};
+  try {
+    const parsed = JSON.parse(r.effects_json);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, CapturedEffect>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function snapshotFromRow(r: EffectSnapshotRow): EffectSnapshotRecord {
+  return {
+    appName: r.app_name,
+    userId: r.user_id,
+    sessionId: r.session_id,
+    effectsJson: snapshotMapFromRow(r),
+    upToTsMs: Number(r.up_to_ts_ms),
+    effectsCount: Number(r.effects_count),
+    createdAtMs: Number(r.created_at_ms),
+    updatedAtMs: Number(r.updated_at_ms),
   };
 }
 
@@ -329,6 +391,49 @@ export class TapeSessionService {
       WHERE app_name = ? AND user_id = ? AND session_id = ? AND idempotency_key = ?
     `).get(args.appName, args.userId, args.sessionId, key) as EffectRow | undefined;
     if (existing) return effectFromRow(existing);
+
+    // Snapshot fallback: the live row may have been pruned by the compactor.
+    // If we have a terminal-state snapshot for this key, synthesise the
+    // short-circuit EffectRecord from it so the caller sees the same
+    // idempotent behaviour they'd see with the row still present. No row
+    // is created here — the snapshot IS the durable record. The live row
+    // is checked FIRST (above) so a still-live row always wins over a
+    // stale snapshot entry.
+    const snapRow = this.db.prepare(`
+      SELECT * FROM tape_effect_snapshots
+      WHERE app_name = ? AND user_id = ? AND session_id = ?
+    `).get(args.appName, args.userId, args.sessionId) as EffectSnapshotRow | undefined;
+    if (snapRow) {
+      const map = snapshotMapFromRow(snapRow);
+      const captured = map[key];
+      if (captured) {
+        return {
+          appName: args.appName,
+          userId: args.userId,
+          sessionId: args.sessionId,
+          idempotencyKey: key,
+          invocationId: captured.invocation_id ?? '',
+          decisionIndex: Number(captured.decision_index ?? -1),
+          toolName: captured.tool_name ?? args.toolName,
+          callIndex: Number(captured.call_index ?? callIndex),
+          status: captured.status ?? EffectStatus.CONFIRMED,
+          semantics: captured.semantics ?? semantics,
+          dispatchMode: captured.dispatch_mode ?? dispatchMode,
+          businessKey: captured.business_key ?? null,
+          connector: captured.connector ?? null,
+          externalRef: captured.external_ref ?? null,
+          dispatchAttempts: 0,
+          nextDispatchAtMs: 0,
+          dispatchClaimedBy: null,
+          dispatchClaimExpiresAtMs: 0,
+          lastDispatchError: null,
+          requestJson: captured.request_json ?? null,
+          responseJson: captured.response_json ?? null,
+          errorJson: captured.error_json ?? null,
+          tsMs: Number(captured.ts_ms ?? 0),
+        };
+      }
+    }
 
     const now = nowMs();
     try {
@@ -1190,5 +1295,147 @@ export class TapeSessionService {
     txn();
 
     return { effectsPruned, stateWritten, obligationsKept };
+  }
+
+  // ── effect-ledger snapshot (the "compactable, replayable short-circuit") ──
+
+  /**
+   * Capture terminal effects under this session into the per-session
+   * snapshot row. Merges with the existing snapshot — re-calling this is
+   * the cumulative way to keep the snapshot current as new effects confirm.
+   *
+   * After a snapshot, the compactor can safely prune the underlying
+   * terminal effect rows: `beginEffect` falls back to the snapshot's JSON
+   * map for the idempotency-key short-circuit, so re-dispatch is prevented
+   * even when the source row is gone.
+   *
+   * `upToTsMs = 0` (default) captures everything with a terminal status up
+   * to "now". Pass an explicit watermark to bound the snapshot for large
+   * sessions (the watermark goes into `up_to_ts_ms` on the row so operators
+   * can see how fresh the snapshot is).
+   *
+   * The whole read + merge + write runs in one SQLite transaction — the TS
+   * analog of Python's `_write_lock() + _rollback_on_exception_session()`
+   * pairing.
+   *
+   * Returns `{captured, mergedTotal, upToTsMs}`.
+   */
+  async takeSnapshot(args: {
+    appName: string;
+    userId: string;
+    sessionId: string;
+    upToTsMs?: number;
+  }): Promise<{ captured: number; mergedTotal: number; upToTsMs: number }> {
+    await this.ensureTables();
+    const watermark = args.upToTsMs && args.upToTsMs > 0 ? args.upToTsMs : nowMs();
+    const now = nowMs();
+
+    let captured = 0;
+    let mergedTotal = 0;
+
+    const txn = this.db.transaction(() => {
+      // Read all terminal effects under this session up to the watermark.
+      // The set is bounded by the session's effect count — operators with
+      // very large sessions should pass a watermark to limit the read
+      // window. Matches the Python `select(StorageEffect).where(... status
+      // in (CONFIRMED, FAILED), ts_ms <= watermark)`.
+      const rows = this.db.prepare(`
+        SELECT * FROM tape_effects
+        WHERE app_name = ? AND user_id = ? AND session_id = ?
+          AND status IN (?, ?)
+          AND ts_ms <= ?
+      `).all(
+        args.appName, args.userId, args.sessionId,
+        EffectStatus.CONFIRMED, EffectStatus.FAILED,
+        watermark,
+      ) as EffectRow[];
+
+      // Map each effect to the minimum data the short-circuit needs.
+      // Keep the per-effect blob small — the snapshot row is one JSON
+      // column and we don't want it to balloon. The captured shape mirrors
+      // the Python dict layout exactly so a SQLite file written by one
+      // SDK can be read by the other.
+      const capturedMap: Record<string, CapturedEffect> = {};
+      for (const r of rows) {
+        capturedMap[r.idempotency_key] = {
+          status: r.status,
+          semantics: r.semantics,
+          dispatch_mode: r.dispatch_mode,
+          business_key: r.business_key,
+          connector: r.connector,
+          external_ref: r.external_ref,
+          request_json: parseJson(r.request_json),
+          response_json: parseJson(r.response_json),
+          error_json: parseJson(r.error_json),
+          invocation_id: r.invocation_id,
+          decision_index: Number(r.decision_index),
+          tool_name: r.tool_name,
+          call_index: Number(r.call_index),
+          ts_ms: Number(r.ts_ms),
+        };
+      }
+      captured = Object.keys(capturedMap).length;
+
+      // Read the existing snapshot (if any) and MERGE — set-union, last-
+      // write-wins on duplicates. A later snapshot that has a different
+      // status for the same key (e.g. UNKNOWN that the reconciler later
+      // flipped to CONFIRMED) overwrites the older entry.
+      const existing = this.db.prepare(`
+        SELECT * FROM tape_effect_snapshots
+        WHERE app_name = ? AND user_id = ? AND session_id = ?
+      `).get(args.appName, args.userId, args.sessionId) as EffectSnapshotRow | undefined;
+
+      if (!existing) {
+        const merged: Record<string, CapturedEffect> = { ...capturedMap };
+        mergedTotal = Object.keys(merged).length;
+        this.db.prepare(`
+          INSERT INTO tape_effect_snapshots (
+            app_name, user_id, session_id,
+            effects_json, up_to_ts_ms, effects_count,
+            created_at_ms, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          args.appName, args.userId, args.sessionId,
+          JSON.stringify(merged), watermark, mergedTotal,
+          now, now,
+        );
+      } else {
+        const prior = snapshotMapFromRow(existing);
+        const merged: Record<string, CapturedEffect> = { ...prior, ...capturedMap };
+        mergedTotal = Object.keys(merged).length;
+        const newWatermark = Math.max(Number(existing.up_to_ts_ms) || 0, watermark);
+        this.db.prepare(`
+          UPDATE tape_effect_snapshots
+          SET effects_json = ?, up_to_ts_ms = ?,
+              effects_count = ?, updated_at_ms = ?
+          WHERE app_name = ? AND user_id = ? AND session_id = ?
+        `).run(
+          JSON.stringify(merged), newWatermark,
+          mergedTotal, now,
+          args.appName, args.userId, args.sessionId,
+        );
+      }
+    });
+    txn();
+
+    return { captured, mergedTotal, upToTsMs: watermark };
+  }
+
+  /**
+   * Read the snapshot row for inspection / debugging. Returns the
+   * hydrated record (with `effectsJson` already deserialised into an
+   * object map). `null` if no snapshot has been taken for this session.
+   */
+  async getSnapshot(args: {
+    appName: string;
+    userId: string;
+    sessionId: string;
+  }): Promise<EffectSnapshotRecord | null> {
+    await this.ensureTables();
+    const row = this.db.prepare(`
+      SELECT * FROM tape_effect_snapshots
+      WHERE app_name = ? AND user_id = ? AND session_id = ?
+    `).get(args.appName, args.userId, args.sessionId) as EffectSnapshotRow | undefined;
+    return row ? snapshotFromRow(row) : null;
   }
 }

@@ -12,6 +12,7 @@ export {
   createAllTables, adaptBetterSqlite3,
   type EmbeddedDb, type EmbeddedStatement,
   type EffectRow, type ObligationRow, type TimerRow, type ValueRow,
+  type EffectSnapshotRow,
 } from './schema.ts';
 
 export {
@@ -21,6 +22,7 @@ export {
   type EffectStatusT, type EffectSemanticsT, type EffectDispatchModeT,
   type EffectResolutionT, type ObligationStatusT,
   type EffectRecord, type ObligationRecord, type TimerRecord, type ValueRecord,
+  type CapturedEffect, type EffectSnapshotRecord,
 } from './service.ts';
 
 export {

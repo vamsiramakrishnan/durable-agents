@@ -152,7 +152,41 @@ CREATE TABLE IF NOT EXISTS tape_values (
 );
 `;
 
-/** Create all four tables + indices. Idempotent — safe to call repeatedly. */
+/** `tape_effect_snapshots` — one row per session: a cumulative JSON map of
+ *  terminal-effect short-circuit data keyed by idempotency_key.
+ *
+ *  Mirrors `StorageEffectSnapshot` in `tape_adk/schemas.py` exactly — same
+ *  composite primary key (app_name, user_id, session_id), same JSON-typed
+ *  `effects_json` blob, same watermark / counter / timestamp columns. The FK
+ *  cascade with `sessions` (when that table exists) matches the other tape_*
+ *  tables; in the standalone Node.js path the FK is omitted, just like the
+ *  effects/obligations/timers tables.
+ *
+ *  Why this exists: the compactor prunes terminal effect rows past their
+ *  TTL so the journal doesn't grow without bound. But the idempotency-key
+ *  short-circuit in `beginEffect` reads `tape_effects` — once pruned,
+ *  `beginEffect` would create a fresh PENDING row for the same key and
+ *  re-dispatch the work. Double-spend. The snapshot solves that by holding
+ *  the *minimum data the short-circuit needs* (status + response + the
+ *  cross-run dedup fields) in one row. `beginEffect` reads the live row
+ *  first and falls back to the snapshot when the live row is gone, so the
+ *  compactor is free to delete the underlying rows that were captured.
+ */
+const DDL_EFFECT_SNAPSHOTS = `
+CREATE TABLE IF NOT EXISTS tape_effect_snapshots (
+  app_name        TEXT NOT NULL,
+  user_id         TEXT NOT NULL,
+  session_id      TEXT NOT NULL,
+  effects_json    TEXT,
+  up_to_ts_ms     BIGINT NOT NULL DEFAULT 0,
+  effects_count   INTEGER NOT NULL DEFAULT 0,
+  created_at_ms   BIGINT NOT NULL,
+  updated_at_ms   BIGINT NOT NULL,
+  PRIMARY KEY (app_name, user_id, session_id)
+);
+`;
+
+/** Create all five tables + indices. Idempotent — safe to call repeatedly. */
 export function createAllTables(db: EmbeddedDb): void {
   db.exec(DDL_EFFECTS);
   for (const ix of IDX_EFFECTS) db.exec(ix);
@@ -161,6 +195,7 @@ export function createAllTables(db: EmbeddedDb): void {
   db.exec(DDL_TIMERS);
   for (const ix of IDX_TIMERS) db.exec(ix);
   db.exec(DDL_VALUES);
+  db.exec(DDL_EFFECT_SNAPSHOTS);
 }
 
 // ── row types (what we hand back to callers) ──────────────────────────────
@@ -232,4 +267,19 @@ export interface ValueRow {
   ts_ms: number;
   writer: string | null;
   deleted: number;
+}
+
+export interface EffectSnapshotRow {
+  app_name: string;
+  user_id: string;
+  session_id: string;
+  /** JSON-encoded `{idempotency_key: CapturedEffect}` map. SQLite stores
+   *  JSON as TEXT — matching SQLAlchemy's `DynamicJSON` serialisation on
+   *  the Python side, so a SQLite file written by one SDK can be read by
+   *  the other. */
+  effects_json: string | null;
+  up_to_ts_ms: number;
+  effects_count: number;
+  created_at_ms: number;
+  updated_at_ms: number;
 }
