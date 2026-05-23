@@ -10,6 +10,9 @@ Subcommands::
     tape deploy gcp              build & deploy Tape server + reactors + agent
     tape logs                    tail Cloud Logging for tape-* services
     tape status                  show runs, effects, obligations, reactor lag
+    tape inspect <run-id>        Textual TUI — journal timeline + detail pane
+    tape tail                    cross-run live event stream (`tail -f` for the runtime)
+    tape demo crash-resume       theatrical, self-contained crash + recovery demo
     tape destroy gcp             tear down provisioned GCP infra
     tape migrate                 run store migrations
 """
@@ -30,6 +33,10 @@ from .commands import status as status_cmd
 from .commands import destroy as destroy_cmd
 from .commands import migrate as migrate_cmd
 from .commands import chaos as chaos_cmd
+from .commands import inspect as inspect_cmd
+from .commands import tail as tail_cmd
+from .commands import demo as demo_cmd
+from .commands import inspect_adk as inspect_adk_cmd
 
 console = Console()
 
@@ -69,6 +76,11 @@ app.command(name="doctor", help="Diagnose local and GCP setup.")(doctor_cmd.run)
 app.command(name="logs", help="Tail Cloud Logging for the deployed services.")(logs_cmd.run)
 app.command(name="status", help="Show runs / effects / obligations / reactor lag.")(status_cmd.run)
 app.command(name="migrate", help="Run schema migrations for the configured store.")(migrate_cmd.run)
+app.command(name="tail", help="Tail the journal across all runs (cross-run live stream).")(tail_cmd.run)
+app.command(name="inspect",
+            help="Inspect a run's journal — Textual TUI (default) or rich snapshot / JSONL.")(inspect_cmd.run)
+app.command(name="inspect-adk",
+            help="Snapshot a session's journal from a tape-adk SQLAlchemy store (embedded path).")(inspect_adk_cmd.run)
 
 # `tape provision gcp ...` / `tape deploy gcp ...` / `tape destroy gcp ...` are
 # subcommand groups so we can add other clouds later (or none).
@@ -76,6 +88,8 @@ app.add_typer(provision_cmd.app, name="provision", help="Render & apply infrastr
 app.add_typer(deploy_cmd.app, name="deploy", help="Build & deploy services.")
 app.add_typer(destroy_cmd.app, name="destroy", help="Tear down provisioned infra.")
 app.add_typer(chaos_cmd.app, name="chaos", help="Drive chaos scenarios + replay + LDFI.")
+app.add_typer(demo_cmd.app, name="demo",
+              help="Theatrical, self-contained demos (the 'show me durability' command).")
 
 
 if __name__ == "__main__":

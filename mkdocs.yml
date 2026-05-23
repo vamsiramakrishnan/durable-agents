@@ -162,6 +162,12 @@ extra_css:
 nav:
   - Home: index.md
 
+  - Reading paths:
+      - paths/index.md
+      - Beginner — "I want to see what this is": paths/beginner.md
+      - Operator — "I have to run this in production": paths/operator.md
+      - Systems — "I want to understand the model": paths/systems.md
+
   - Start here:
       - start/index.md
       - Install: start/install.md
@@ -188,6 +194,10 @@ nav:
 
   - How-to guides:
       - how-to/index.md
+      - "tape-adk — the default tier (no separate server)": how-to/tape-adk.md
+      - Inspect the journal (TUI): how-to/inspect.md
+      - Triage a live system: how-to/triage.md
+      - The 60-second demos (crash + UNKNOWN): how-to/demo.md
       - Wire a non-idempotent upstream: non-idempotent-upstreams.md
       - Configure reactors: reactors.md
       - Pick a storage backend: stores.md
@@ -237,6 +247,7 @@ nav:
       - Tape spec: design/tape.md
       - Event bus: design/tape-event-bus.md
       - Parity matrix: design/parity.md
+      - Failure modes & how they're proved: design/failure-modes.md
       - Chaos & failure testing: design/chaos.md
 
   - Help:

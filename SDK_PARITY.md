@@ -1,9 +1,21 @@
 # SDK Parity — Python · TypeScript · Go · Java
 
-Tape ships four SDKs against one wire protocol (`tape/proto/tape.proto`). The
-**protocol is the contract**: any feature reachable by RPC is reachable from
-every language. This document is the live parity scorecard and the roadmap to
-closing the remaining gaps.
+Tape ships in **two tiers**, both honoring the same logical schema and
+invariants:
+
+* **Scale tier** — Rust `tape-server` + gRPC clients in four languages.
+  Use for Bigtable / Spanner, high write throughput, or sharing the
+  journal across non-ADK clients.
+* **Default tier** — `tape-adk`, a Python package that extends ADK's
+  own `DatabaseSessionService` with the four primitives ADK doesn't
+  have (`UNKNOWN` status, outbox dispatch, reconciler, compensation
+  ledger). One database, one process, one `pip install`.
+
+The **protocol is the contract** for the scale tier; the **logical schema
++ invariants** are the contract that connects both tiers. Any feature
+reachable by RPC on the server is reachable from every SDK; any feature
+reachable on `tape-adk` is reachable via direct SQL on the equivalent
+embedded backend in the other languages.
 
 > If you're looking at the per-language wiring table, the canonical one lives in
 > [`tape/README.md`](tape/README.md#same-dx-in-go-typescript-and-java). This
@@ -11,7 +23,7 @@ closing the remaining gaps.
 
 ---
 
-## TL;DR
+## TL;DR — scale tier (gRPC clients)
 
 | | Python | TypeScript | Go | Java |
 |---|:--:|:--:|:--:|:--:|
@@ -26,14 +38,61 @@ closing the remaining gaps.
 | Reactions / event-bus subscribe | ✅ | ✅ | ✅ | ✅ |
 | Tenancy config + DESIGN-ONLY warnings | ✅ | ✅ | ✅ | ✅ |
 | Observability: structured logs + OTel span hook | ✅ | ✅ | ✅ | ✅ |
-| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK)* | — *(no ADK)* | ✅ `dev.tape.adk` |
+| ADK adapter (`TapePlugin`, `TapeSessionService`) | ✅ | — *(no ADK-TS)* | ✅ `adkplugin` (separate module) | ✅ `dev.tape.adk` |
 | Built-in outbox-reactor runner | ✅ | ✅ `tape-outbox-ts` | ✅ `cmd/tape-outbox` | ✅ `dev.tape.cli.TapeOutbox` |
 | Built-in sinks (`Log`, `Webhook`, `PubSub`) | ✅ | ✅ all three | ✅ all three (PubSub via `-tags pubsub`) | ✅ all three (PubSub reflective) |
 | CLI (`tape init/dev/doctor/provision/deploy`) | ✅ | — *(call from Python CLI)* | — | — |
 | Cross-SDK parity test harness | ✅ drives all four | ✅ green | ✅ green | ✅ green |
 | End-user docs reference (auto-gen) | ✅ mkdocstrings | ✅ typedoc | ✅ gomarkdoc | ✅ javadoc |
 
-✅ shipping · ⚠️ partial · — n/a by design
+## TL;DR — default tier (embedded SQL, no separate server)
+
+| | Python (`tape-adk`) | TypeScript | Go | Java |
+|---|:--:|:--:|:--:|:--:|
+| Embedded session/effect store | ✅ extends ADK's `DatabaseSessionService` | ✅ standalone `src/embedded/` | ✅ standalone `embedded/` pkg | ✅ standalone `dev.tape.embedded` |
+| SQL schema (effects · obligations · timers · values) | ✅ four `Storage*` tables | ✅ column-identical | ✅ column-identical | ✅ column-identical |
+| Ledger methods (`begin_effect`, `complete_effect`, `claim_*`, …) | ✅ 19 | ✅ 19 | ✅ 19 | ✅ 19 |
+| Row-level CAS for outbox / obligation claims | ✅ + asyncio.Lock on SQLite | ✅ + Mutex on SQLite | ✅ + sync.Mutex on SQLite | ✅ + ReentrantLock on SQLite |
+| Reactor library (4 loops as plain functions) | ✅ | ✅ | ✅ | ✅ |
+| Connector protocol (dispatch / observe / compensate) + `LogConnector` | ✅ | ✅ | ✅ | ✅ |
+| Decorators / construction-time refusal (`@effect` / `@outbox_tool`) | ✅ | ✅ HOF wrappers | ✅ HOF + `ErrOutboxToolConfig` | ✅ builder + `IllegalArgumentException` |
+| Embedded test suite (same invariants) | ✅ 29 | ✅ 30 | ✅ 28 (`-race`) | ✅ 32 |
+| ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + e2e vs real `Runner` | — *(no ADK-TS)* | ✅ `adkplugin.NewTapePlugin` + e2e vs real `Runner` | ✅ + e2e vs real `Runner` |
+| Reactor CLI (`python -m tape_adk`) | ✅ `tape-adk-reactors` | — *(call the funcs directly)* | — *(call the funcs directly)* | — *(call the funcs directly)* |
+| E2E test against a host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — *(no host framework)* | ✅ ADK-Go `runner.Runner` + scripted `model.LLM` | ✅ ADK-Java `Runner` + scripted `BaseLlm` |
+| Embedded chaos (faults, invariants, scenarios) | ✅ `tape_adk.chaos` | ✅ `src/embedded/chaos.ts` | ✅ `embedded/chaos.go` | ✅ `dev.tape.embedded.chaos` |
+| Compactor reactor (5th — TTL + NOT EXISTS pinning) | ✅ `compact_once` | ✅ `compactOnce` | ✅ `CompactOnce` | ✅ `Compactor.compactOnce` |
+| `continue_as_new` (Temporal-pattern invocation reset) | ✅ | ✅ `continueAsNew` | ✅ `ContinueAsNew` | ✅ `continueAsNew` |
+| Effect-ledger snapshot rows (compaction-safe short-circuit) | ✅ `take_snapshot` + fallback in `begin_effect` | ✅ `takeSnapshot` + fallback in `beginEffect` | ✅ `TakeSnapshot` + fallback in `BeginEffect` | ✅ `takeSnapshot` + fallback in `beginEffect` |
+
+✅ shipping · 🟡 design pending · — n/a by design
+
+**The embedded contract is at parity in all four languages.** The schema
+is column-identical across languages — a Python writer and a Go / TS /
+Java reader against the same SQLite file are mutually compatible. Every
+language's embedded test suite proves the same invariants: idempotent
+`begin_effect`, terminal-idempotent `complete_effect`, refusal of
+NON_IDEMPOTENT+INLINE and OUTBOX-without-connector, `(connector,
+business_key)` cross-run uniqueness, single-winner CAS under real
+concurrency, expired-lease reclaim, the `next_dispatch_at_ms=0` → UNKNOWN
+transition, `observe(CONFIRMED)` resolving UNKNOWN, atomic
+DUPLICATE→compensation, ABSENT-on-NON_IDEMPOTENT staying UNKNOWN,
+retries-then-STUCK, terminal-now forcing STUCK, timer claim semantics,
+`WriteValue` CAS, and the full UNKNOWN→reconcile loop with
+two-dispatchers-three-effects each-dispatched-once.
+
+**The host-framework plugin row is now closed in three of four languages.**
+Python's `NonIdempotentSafetyPlugin` extends ADK-Python's `BasePlugin`;
+ADK-Java ships `dev.tape.adk`; ADK-Go ships `adkplugin.NewTapePlugin`,
+which rides ADK-Go's `plugin.Plugin` tool callbacks
+(`BeforeToolCallback` / `AfterToolCallback` / `OnToolErrorCallback` +
+`BeforeRunCallback`) — each verified by an e2e test driving a real
+`runner.Runner` with a scripted `model.LLM`. The `adkplugin` package is
+a *separate Go module* so the heavy ADK-Go dependency stays optional:
+embedded-only users (`go build ./embedded/`) never pull it. TS has no
+ADK to plug into (the embedded module is standalone-by-design). The
+embedded store + reactors + connectors are usable today by any
+Go / Java / Node agent, ADK or not.
 
 ---
 
@@ -184,6 +243,58 @@ clone is `./setup.sh && make sdk-test-all`.
 
 ---
 
+### ~~G8. Compaction primitives — the 5-mechanism set~~ ✅ Shipped
+
+A long-running agent accumulates terminal rows. Without a forgetting
+mechanism the journal grows without bound; without the *right*
+forgetting mechanism, the idempotency-key short-circuit breaks and the
+agent re-dispatches confirmed effects. Five interlocking primitives,
+each shipped across all four embedded SDKs:
+
+1. **Terminal-state effect pruning** — `compact_once` deletes
+   CONFIRMED/FAILED effects older than `effect_ttl_ms`. One composite
+   SQL `DELETE`, not an application-level loop.
+2. **Session-level archival** — when the latest tape row is older
+   than `session_ttl_ms` AND there are no active obligations or
+   unfired timers, the whole session's tape rows go in one shot.
+3. **Effect-ledger snapshot rows** — `take_snapshot` captures
+   terminal effects into a cumulative per-session JSON blob.
+   `begin_effect` falls back to the snapshot when the live row is
+   gone, so the compactor is free to prune underlying rows without
+   breaking the idempotency contract.
+4. **`continue_as_new`** — atomically prune one invocation's
+   terminal+unpinned effects and write `carried_state` to the
+   `tape:continue-as-new:<session>` namespace. The next invocation
+   reads it on startup. Temporal's pattern, embedded-tier shape.
+5. **Compensable-window pinning** — encoded as a `NOT EXISTS`
+   subquery in the compactor's WHERE clause: an effect with an
+   ACTIVE obligation (PENDING or COMMITTED) referencing it is
+   NEVER pruned, regardless of TTL. The safety invariant lives in
+   the SQL predicate, not in language-level pre-checks.
+
+| | Python | TypeScript | Go | Java |
+|---|:--:|:--:|:--:|:--:|
+| Compactor reactor (`compact_once` + `CompactionPolicy`) | ✅ | ✅ | ✅ | ✅ |
+| Session archival | ✅ | ✅ | ✅ | ✅ |
+| Snapshot rows + `begin_effect` fallback | ✅ | ✅ | ✅ | ✅ |
+| `continue_as_new` atomic prune + state-carry | ✅ | ✅ | ✅ | ✅ |
+| `NOT EXISTS` pinning (verbatim across SDKs) | ✅ | ✅ | ✅ | ✅ |
+| Test count (chaos + compact + continue_as_new + snapshot) | ✅ 38 | ✅ 38 | ✅ 38 | ✅ 40 |
+
+The SQL pinning predicate is reproduced byte-for-byte across all four
+SDKs so the safety contract is *the same DELETE* on every backend.
+Cross-SDK SQLite-file compatibility extends to the snapshot table
+(`tape_effect_snapshots`) — a Python writer and a Go/TS/Java reader
+against the same file see the same short-circuit data.
+
+Reference commits on `claude/tape-inspector-6HE7j`:
+- Python (reference): `95ac335` chaos · `deaf050` compactor · `56b8951` continue_as_new · `def3097` snapshot
+- TS: `20823ff` (chaos/compact/can) · `2570b52` snapshot
+- Go: `39df32e` (chaos/compact/can) · `de813f5` snapshot
+- Java: `788641b` (chaos/compact/can) · `b31de54` snapshot
+
+---
+
 ### G7. CLI parity (deferred — see decision log)
 The Typer CLI (`tape init/dev/doctor/provision/deploy`) stays Python-only by
 design: it provisions cloud infrastructure and scaffolds projects, both
@@ -212,6 +323,7 @@ investment. The *agent process* can be in any of the four languages; the
 | **Cross-SDK parity harness (G3)** | none | `tape/tests/parity/` — `make sdk-parity` runs all four; CI `sdk-parity` job in `.github/workflows/sdk-tests.yml` |
 | **Java ADK adapter (G4)** | none | `dev.tape.adk.{TapePlugin,TapeSessionService,TapeAdkApp}` over `com.google.adk:google-adk:1.2.0` (provided scope) |
 | **Per-SDK README parity (G5)** | drifted | uniform 6-column reference table at the top of all four SDK READMEs |
+| **Compaction primitives (G8)** | none | All five (`compact_once`, snapshot, `continue_as_new`, session archival, NOT EXISTS pinning) shipped in all four embedded SDKs; SQL pinning predicate reproduced byte-for-byte |
 
 ---
 

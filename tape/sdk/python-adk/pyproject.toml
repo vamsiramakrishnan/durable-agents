@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# `tape-adk` is the ADK-aligned form of the substrate: an extension of ADK's
+# DatabaseSessionService that adds an effect ledger, obligation ledger, server
+# -side timer registry, and a non-idempotent-safety plugin — all living in the
+# SAME SQL store ADK already uses, in the SAME transaction as `append_event`.
+# It's the "default tier" complement to the Rust `tape-server` (the "scale
+# tier"). Together they implement the same logical schema; this package is
+# the embedded-mode option.
+name = "tape-adk"
+version = "0.1.0"
+description = "Non-idempotent safety + outbox + reconciler + compensation for Google ADK, on top of ADK's own DatabaseSessionService"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "google-adk>=1.30",
+  # ADK already pulls these in, but pin loosely so we can be imported standalone
+  # for unit tests too.
+  "sqlalchemy[asyncio]>=2.0",
+  "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+sqlite = ["aiosqlite>=0.20"]
+postgres = ["asyncpg>=0.29"]
+mysql = ["aiomysql>=0.2"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "aiosqlite>=0.20"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tape_adk*"]
+
+[project.scripts]
+# `tape-adk-reactors` runs the embedded reactor loop. Equivalent to
+# `python -m tape_adk.reactors`. Drop into a Cloud Run Job, a GKE
+# CronJob, or a docker sidecar.
+tape-adk-reactors = "tape_adk.__main__:main"
+
+[tool.pytest.ini_options]
+# Our tests use plain `async def test_*` functions with the fixtures created
+# via `@pytest_asyncio.fixture` implicitly. asyncio_mode=auto means we don't
+# have to decorate every individual test with `@pytest.mark.asyncio`.
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -62,6 +62,19 @@ class Invariant:
     def check(self, *, client: TapeClient, run_id: Optional[str]) -> InvariantResult:
         raise NotImplementedError
 
+    def __call__(self, *args, **kwargs):
+        """Calling an already-constructed `Invariant` returns `self` —
+        makes the bare-singleton invariants (`no_stuck_obligations`) and
+        the factory-style ones (`exactly_one(tool=...)`) interchangeable
+        at the call site. A user who writes either form gets a working
+        scenario instead of `'object is not callable'`."""
+        if args or kwargs:
+            raise TypeError(
+                f"{type(self).__name__} takes no construction arguments — "
+                f"this invariant is parameter-free. Pass it as `{self.name}` "
+                f"or `{self.name}()` (both work).")
+        return self
+
 
 # ── Concrete invariants ─────────────────────────────────────────────────────
 

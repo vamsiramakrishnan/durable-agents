@@ -12,14 +12,18 @@ license = { text = "Apache-2.0" }
 dependencies = [
   "grpcio>=1.60",
   "protobuf>=4.25",
-  "google-adk>=1.30",
+  # google-adk 2.x removed the plugin callback hooks `TapePlugin` rides
+  # (`after_run_callback` no longer fires, so `EndRun(TERMINAL)` never
+  # lands and resume re-drives effects with fresh ids). Holding at 1.x
+  # until the plugin is ported to 2.x. tape-adk (embedded) is unaffected.
+  "google-adk>=1.30,<2.0",
 ]
 
 [project.optional-dependencies]
 # `hypothesis` powers the property-based stateful runner in
 # tape/tests/test_chaos_stateful.py — see Phase 5.5 in
 # design-principles/chaos.md. Skipped at runtime if absent.
-dev = ["grpcio-tools>=1.60", "pytest>=7", "hypothesis>=6.100"]
+dev = ["grpcio-tools>=1.60", "pytest>=7", "pytest-asyncio>=0.23", "hypothesis>=6.100"]
 # Pub/Sub connector (used by tape.connectors.pubsub.PubSubConnector); the
 # import is lazy, so most users don't need it. Install with `pip install
 # tape-py[gcp-pubsub]` to publish effects via Pub/Sub from the outbox reactor.

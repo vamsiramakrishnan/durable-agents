@@ -26,6 +26,156 @@ Usage: tape [OPTIONS] COMMAND [ARGS]...
 |---|---|---|
 | `--version` | `False` | Show the version and exit. |
 
+### `tape chaos`
+
+Drive chaos scenarios + replay + LDFI.
+
+```
+Usage: tape chaos COMMAND [ARGS]...
+```
+
+#### `tape chaos derive`
+
+LDFI: derive chaos scenarios from one successful run's lineage.
+
+```
+Usage: tape chaos derive [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--run`, `-r` | — | The baseline run_id. |
+| `--url`, `-u` | — | — |
+| `--max-cut` | `1` | Maximum cut size (1 = singletons; >=2 multiplies). |
+
+#### `tape chaos doctor`
+
+Verify the local chaos surface is wired correctly.
+
+```
+Usage: tape chaos doctor [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--url`, `-u` | — | — |
+
+#### `tape chaos lineage`
+
+Walk one run's lineage DAG and print each node + its breaking failpoint.
+
+```
+Usage: tape chaos lineage [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--run`, `-r` | — | The run_id to walk. |
+| `--url`, `-u` | — | — |
+
+#### `tape chaos replay`
+
+Replay a scenario twice with the same seed and check determinism.
+
+```
+Usage: tape chaos replay [OPTIONS] SCENARIO
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `SCENARIO` | — |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--seed`, `-s` | — | Override the scenario's seed. |
+| `--url`, `-u` | — | — |
+
+#### `tape chaos run`
+
+Run a scenario once and print the report.
+
+```
+Usage: tape chaos run [OPTIONS] SCENARIO
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `SCENARIO` | Path to a scenario .py file. |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--url`, `-u` | — | Tape server URL (default $TAPE_URL). |
+
+### `tape demo`
+
+Theatrical, self-contained demos (the 'show me durability' command).
+
+```
+Usage: tape demo COMMAND [ARGS]...
+```
+
+#### `tape demo crash-resume`
+
+Crash an agent mid-effect, recover, prove exactly-one wire.
+
+```
+Usage: tape demo crash-resume [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--pause`, `-p` | `0.6` | Pause between phases (seconds). Lower = faster demo. |
+| `--keep` | `False` | Don't tear down the server / ledger when the demo finishes (so you can `tape inspect`). |
+| `--server-binary` | — | Path to a built `tape-server` (default: auto-locate in the repo). |
+
+#### `tape demo tape-adk-embedded`
+
+UNKNOWN→reconcile loop running against tape-adk (no separate server).
+
+```
+Usage: tape demo tape-adk-embedded [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--pause`, `-p` | `0.5` | Pause between phases (seconds). |
+| `--db` | — | SQLite file path (default: temp file in a fresh workdir). |
+| `--keep` | `False` | Don't tear down the workdir / DB when finished. |
+
+#### `tape demo unknown-reconcile`
+
+Non-idempotent + OUTBOX + UNKNOWN + reconciler — the full ambiguity loop.
+
+```
+Usage: tape demo unknown-reconcile [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--pause`, `-p` | `0.7` | Pause between phases (seconds). UNKNOWN is the loudest signal in the runtime — slowing this down a notch is fine. |
+| `--keep` | `False` | Don't tear down the server / ledger when the demo finishes. |
+| `--server-binary` | — | Path to a built `tape-server` (default: auto-locate). |
+
 ### `tape deploy`
 
 Build & deploy services.
@@ -110,6 +260,12 @@ Usage: tape doctor [OPTIONS]
 | `--local`, `--no-local` | `True` | — |
 | `--gcp`, `--no-gcp` | `False` | — |
 | `--agents-cli-aware` | `False` | Also run agents-cli scaffold compatibility checks. |
+| `--live` | `False` | Query a running system and report operational health (UNKNOWN effects, stuck obligations, outbox + timer lag). Pair with --url (gRPC) or --db-url (tape-adk embedded). Skips the env checks. |
+| `--watch`, `-w` | `False` | With --live: refresh the report in place every --interval seconds (Ctrl-C to stop). Without --live: noop. |
+| `--interval` | `2.0` | Refresh interval in seconds for --watch. |
+| `--pending-threshold-ms` | `60000` | Effects PENDING longer than this are flagged. |
+| `--url` | — | Tape server URL — selects the gRPC path. Default: $TAPE_URL or tape.yaml. |
+| `--db-url` | — | SQLAlchemy URL — selects the tape-adk embedded path (no separate server). Default: $TAPE_ADK_DB_URL. Mutually exclusive with --url. |
 
 ### `tape enhance`
 
@@ -153,11 +309,64 @@ Usage: tape init [OPTIONS] NAME
 
 | Flag | Default | Help |
 |---|---|---|
+| `--tier` | `'adk'` | adk = embedded (tape-adk, no separate server; the default). server = the scale tier (Rust tape-server + gRPC). |
 | `--here` | `False` | Scaffold into the current directory instead of `./<name>`. |
-| `--region` | `'us-central1'` | Default GCP region. |
-| `--store` | `'sqlite'` | Default store: sqlite \| postgres \| alloydb \| spanner \| bigtable. |
-| `--events` | `'none'` | Default events: none \| pubsub. |
+| `--region` | `'us-central1'` | Default GCP region (server tier). |
+| `--store` | `'sqlite'` | Default store (server tier): sqlite \| postgres \| alloydb \| spanner \| bigtable. |
+| `--events` | `'none'` | Default events (server tier): none \| pubsub. |
 | `--force` | `False` | Overwrite existing files. |
+
+### `tape inspect`
+
+Inspect a run's journal — Textual TUI (default) or rich snapshot / JSONL.
+
+```
+Usage: tape inspect [OPTIONS] [RUN_ID]
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `RUN_ID` | Run id to inspect. Omit to list recoverable runs. |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--print`, `-P` | `False` | Print a rich snapshot and exit (no Textual app). |
+| `--raw` | `False` | JSONL — one JournalEntry per line. Implies streaming. |
+| `--summary` | `False` | Stats only — counts by status, duration. Exits 1 on UNKNOWN. |
+| `--follow`, `-f`, `--no-follow`, `-F` | `True` | With --raw: keep streaming after drain. Default: yes. |
+| `--from-seq`, `-s` | `0` | Start streaming from this seq (0 => from the beginning). |
+| `--limit`, `-n` | — | Stop after this many entries (used with --raw / --print). |
+| `--list`, `-l` | `False` | List recoverable runs (same as `tape inspect` with no args). |
+| `--replay` | `False` | Launch directly into the side-by-side replay-diff screen (FIRST RUN vs REPLAY for every journal entry). |
+| `--url` | — | Override the tape server URL. Default: $TAPE_URL or tape.yaml. |
+
+### `tape inspect-adk`
+
+Snapshot a session's journal from a tape-adk SQLAlchemy store (embedded path).
+
+```
+Usage: tape inspect-adk [OPTIONS] [SESSION_ID]
+```
+
+**Arguments**
+
+| Name | Help |
+|---|---|
+| `SESSION_ID` | ADK session id to inspect. Omit with --follow for the live cross-session view. |
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--app` | — | ADK app name (the `name=` on App). Required unless --follow. |
+| `--user` | — | ADK user id. Required unless --follow. |
+| `--db-url` | — | SQLAlchemy URL of the tape-adk store. Default: $TAPE_ADK_DB_URL. |
+| `--follow`, `-f` | `False` | Live cross-session journal view (polls the store). Ignores the session-id argument. |
+| `--raw` | `False` | Emit JSON instead of the rendered panels (for jq / scripts). |
 
 ### `tape logs`
 
@@ -232,4 +441,26 @@ Usage: tape status [OPTIONS]
 | Flag | Default | Help |
 |---|---|---|
 | `--limit`, `-n` | `20` | — |
+
+### `tape tail`
+
+Tail the journal across all runs (cross-run live stream).
+
+```
+Usage: tape tail [OPTIONS]
+```
+
+**Options**
+
+| Flag | Default | Help |
+|---|---|---|
+| `--subject`, `-s` | `''` | Subject pattern, e.g. '/tape/effect/**'. Supports * (one segment) and ** (rest). |
+| `--kind`, `-k` | `''` | Legacy filter (decision\|effect\|obligation\|gate\|value\|run\|event). |
+| `--run`, `-r` | `''` | Restrict to one run id. |
+| `--predicate`, `-p` | `''` | Server-side CEL predicate on the event (see tape-event-bus.md). |
+| `--from-global-seq`, `-g` | `0` | Resume from this global_seq (0 => from earliest). |
+| `--from-ts-ms` | `0` | Legacy SubscribeEvents-style ts-cursor (only used when no subject). |
+| `--limit`, `-n` | — | Stop after this many entries. |
+| `--raw` | `False` | Emit JSONL — one EventEntry per line, no formatting. |
+| `--url` | — | Override the tape server URL. Default: $TAPE_URL or tape.yaml. |
 
