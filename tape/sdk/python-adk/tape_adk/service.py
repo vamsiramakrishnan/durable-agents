@@ -928,6 +928,125 @@ class TapeSessionService(DatabaseSessionService):
             await sql.commit()
             return existing
 
+    # ── continue-as-new (mechanism #4 in the compaction roadmap) ────────
+
+    async def continue_as_new(
+        self,
+        *,
+        app_name: str, user_id: str, session_id: str,
+        old_invocation_id: str,
+        new_invocation_id: str,
+        carried_state: Optional[Any] = None,
+        prune_old: bool = True,
+    ) -> dict:
+        """End one invocation chapter, start a new one in the same ADK
+        session, with optional state carried forward.
+
+        Atomic — one SQL transaction commits the prune + the carried-state
+        write together. Temporal's `continue-as-new` mapped onto the
+        embedded model: there's no separate "run" lifecycle to close
+        (ADK's session is the long-lived unit), only an `invocation_id`
+        to retire. The caller continues issuing RPCs under
+        `new_invocation_id`.
+
+        `prune_old=True` (default): delete the old invocation's terminal
+        effects that aren't pinned by an active obligation. Same NOT
+        EXISTS guard as the compactor — the pinning mechanism doesn't
+        get a special case here. Effects in non-terminal states under
+        the old invocation are kept (a still-PENDING effect under a
+        retired invocation is a bug elsewhere; surface it, don't
+        silently delete it).
+
+        `carried_state`, when provided, is written to a `tape_values` row
+        at `namespace='tape:continue-as-new:<session_id>'`,
+        `key=<new_invocation_id>` — a small protocol the new invocation
+        can read on startup to pick up where the old one left off.
+
+        Returns a dict with `effects_pruned` + `state_written` for the
+        audit log."""
+        await self._prepare_tables()
+        from sqlalchemy import and_, delete, exists, not_
+        from .schemas import StorageEffect, StorageObligation, StorageValue
+
+        result = {"effects_pruned": 0, "state_written": False,
+                  "obligations_kept": 0}
+        now = _now_ms()
+
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+
+            # Prune old-invocation terminal effects, pinning-respecting.
+            if prune_old:
+                pin_subq = exists().where(and_(
+                    StorageObligation.session_id
+                    == StorageEffect.session_id,
+                    StorageObligation.effect_key
+                    == StorageEffect.idempotency_key,
+                    StorageObligation.status.in_(
+                        ("pending", "committed")),
+                ))
+                r = await sql.execute(
+                    delete(StorageEffect).where(
+                        StorageEffect.app_name == app_name,
+                        StorageEffect.user_id == user_id,
+                        StorageEffect.session_id == session_id,
+                        StorageEffect.invocation_id == old_invocation_id,
+                        StorageEffect.status.in_(
+                            ("confirmed", "failed")),
+                        not_(pin_subq),
+                    ).execution_options(synchronize_session=False))
+                result["effects_pruned"] = r.rowcount or 0
+
+                # Surface any obligations that still pin OLD-invocation
+                # effects — they're the reason this continue_as_new
+                # didn't fully reset the slate. The pinning relationship
+                # is via `effect_key` → `idempotency_key`, not the
+                # obligation's own invocation_id; an obligation
+                # registered in a later invocation can still pin an
+                # earlier invocation's row.
+                pinned = (await sql.execute(
+                    select(StorageObligation).where(
+                        StorageObligation.app_name == app_name,
+                        StorageObligation.user_id == user_id,
+                        StorageObligation.session_id == session_id,
+                        StorageObligation.status.in_(
+                            ("pending", "committed")),
+                        StorageObligation.effect_key.in_(
+                            select(StorageEffect.idempotency_key).where(
+                                StorageEffect.app_name == app_name,
+                                StorageEffect.user_id == user_id,
+                                StorageEffect.session_id == session_id,
+                                StorageEffect.invocation_id
+                                == old_invocation_id,
+                            )),
+                    ))).scalars().all()
+                result["obligations_kept"] = len(pinned)
+
+            # Carry state forward as a tape_value if requested.
+            if carried_state is not None:
+                ns = f"tape:continue-as-new:{session_id}"
+                existing = (await sql.execute(
+                    select(StorageValue).where(
+                        StorageValue.namespace == ns,
+                        StorageValue.key == new_invocation_id,
+                    ))).scalars().one_or_none()
+                if existing is None:
+                    sql.add(StorageValue(
+                        namespace=ns, key=new_invocation_id,
+                        value_json=carried_state, version=1,
+                        ts_ms=now, writer="continue_as_new", deleted=False))
+                else:
+                    existing.value_json = carried_state
+                    existing.version = (existing.version or 0) + 1
+                    existing.ts_ms = now
+                    existing.writer = "continue_as_new"
+                    existing.deleted = False
+                result["state_written"] = True
+
+            await sql.commit()
+
+        return result
+
     async def get_value(
         self, *, namespace: str, key: str,
     ) -> Optional["StorageValue"]:
