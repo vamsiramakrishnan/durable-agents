@@ -309,10 +309,11 @@ Usage: tape init [OPTIONS] NAME
 
 | Flag | Default | Help |
 |---|---|---|
+| `--tier` | `'adk'` | adk = embedded (tape-adk, no separate server; the default). server = the scale tier (Rust tape-server + gRPC). |
 | `--here` | `False` | Scaffold into the current directory instead of `./<name>`. |
-| `--region` | `'us-central1'` | Default GCP region. |
-| `--store` | `'sqlite'` | Default store: sqlite \| postgres \| alloydb \| spanner \| bigtable. |
-| `--events` | `'none'` | Default events: none \| pubsub. |
+| `--region` | `'us-central1'` | Default GCP region (server tier). |
+| `--store` | `'sqlite'` | Default store (server tier): sqlite \| postgres \| alloydb \| spanner \| bigtable. |
+| `--events` | `'none'` | Default events (server tier): none \| pubsub. |
 | `--force` | `False` | Overwrite existing files. |
 
 ### `tape inspect`
@@ -348,22 +349,23 @@ Usage: tape inspect [OPTIONS] [RUN_ID]
 Snapshot a session's journal from a tape-adk SQLAlchemy store (embedded path).
 
 ```
-Usage: tape inspect-adk [OPTIONS] SESSION_ID
+Usage: tape inspect-adk [OPTIONS] [SESSION_ID]
 ```
 
 **Arguments**
 
 | Name | Help |
 |---|---|
-| `SESSION_ID` | ADK session id to inspect. |
+| `SESSION_ID` | ADK session id to inspect. Omit with --follow for the live cross-session view. |
 
 **Options**
 
 | Flag | Default | Help |
 |---|---|---|
-| `--app` | — | ADK app name (the `name=` on App). |
-| `--user` | — | ADK user id. |
+| `--app` | — | ADK app name (the `name=` on App). Required unless --follow. |
+| `--user` | — | ADK user id. Required unless --follow. |
 | `--db-url` | — | SQLAlchemy URL of the tape-adk store. Default: $TAPE_ADK_DB_URL. |
+| `--follow`, `-f` | `False` | Live cross-session journal view (polls the store). Ignores the session-id argument. |
 | `--raw` | `False` | Emit JSON instead of the rendered panels (for jq / scripts). |
 
 ### `tape logs`
