@@ -230,17 +230,19 @@ class TapeClient:
 
     def begin_effect(self, *, run_id, decision_index, tool_name, call_index=0,
                      request_json="", custom_key="",
-                     semantics=0, dispatch_mode=0, business_key="", connector=""):
+                     semantics=0, dispatch_mode=0, business_key="", connector="",
+                     scope=""):
         """Begin (or short-circuit) an effect. Defaults preserve the v1 contract
         (idempotent + inline). Pass `semantics=EFFECT_SEMANTICS_NON_IDEMPOTENT`
         and `dispatch_mode=EFFECT_DISPATCH_MODE_OUTBOX` to opt into the outbox
         path; `business_key` + `connector` declare the cross-run dedupe key the
-        counterparty would use."""
+        counterparty would use; `scope` declares the authorization scope the
+        server should check against the run's grant list."""
         return self.stub.BeginEffect(pb.BeginEffectRequest(
             run_id=run_id, decision_index=decision_index, tool_name=tool_name,
             call_index=call_index, request_json=request_json, custom_key=custom_key,
             semantics=semantics, dispatch_mode=dispatch_mode,
-            business_key=business_key, connector=connector))
+            business_key=business_key, connector=connector, scope=scope))
 
     def complete_effect(self, *, run_id, idempotency_key, status, response_json="", error_json=""):
         return self.stub.CompleteEffect(pb.CompleteEffectRequest(

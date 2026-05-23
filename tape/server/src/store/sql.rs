@@ -364,6 +364,18 @@ impl SqlRunStore {
             .await?.map(|r| r.i64(0)).unwrap_or(0))
     }
 
+    /// Read just the run's `scopes_json` column and decode it. Used by
+    /// `begin_effect` for the authz scope-membership check. Returns an empty
+    /// vector when the run has no scopes or doesn't exist (callers handle
+    /// the absent-row case via the scope check itself — an empty grant set
+    /// never satisfies a non-empty required scope).
+    async fn run_scopes_for(&self, run_id: &str) -> StoreResult<Vec<String>> {
+        let row = self.d().query_opt(
+            "SELECT scopes_json FROM tape_runs WHERE run_id = ?1",
+            vec![run_id.into()]).await?;
+        Ok(row.map(|r| parse_scopes(&r.str(0))).unwrap_or_default())
+    }
+
     /// Append a journal row with the event-bus fields populated.
     /// `payload` is the canonical payload_json; `subject` is derived by the
     /// caller via [`subjects::derive`]. OTel fields default to empty when the
@@ -455,7 +467,7 @@ const EFFECT_COLS: &str = "run_id, seq, decision_index, tool_name, idempotency_k
     request_json, response_json, error_json, ts_ms, \
     semantics, dispatch_mode, business_key, connector, dispatch_attempts, \
     next_dispatch_at_ms, external_ref, dispatch_claimed_by, \
-    dispatch_claim_expires_at_ms, last_dispatch_error";
+    dispatch_claim_expires_at_ms, last_dispatch_error, scope";
 fn effect_of(r: &Row) -> EffectRecord {
     EffectRecord {
         run_id: r.str(0), seq: r.i64(1), decision_index: r.i64(2), tool_name: r.str(3),
@@ -466,7 +478,7 @@ fn effect_of(r: &Row) -> EffectRecord {
         dispatch_attempts: r.i32(14), next_dispatch_at_ms: r.i64(15),
         external_ref: r.str(16),
         dispatch_claimed_by: r.str(17), dispatch_claim_expires_at_ms: r.i64(18),
-        last_dispatch_error: r.str(19),
+        last_dispatch_error: r.str(19), scope: r.str(20),
     }
 }
 const DECISION_COLS: &str =
@@ -620,7 +632,8 @@ impl RunStore for SqlRunStore {
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord> {
         // Default semantics/dispatch_mode are IDEMPOTENT/INLINE — preserves the
         // original contract for callers that don't opt into the outbox model.
         let sem = if semantics == EffectSemantics::Unspecified as i32 {
@@ -650,6 +663,31 @@ impl RunStore for SqlRunStore {
                 "begin_effect: business_key requires connector \
                  (cross-run dedupe is per-(connector, business_key))"));
         }
+        // Authorization (AIPlex integration PR 2). When the effect declares a
+        // scope, it must appear in the run's `scopes` array. Empty scope
+        // skips the check — idempotent effects can be unscoped. Defence-in-
+        // depth: the SDK checks before getting here; the server re-checks so
+        // an outdated or non-Python client can't bypass authz.
+        if !scope.is_empty() {
+            let run_scopes = self.run_scopes_for(run_id).await?;
+            if !run_scopes.iter().any(|s| s == scope) {
+                let ts = now_ms();
+                let seq = self.next_seq(run_id).await?;
+                let payload = serde_json::json!({
+                    "tool": tool_name,
+                    "decision_index": decision_index,
+                    "required_scope": scope,
+                    "granted_scopes": run_scopes,
+                    "violation": "scope_not_granted",
+                }).to_string();
+                // Best-effort: even if the journal write fails we still deny.
+                let _ = self.journal(run_id, seq, "policy", &payload, ts).await;
+                return Err(StoreError::denied(
+                    scope,
+                    format!("effect {tool_name} requires scope {scope:?} not present on run {run_id}"),
+                ));
+            }
+        }
         let key = if custom_key.is_empty() {
             derive_key(run_id, decision_index, tool_name, call_index)
         } else { custom_key.to_string() };
@@ -677,15 +715,16 @@ impl RunStore for SqlRunStore {
                  request_json, response_json, error_json, ts_ms, \
                  semantics, dispatch_mode, business_key, connector, dispatch_attempts, \
                  next_dispatch_at_ms, external_ref, dispatch_claimed_by, dispatch_claim_expires_at_ms, \
-                 last_dispatch_error) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8, ?9,?10,?11,?12,0,?13,'','',0,'')",
+                 last_dispatch_error, scope) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8, ?9,?10,?11,?12,0,?13,'','',0,'',?14)",
             vec![run_id.into(), seq.into(), decision_index.into(), tool_name.into(), key.clone().into(),
                  (EffectStatus::Pending as i32).into(), request_json.into(), ts.into(),
-                 sem.into(), dmode.into(), business_key.into(), connector.into(), next_dispatch.into()]).await?;
+                 sem.into(), dmode.into(), business_key.into(), connector.into(), next_dispatch.into(),
+                 scope.into()]).await?;
         let payload = serde_json::json!({
             "tool": tool_name, "decision_index": decision_index, "idempotency_key": key,
             "status": "pending", "semantics": sem, "dispatch_mode": dmode,
-            "business_key": business_key, "connector": connector,
+            "business_key": business_key, "connector": connector, "scope": scope,
         }).to_string();
         self.journal(run_id, seq, "effect", &payload, ts).await?;
         Ok(EffectRecord {
@@ -697,7 +736,7 @@ impl RunStore for SqlRunStore {
             dispatch_attempts: 0, next_dispatch_at_ms: next_dispatch,
             external_ref: String::new(),
             dispatch_claimed_by: String::new(), dispatch_claim_expires_at_ms: 0,
-            last_dispatch_error: String::new(),
+            last_dispatch_error: String::new(), scope: scope.into(),
         })
     }
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>> {

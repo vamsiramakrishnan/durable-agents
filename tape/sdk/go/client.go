@@ -242,6 +242,11 @@ type BeginEffectOpts struct {
 	DispatchMode int32
 	BusinessKey  string
 	Connector    string
+	// Authorization scope (AIPlex integration PR 2). When non-empty, the
+	// server checks the scope is in the run's granted scopes before any
+	// effect row is written; on mismatch the call returns
+	// codes.PermissionDenied. Empty skips the check.
+	Scope string
 }
 
 func (c *Client) BeginEffect(ctx context.Context, o BeginEffectOpts) (*pb.BeginEffectResponse, error) {
@@ -251,6 +256,7 @@ func (c *Client) BeginEffect(ctx context.Context, o BeginEffectOpts) (*pb.BeginE
 		Semantics:    pb.EffectSemantics(o.Semantics),
 		DispatchMode: pb.EffectDispatchMode(o.DispatchMode),
 		BusinessKey:  o.BusinessKey, Connector: o.Connector,
+		Scope: o.Scope,
 	})
 }
 

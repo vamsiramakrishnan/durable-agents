@@ -522,6 +522,7 @@ fn effect_from(key: &str, m: &RowMap) -> EffectRecord {
         dispatch_claimed_by: m.gs("dispatch_claimed_by"),
         dispatch_claim_expires_at_ms: m.gi("dispatch_claim_expires_at_ms"),
         last_dispatch_error: m.gs("last_dispatch_error"),
+        scope: m.gs("scope"),
     }
 }
 fn decision_from(run_id: &str, idx: i64, m: &RowMap) -> DecisionRecord {
@@ -788,7 +789,8 @@ impl RunStore for BigtableRunStore {
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord> {
         let sem = if semantics == EffectSemantics::Unspecified as i32 {
             EffectSemantics::Idempotent as i32
         } else { semantics };
@@ -807,6 +809,29 @@ impl RunStore for BigtableRunStore {
             return Err(StoreError::msg(
                 "begin_effect: business_key requires connector \
                  (cross-run dedupe is per-(connector, business_key))"));
+        }
+        // Authorization (defence-in-depth, matches SQL store). Empty scope
+        // skips; non-empty must appear in the run's scopes_json grant set.
+        if !scope.is_empty() {
+            let granted = if let Some(rs) = self.run_state(run_id).await? {
+                rs.scopes
+            } else { Vec::new() };
+            if !granted.iter().any(|s| s == scope) {
+                let ts = now_ms();
+                let seq = self.next_seq(run_id).await.unwrap_or(0);
+                let payload = serde_json::json!({
+                    "tool": tool_name,
+                    "decision_index": decision_index,
+                    "required_scope": scope,
+                    "granted_scopes": granted,
+                    "violation": "scope_not_granted",
+                }).to_string();
+                let _ = self.journal(run_id, seq, "policy", &payload, ts).await;
+                return Err(StoreError::denied(
+                    scope,
+                    format!("effect {tool_name} requires scope {scope:?} not present on run {run_id}"),
+                ));
+            }
         }
         let key = if custom_key.is_empty() { derive_key(run_id, decision_index, tool_name, call_index) } else { custom_key.to_string() };
         if let Some(m) = self.read_row(&rk_effect(&key)).await? {
@@ -858,12 +883,14 @@ impl RunStore for BigtableRunStore {
             set("semantics", iv(sem as i64)), set("dispatch_mode", iv(dmode as i64)),
             set("business_key", sv(business_key)), set("connector", sv(connector)),
             set("next_dispatch_at_ms", iv(next_dispatch)),
+            set("scope", sv(scope)),
         ]).await?;
         self.journal(run_id, seq, "effect",
             &serde_json::json!({"tool": tool_name, "decision_index": decision_index,
                                 "idempotency_key": key, "status": "pending",
                                 "semantics": sem, "dispatch_mode": dmode,
-                                "business_key": business_key, "connector": connector}).to_string(), ts).await?;
+                                "business_key": business_key, "connector": connector,
+                                "scope": scope}).to_string(), ts).await?;
         Ok(EffectRecord {
             run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(),
             idempotency_key: key, status: EffectStatus::Pending as i32,
@@ -874,6 +901,7 @@ impl RunStore for BigtableRunStore {
             dispatch_attempts: 0, next_dispatch_at_ms: next_dispatch,
             external_ref: String::new(), dispatch_claimed_by: String::new(),
             dispatch_claim_expires_at_ms: 0, last_dispatch_error: String::new(),
+            scope: scope.into(),
         })
     }
 

@@ -277,12 +277,27 @@ impl RunStore for MemRunStore {
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord> {
         // Server-side safety: NON_IDEMPOTENT + INLINE is refused (matches SQL store).
         if semantics == EffectSemantics::NonIdempotent as i32
             && dispatch_mode == EffectDispatchMode::Inline as i32 {
             return Err(StoreError::msg(
                 "begin_effect: NON_IDEMPOTENT effects must use OUTBOX dispatch"));
+        }
+        // Authorization check (defence-in-depth). Mirrors the SQL store: empty
+        // scope skips, non-empty scope must appear in the run's grants.
+        if !scope.is_empty() {
+            let granted: Vec<String> = {
+                let g = self.inner.lock().unwrap();
+                g.runs.get(run_id).map(|r| r.scopes.clone()).unwrap_or_default()
+            };
+            if !granted.iter().any(|s| s == scope) {
+                return Err(StoreError::denied(
+                    scope,
+                    format!("effect {tool_name} requires scope {scope:?} not present on run {run_id}"),
+                ));
+            }
         }
         let key = if !custom_key.is_empty() {
             custom_key.to_string()
@@ -313,14 +328,15 @@ impl RunStore for MemRunStore {
             dispatch_claimed_by: String::new(),
             dispatch_claim_expires_at_ms: 0,
             last_dispatch_error: String::new(),
+            scope: scope.into(),
         };
         g.effects.insert((run_id.into(), key.clone()), rec.clone());
         let entry = JournalEntry {
             seq, kind: "effect".into(),
             payload_json: format!(
-                r#"{{"run_id":"{}","status":"pending","tool":"{}","idempotency_key":"{}","decision_index":{},"semantics":{},"dispatch_mode":{},"business_key":"{}","connector":"{}"}}"#,
+                r#"{{"run_id":"{}","status":"pending","tool":"{}","idempotency_key":"{}","decision_index":{},"semantics":{},"dispatch_mode":{},"business_key":"{}","connector":"{}","scope":"{}"}}"#,
                 esc(run_id), esc(tool_name), esc(&key), decision_index,
-                semantics, dispatch_mode, esc(business_key), esc(connector)),
+                semantics, dispatch_mode, esc(business_key), esc(connector), esc(scope)),
             ts_ms: now_ms(),
             global_seq: 0, subject: String::new(), schema_version: 1,
             trace_id: String::new(), span_id: String::new(), parent_span_id: String::new(),

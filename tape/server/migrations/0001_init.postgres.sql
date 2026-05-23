@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS tape_effects (
   dispatch_claimed_by             TEXT    NOT NULL DEFAULT '',
   dispatch_claim_expires_at_ms    BIGINT  NOT NULL DEFAULT 0,
   last_dispatch_error             TEXT    NOT NULL DEFAULT '',
+  -- Authorization (see proto: BeginEffectRequest.scope).
+  scope                           TEXT    NOT NULL DEFAULT '',
   PRIMARY KEY (run_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_effects_status ON tape_effects(status);

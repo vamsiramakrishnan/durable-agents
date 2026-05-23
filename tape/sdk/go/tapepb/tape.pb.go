@@ -1753,7 +1753,14 @@ type BeginEffectRequest struct {
 	BusinessKey string `protobuf:"bytes,9,opt,name=business_key,json=businessKey,proto3" json:"business_key,omitempty"`
 	// Free-form connector name (e.g. "bank.wire") for the outbox dispatcher to
 	// route on. Required when dispatch_mode == OUTBOX.
-	Connector     string `protobuf:"bytes,10,opt,name=connector,proto3" json:"connector,omitempty"`
+	Connector string `protobuf:"bytes,10,opt,name=connector,proto3" json:"connector,omitempty"`
+	// ── authorization contract ────────────────────────────────────────────
+	// The authorization scope this effect requires (e.g. "mcp:tools:bank_wire").
+	// The server checks scope membership in the run's `scopes` before persisting
+	// the effect; on mismatch the call is denied with PermissionDenied and a
+	// `policy.violation` journal entry. Required for `semantics == NON_IDEMPOTENT`
+	// (the SDK enforces at decoration time too). Empty for unscoped effects.
+	Scope         string `protobuf:"bytes,11,opt,name=scope,proto3" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1854,6 +1861,13 @@ func (x *BeginEffectRequest) GetBusinessKey() string {
 func (x *BeginEffectRequest) GetConnector() string {
 	if x != nil {
 		return x.Connector
+	}
+	return ""
+}
+
+func (x *BeginEffectRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
 	}
 	return ""
 }
@@ -2216,8 +2230,12 @@ type EffectRecord struct {
 	DispatchClaimedBy        string `protobuf:"bytes,18,opt,name=dispatch_claimed_by,json=dispatchClaimedBy,proto3" json:"dispatch_claimed_by,omitempty"`
 	DispatchClaimExpiresAtMs int64  `protobuf:"varint,19,opt,name=dispatch_claim_expires_at_ms,json=dispatchClaimExpiresAtMs,proto3" json:"dispatch_claim_expires_at_ms,omitempty"`
 	LastDispatchError        string `protobuf:"bytes,20,opt,name=last_dispatch_error,json=lastDispatchError,proto3" json:"last_dispatch_error,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// The authorization scope under which this effect was admitted (verified
+	// against the run's `scopes` at BeginEffect time). Empty for unscoped
+	// effects.
+	Scope         string `protobuf:"bytes,21,opt,name=scope,proto3" json:"scope,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EffectRecord) Reset() {
@@ -2386,6 +2404,13 @@ func (x *EffectRecord) GetDispatchClaimExpiresAtMs() int64 {
 func (x *EffectRecord) GetLastDispatchError() string {
 	if x != nil {
 		return x.LastDispatchError
+	}
+	return ""
+}
+
+func (x *EffectRecord) GetScope() string {
+	if x != nil {
+		return x.Scope
 	}
 	return ""
 }
@@ -7108,7 +7133,7 @@ const file_tape_proto_rawDesc = "" +
 	"\x0edecision_index\x18\x02 \x01(\x03R\rdecisionIndex\"`\n" +
 	"\x13GetDecisionResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x123\n" +
-	"\bdecision\x18\x02 \x01(\v2\x17.tape.v1.DecisionRecordR\bdecision\"\x8b\x03\n" +
+	"\bdecision\x18\x02 \x01(\v2\x17.tape.v1.DecisionRecordR\bdecision\"\xa1\x03\n" +
 	"\x12BeginEffectRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12%\n" +
 	"\x0edecision_index\x18\x02 \x01(\x03R\rdecisionIndex\x12\x1b\n" +
@@ -7122,7 +7147,8 @@ const file_tape_proto_rawDesc = "" +
 	"\rdispatch_mode\x18\b \x01(\x0e2\x1b.tape.v1.EffectDispatchModeR\fdispatchMode\x12!\n" +
 	"\fbusiness_key\x18\t \x01(\tR\vbusinessKey\x12\x1c\n" +
 	"\tconnector\x18\n" +
-	" \x01(\tR\tconnector\"\xc3\x01\n" +
+	" \x01(\tR\tconnector\x12\x14\n" +
+	"\x05scope\x18\v \x01(\tR\x05scope\"\xc3\x01\n" +
 	"\x13BeginEffectResponse\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12-\n" +
@@ -7149,7 +7175,7 @@ const file_tape_proto_rawDesc = "" +
 	"\x0fresolved_status\x18\x03 \x01(\x0e2\x15.tape.v1.EffectStatusR\x0eresolvedStatus\x12#\n" +
 	"\rresponse_json\x18\x04 \x01(\tR\fresponseJson\x12\x1d\n" +
 	"\n" +
-	"error_json\x18\x05 \x01(\tR\terrorJson\"\xa9\x06\n" +
+	"error_json\x18\x05 \x01(\tR\terrorJson\"\xbf\x06\n" +
 	"\fEffectRecord\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x10\n" +
 	"\x03seq\x18\x02 \x01(\x03R\x03seq\x12%\n" +
@@ -7172,7 +7198,8 @@ const file_tape_proto_rawDesc = "" +
 	"\fexternal_ref\x18\x11 \x01(\tR\vexternalRef\x12.\n" +
 	"\x13dispatch_claimed_by\x18\x12 \x01(\tR\x11dispatchClaimedBy\x12>\n" +
 	"\x1cdispatch_claim_expires_at_ms\x18\x13 \x01(\x03R\x18dispatchClaimExpiresAtMs\x12.\n" +
-	"\x13last_dispatch_error\x18\x14 \x01(\tR\x11lastDispatchError\"i\n" +
+	"\x13last_dispatch_error\x18\x14 \x01(\tR\x11lastDispatchError\x12\x14\n" +
+	"\x05scope\x18\x15 \x01(\tR\x05scope\"i\n" +
 	"\x1cListEffectsToDispatchRequest\x12\x15\n" +
 	"\x06now_ms\x18\x01 \x01(\x03R\x05nowMs\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x03R\x05limit\x12\x1c\n" +

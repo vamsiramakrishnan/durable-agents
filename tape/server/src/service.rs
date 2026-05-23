@@ -23,7 +23,12 @@ impl TapeService {
 }
 
 fn db(e: StoreError) -> Status {
-    Status::internal(e.to_string())
+    // Map authorization denials to PermissionDenied so SDK clients can react
+    // to them as a typed error rather than a generic internal error.
+    match &e {
+        StoreError::Denied { .. } => Status::permission_denied(e.to_string()),
+        _ => Status::internal(e.to_string()),
+    }
 }
 
 const DEFAULT_LEASE_MS: i64 = 120_000;
@@ -134,6 +139,7 @@ impl Tape for TapeService {
             &r.run_id, r.decision_index, &r.tool_name, r.call_index,
             &r.request_json, &r.custom_key,
             r.semantics, r.dispatch_mode, &r.business_key, &r.connector,
+            &r.scope,
         ).await.map_err(db)?;
         // The headline injection site: the intent has been durably written,
         // the response has not been sent — exactly the window that resume
@@ -579,6 +585,7 @@ mod tests {
             run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
             call_index: 0, request_json: "{}".into(), custom_key: "".into(),
             semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
+            ..Default::default()
         })).await.unwrap().into_inner();
         assert_eq!(be.status, EffectStatus::Pending as i32);
         assert_eq!(be.idempotency_key, format!("{rid}/decision-0/execute_sweep/0"));
@@ -586,6 +593,7 @@ mod tests {
             run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
             call_index: 0, request_json: "{}".into(), custom_key: "".into(),
             semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
+            ..Default::default()
         })).await.unwrap().into_inner();
         assert_eq!(be2.status, EffectStatus::Pending as i32);
         svc.complete_effect(Request::new(CompleteEffectRequest {

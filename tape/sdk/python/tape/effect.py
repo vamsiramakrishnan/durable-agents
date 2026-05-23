@@ -25,6 +25,25 @@ from typing import Any, Callable, Optional
 
 from .retry import RetryPolicy
 
+class ScopeDenied(Exception):
+    """Raised when an effect declares a `scope` that isn't granted to the
+    current run. The SDK pre-checks before calling the server; this is the
+    typed error a tool body sees when its declared scope isn't on the run's
+    grant list. The server re-checks at `BeginEffect` and returns
+    `PermissionDenied`, which the plugin re-raises as `ScopeDenied` too.
+    """
+
+    def __init__(self, *, scope: str, tool: str = "", granted: Optional[list] = None,
+                 detail: str = ""):
+        self.scope = scope
+        self.tool = tool
+        self.granted = list(granted or [])
+        msg = detail or (
+            f"tape: effect {tool!r} requires scope {scope!r}, "
+            f"not granted to run (granted={self.granted})")
+        super().__init__(msg)
+
+
 # kind/name -> callable, for the recovery loop to look up by ObligationRecord.kind
 _COMPENSATORS: dict[str, Callable] = {}
 # tool name -> status-check callable, for the reconciler
@@ -94,7 +113,7 @@ _DISPATCH = ("inline", "outbox")
 
 
 def _validate_semantics(*, semantics, dispatch, status_check, compensate,
-                        business_key, allow_unsafe: bool) -> None:
+                        business_key, scope, allow_unsafe: bool) -> None:
     """The safety contract for non-idempotent upstreams (the whole point of the
     GCP hardening plan). Surface mistakes loudly at decoration time, not at the
     first crash in production."""
@@ -121,6 +140,16 @@ def _validate_semantics(*, semantics, dispatch, status_check, compensate,
                 "a duplicate or wrong outcome can be unwound), or business_key= (so the "
                 "counterparty can be queried by business identity). Pass allow_unsafe=True "
                 "to override after explicit review.")
+        # AIPlex integration PR 2: a non_idempotent effect must declare the
+        # authorization scope it requires. The server re-checks at
+        # BeginEffect; the SDK refuses at decoration to surface the missing
+        # contract in code review rather than the first deny in production.
+        if not allow_unsafe and not (scope or "").strip():
+            raise ValueError(
+                "@tape.effect: semantics='non_idempotent' requires scope=<authorization scope> "
+                "(e.g. 'mcp:tools:bank_wire'). The server verifies the scope is granted to "
+                "the run before any side effect runs. Pass allow_unsafe=True to override "
+                "after explicit review.")
 
 
 def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Callable] = None,
@@ -133,6 +162,8 @@ def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Call
            dispatch: str = "inline",
            connector: str = "",
            business_key: Any = None,
+           # ── authorization (AIPlex integration PR 2) ──────────────────────
+           scope: str = "",
            allow_unsafe: bool = False) -> Callable:
     """Declare an effect.
 
@@ -152,10 +183,18 @@ def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Call
     — what the counterparty itself would use to recognise the same logical
     operation. When set, the server enforces uniqueness on
     `(connector, business_key)` across all runs.
+
+    `scope` is the authorization scope this effect requires (e.g.
+    "mcp:tools:bank_wire"). The plugin verifies it appears in the run's
+    granted scopes before calling the tool body; the server re-checks at
+    `BeginEffect` so a non-conforming SDK can't bypass authz. Required for
+    `semantics='non_idempotent'` (override with `allow_unsafe=True`); optional
+    for idempotent effects (empty scope skips the check).
     """
     _validate_semantics(semantics=semantics, dispatch=dispatch,
                         status_check=status_check, compensate=compensate,
-                        business_key=business_key, allow_unsafe=allow_unsafe)
+                        business_key=business_key, scope=scope,
+                        allow_unsafe=allow_unsafe)
     if dispatch == "outbox" and not connector:
         raise ValueError("@tape.effect: dispatch='outbox' requires connector=<routing key>")
     # P2: business_key without connector creates a unique-index landmine on
@@ -187,6 +226,10 @@ def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Call
             "dispatch": dispatch,
             "connector": connector,
             "business_key": business_key,
+            # Authorization (AIPlex integration PR 2). Empty for unscoped
+            # effects; set, the SDK pre-checks against run.scopes and the
+            # server re-checks at BeginEffect.
+            "scope": scope,
         }
         if compensate is not None:
             register_compensator(getattr(compensate, "__name__", "compensate"), compensate)

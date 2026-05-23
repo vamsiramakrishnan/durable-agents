@@ -325,6 +325,13 @@ message BeginEffectRequest {
   // Free-form connector name (e.g. "bank.wire") for the outbox dispatcher to
   // route on. Required when dispatch_mode == OUTBOX.
   string connector    = 10;
+  // ── authorization contract ────────────────────────────────────────────
+  // The authorization scope this effect requires (e.g. "mcp:tools:bank_wire").
+  // The server checks scope membership in the run's `scopes` before persisting
+  // the effect; on mismatch the call is denied with PermissionDenied and a
+  // `policy.violation` journal entry. Required for `semantics == NON_IDEMPOTENT`
+  // (the SDK enforces at decoration time too). Empty for unscoped effects.
+  string scope        = 11;
 }
 message BeginEffectResponse {
   int64  seq = 1;
@@ -381,6 +388,10 @@ message EffectRecord {
   string dispatch_claimed_by              = 18;
   int64  dispatch_claim_expires_at_ms     = 19;
   string last_dispatch_error              = 20;
+  // The authorization scope under which this effect was admitted (verified
+  // against the run's `scopes` at BeginEffect time). Empty for unscoped
+  // effects.
+  string scope                            = 21;
 }
 
 // ── outbox dispatch requests/responses ─────────────────────────────────────

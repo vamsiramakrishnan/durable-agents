@@ -244,16 +244,21 @@ export class TapeClient {
   // contract (non-idempotent upstreams). Defaults are IDEMPOTENT + INLINE,
   // which preserves the v1 behaviour. The server refuses NON_IDEMPOTENT +
   // INLINE — that error surfaces as a gRPC InvalidArgument / Internal here.
+  // Authorization scope (AIPlex integration PR 2) — when non-empty, the
+  // server verifies it appears in the run's granted scopes before any
+  // effect row is written; on mismatch the call rejects with
+  // codes.PermissionDenied.
   beginEffect(r: {
     runId: string; decisionIndex: number; toolName: string;
     callIndex?: number; requestJson?: string; customKey?: string;
     semantics?: number; dispatchMode?: number;
     businessKey?: string; connector?: string;
+    scope?: string;
   }) {
     return this.call('BeginEffect', {
       callIndex: 0, requestJson: '', customKey: '',
       semantics: EffectSemantics.UNSPECIFIED, dispatchMode: EffectDispatchMode.UNSPECIFIED,
-      businessKey: '', connector: '', ...r,
+      businessKey: '', connector: '', scope: '', ...r,
     });
   }
   completeEffect(r: { runId: string; idempotencyKey: string; status: number; responseJson?: string; errorJson?: string }) {

@@ -138,10 +138,19 @@ public final class TapeClient implements AutoCloseable {
                                            String requestJson, String customKey) {
         return beginEffect(runId, decisionIndex, toolName, callIndex, requestJson, customKey,
                 EffectSemantics.EFFECT_SEMANTICS_UNSPECIFIED,
-                EffectDispatchMode.EFFECT_DISPATCH_MODE_UNSPECIFIED, "", "");
+                EffectDispatchMode.EFFECT_DISPATCH_MODE_UNSPECIFIED, "", "", "");
     }
 
-    /** Extended: declare the outbox contract.
+    /** Pre-scope overload: defaults scope to "" so existing callers compile. */
+    public BeginEffectResponse beginEffect(String runId, long decisionIndex, String toolName, int callIndex,
+                                           String requestJson, String customKey,
+                                           EffectSemantics semantics, EffectDispatchMode dispatchMode,
+                                           String businessKey, String connector) {
+        return beginEffect(runId, decisionIndex, toolName, callIndex, requestJson, customKey,
+                semantics, dispatchMode, businessKey, connector, "");
+    }
+
+    /** Extended: declare the outbox contract and the authorization scope.
      *
      *  <p>{@code semantics=NON_IDEMPOTENT} requires {@code dispatchMode=OUTBOX};
      *  the server refuses {@code NON_IDEMPOTENT + INLINE} (an inline call to a
@@ -149,11 +158,18 @@ public final class TapeClient implements AutoCloseable {
      *  {@code businessKey} (when set) is enforced unique on
      *  {@code (connector, businessKey)} across all runs — a second
      *  {@code beginEffect} for the same business identity returns the existing
-     *  effect row. */
+     *  effect row.
+     *
+     *  <p>{@code scope} (AIPlex integration PR 2) is the authorization scope
+     *  the effect requires. When non-empty, the server verifies it appears in
+     *  the run's granted scopes before any effect row is written; on mismatch
+     *  the call returns {@code Status.PERMISSION_DENIED}.
+     */
     public BeginEffectResponse beginEffect(String runId, long decisionIndex, String toolName, int callIndex,
                                            String requestJson, String customKey,
                                            EffectSemantics semantics, EffectDispatchMode dispatchMode,
-                                           String businessKey, String connector) {
+                                           String businessKey, String connector,
+                                           String scope) {
         return stub.beginEffect(BeginEffectRequest.newBuilder()
                 .setRunId(runId).setDecisionIndex(decisionIndex).setToolName(toolName)
                 .setCallIndex(callIndex).setRequestJson(requestJson == null ? "" : requestJson)
@@ -161,7 +177,8 @@ public final class TapeClient implements AutoCloseable {
                 .setSemantics(semantics == null ? EffectSemantics.EFFECT_SEMANTICS_UNSPECIFIED : semantics)
                 .setDispatchMode(dispatchMode == null ? EffectDispatchMode.EFFECT_DISPATCH_MODE_UNSPECIFIED : dispatchMode)
                 .setBusinessKey(businessKey == null ? "" : businessKey)
-                .setConnector(connector == null ? "" : connector).build());
+                .setConnector(connector == null ? "" : connector)
+                .setScope(scope == null ? "" : scope).build());
     }
 
     public EffectRecord completeEffect(String runId, String key, EffectStatus status,

@@ -173,6 +173,7 @@ async fn drive_workload(workload: &Workload) -> Vec<CanonicalLine> {
                         dispatch_mode: 0,
                         business_key: "".into(),
                         connector: "".into(),
+                        ..Default::default()
                     }))
                     .await
                     .unwrap()

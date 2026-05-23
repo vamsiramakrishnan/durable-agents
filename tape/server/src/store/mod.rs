@@ -46,10 +46,20 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub enum StoreError {
     #[error("tape store: {0}")]
     Msg(String),
+    /// Authorization denial — the caller asked for an action whose required
+    /// scope is not present on the run. The service layer maps this to
+    /// `tonic::Status::permission_denied`. Carries the required scope and
+    /// (optionally) the effect / tool the denial applied to so the journal
+    /// and the wire error agree.
+    #[error("tape store: policy violation — scope {scope:?} not granted to run")]
+    Denied { scope: String, detail: String },
 }
 impl StoreError {
     pub fn msg(s: impl Into<String>) -> Self {
         StoreError::Msg(s.into())
+    }
+    pub fn denied(scope: impl Into<String>, detail: impl Into<String>) -> Self {
+        StoreError::Denied { scope: scope.into(), detail: detail.into() }
     }
 }
 
@@ -112,10 +122,17 @@ pub trait RunStore: Send + Sync {
     /// When `business_key` is non-empty, uniqueness on `(connector,
     /// business_key)` is enforced — a second begin_effect with the same
     /// business key returns the existing row instead of inserting a duplicate.
+    ///
+    /// `scope` (when non-empty) is checked for membership in the run's
+    /// `scopes_json` before any row is written. On mismatch the call returns
+    /// `StoreError::Denied` and a `policy` journal entry is appended; no
+    /// effect row is created. Empty `scope` skips the check (idempotent
+    /// effects can be unscoped).
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord>;
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord>;
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str,
                              error_json: &str) -> StoreResult<Option<EffectRecord>>;
     async fn get_effect(&self, run_id: &str, key: &str) -> StoreResult<Option<EffectRecord>>;
