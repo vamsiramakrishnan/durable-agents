@@ -180,18 +180,30 @@ def delay_connector(*, connector: str, ms: int, jitter: float = 0.0) -> Fault:
 
 @dataclass(frozen=True)
 class Scenario:
-    """A named bundle of faults + invariants + seed."""
+    """A named bundle of faults + invariants + seed.
+
+    `strict_faults` (default True) — a scenario whose declared faults
+    can't actually be applied (e.g. a connector-layer fault targeting a
+    connector that isn't registered) FAILS the scenario instead of
+    silently passing. This catches a class of false-positive where a
+    user thinks they're testing a fault but the fault never fired.
+    Set `strict_faults=False` for scenarios that intentionally include
+    optional faults that may not apply in every environment.
+    """
     name: str
     faults: Sequence[Fault] = field(default_factory=tuple)
     invariants: Sequence[Any] = field(default_factory=tuple)   # `Invariant`s
     seed: int = 0
+    strict_faults: bool = True
 
 
 def scenario(*, name: str, faults: Iterable[Fault] = (),
-             invariants: Iterable[Any] = (), seed: int = 0) -> Scenario:
+             invariants: Iterable[Any] = (), seed: int = 0,
+             strict_faults: bool = True) -> Scenario:
     """Sugar for the `Scenario` constructor."""
     return Scenario(name=name, faults=tuple(faults),
-                    invariants=tuple(invariants), seed=int(seed))
+                    invariants=tuple(invariants), seed=int(seed),
+                    strict_faults=bool(strict_faults))
 
 
 # ── FAILPOINTS env rendering ────────────────────────────────────────────────
@@ -310,7 +322,7 @@ class Session:
             elif f.tool:
                 tool_scoped.append(f)
             else:
-                self.report.notes.append(
+                self._skip_fault(
                     "connector fault skipped: neither target nor tool set")
 
         # Connector-targeted: each fault attaches to exactly that one
@@ -318,7 +330,7 @@ class Session:
         for name, faults in by_connector.items():
             real = _connectors.get(name)
             if real is None:
-                self.report.notes.append(
+                self._skip_fault(
                     f"connector fault for {name!r} skipped: connector not registered")
                 continue
             self._wrap_connector(name, real, list(faults) + tool_scoped)
@@ -328,10 +340,29 @@ class Session:
         # in the loop above). Avoids double-wrapping the same connector.
         if tool_scoped:
             already_wrapped = set(by_connector.keys())
-            for name, real in _connectors.all_registered().items():
+            registered = _connectors.all_registered()
+            if not registered:
+                # Tool-scoped chaos with NO connectors registered at all is
+                # the classic false-positive case: the user thinks they're
+                # injecting faults; nothing does. Surface it.
+                self._skip_fault(
+                    "tool-scoped fault(s) skipped: no connectors registered")
+            for name, real in registered.items():
                 if name in already_wrapped:
                     continue
                 self._wrap_connector(name, real, tool_scoped)
+
+    def _skip_fault(self, message: str) -> None:
+        """A declared fault couldn't be applied. Record a note always;
+        under `strict_faults=True` (the default) also append a FAILED
+        synthetic InvariantResult so the scenario fails instead of
+        silently passing."""
+        from .invariants import InvariantResult
+        self.report.notes.append(message)
+        if self.scenario.strict_faults:
+            self.report.invariant_results.append(InvariantResult(
+                name="strict_faults", passed=False, detail=message))
+            self.report.passed = False
 
     def _wrap_connector(self, name: str, real, faults: List[Fault]) -> None:
         from .. import connectors as _connectors

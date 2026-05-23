@@ -1,0 +1,31 @@
+apiVersion: tape.dev/v1
+kind: TapeProject
+
+project:
+  name: {{ name }}
+  environment: dev
+  # The embedded tier — tape-adk extends ADK's own DatabaseSessionService.
+  # No separate server. `tape dev` runs the agent loop + reactors together.
+  tier: adk
+
+agent:
+  framework: adk
+  app_name: {{ name }}
+  # module:attr — the ADK root agent.
+  entrypoint: app.agent:root_agent
+  # module:callable — builds a Runner wired with TapeSessionService + the
+  # NonIdempotentSafetyPlugin. `tape dev` invokes this.
+  runner_factory: app.agent:build_runner
+  deployment_target: local
+
+embedded:
+  # The SQLAlchemy store ADK + tape-adk share. SQLite for dev; swap to a
+  # postgresql+asyncpg:// URL for production (nothing else changes).
+  db_url: ${TAPE_ADK_DB_URL:-sqlite+aiosqlite:///./.tape/dev.db}
+  # module:attr — a dict[str, Connector] the reactor loop dispatches through.
+  connectors: app.connectors:CONNECTORS
+  reactor_interval_ms: 1000
+
+tenancy:
+  mode: single
+  tenant_id: default

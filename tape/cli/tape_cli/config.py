@@ -89,6 +89,14 @@ class ProjectSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
     environment: str = "dev"
+    # Which tier this project targets:
+    #   "adk"    — the embedded tier: tape-adk extends ADK's own
+    #              DatabaseSessionService; no separate server. The default
+    #              for new projects.
+    #   "server" — the scale tier: a separate Rust tape-server over gRPC.
+    # Existing projects with no `tier` key default to "server" for
+    # backward compatibility.
+    tier: Literal["adk", "server"] = "server"
 
 
 class AgentSection(BaseModel):
@@ -175,6 +183,21 @@ class TapeSection(BaseModel):
     reactors: ReactorsSection = Field(default_factory=ReactorsSection)
 
 
+class EmbeddedSection(BaseModel):
+    """Config for the embedded (`tier: adk`) tier — tape-adk on a local
+    SQLAlchemy store, no separate server. Only consulted when
+    `project.tier == "adk"`."""
+    model_config = ConfigDict(extra="forbid")
+    # SQLAlchemy URL for the store ADK + tape-adk share. SQLite for dev;
+    # a postgresql+asyncpg URL for production.
+    db_url: str = "sqlite+aiosqlite:///./.tape/dev.db"
+    # `module.path:attr` resolving to a dict[str, Connector] (or a callable
+    # returning one). Passed to the reactor loop's --connectors.
+    connectors: Optional[str] = None
+    # Reactor loop tick interval, milliseconds.
+    reactor_interval_ms: int = 1000
+
+
 class NetworkSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vpc_connector: Optional[str] = None
@@ -203,6 +226,7 @@ class TapeProject(BaseModel):
     project: ProjectSection
     agent: AgentSection
     tape: TapeSection = Field(default_factory=TapeSection)
+    embedded: Optional[EmbeddedSection] = None
     gcp: GcpSection = Field(default_factory=GcpSection)
     tenancy: TenancySection = Field(default_factory=TenancySection)
 
@@ -241,6 +265,6 @@ def find_project_root(start: Optional[Path] = None) -> Path:
 __all__ = [
     "TapeProject", "ProjectSection", "AgentSection", "ServerSection",
     "StoreSection", "EventsSection", "ReactorSpec", "ReactorsSection",
-    "TapeSection", "NetworkSection", "GcpSection", "TenancySection",
-    "find_project_root",
+    "TapeSection", "EmbeddedSection", "NetworkSection", "GcpSection",
+    "TenancySection", "find_project_root",
 ]

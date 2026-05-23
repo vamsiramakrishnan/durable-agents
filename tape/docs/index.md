@@ -17,6 +17,16 @@ outcome — without changing one line of your ADK agent code.
 [:material-github: GitHub](https://github.com/vamsiramakrishnan/durable-agents){ .md-button }
 </div>
 
+!!! tip "Three reading paths"
+    The docs are dense — that's deliberate. To save you reading in the
+    wrong order, pick the path that matches what you're doing right now:
+    **[:material-rocket-launch: Beginner](paths/beginner.md)** ("I want
+    to see what this is"),
+    **[:material-server: Operator](paths/operator.md)** ("I have to run
+    this in production"), or
+    **[:material-atom: Systems](paths/systems.md)** ("I want to
+    understand the model").
+
 ---
 
 ## Wire it in fifteen lines { .tape-section-h }

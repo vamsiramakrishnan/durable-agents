@@ -68,6 +68,16 @@
       <version>5.10.0</version>
       <scope>test</scope>
     </dependency>
+    <!-- SQLite driver for the embedded-mode tests. Scoped to test so
+         users who deploy against Postgres aren't forced to pull SQLite
+         transitively. Embedded users who want SQLite at runtime declare
+         their own dependency. -->
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+      <version>3.46.0.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -97,6 +107,19 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <!-- -parameters keeps method parameter names in the bytecode so
+               ADK-Java's FunctionTool reflection (used by the embedded
+               NonIdempotentSafetyPlugin e2e test) can bind tool args by
+               name. Harmless for the non-ADK paths. -->
+          <compilerArgs>
+            <arg>-parameters</arg>
+          </compilerArgs>
+        </configuration>
       </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
