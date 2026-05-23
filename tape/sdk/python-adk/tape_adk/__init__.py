@@ -42,6 +42,7 @@ from .reactors import (
 )
 from .decorators import effect, meta_of, outbox_tool
 from .plugin import AckLost, NonIdempotentSafetyPlugin
+from . import chaos
 
 __all__ = [
     # service
@@ -72,4 +73,6 @@ __all__ = [
     # plugin
     "NonIdempotentSafetyPlugin",
     "AckLost",
+    # chaos
+    "chaos",
 ]
