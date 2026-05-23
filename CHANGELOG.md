@@ -5,6 +5,19 @@ this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — AIPlex integration (PR 3: docs + example)
+- **`tape/examples/standalone/aiplex-integration/`** — runnable worked
+  example with a treasury agent that has two scoped effects
+  (`read_balance` and the non-idempotent `bank_wire`). `run.py` drives
+  the gRPC primitives directly so the admit/deny paths are visible step
+  by step (no LLM API key needed). The default config grants only the
+  read scope so the demo lands on the **failure path** — the
+  `policy.violation` journal entry that AIPlex audit ingestion will
+  surface in the run timeline.
+- **`tape/docs/integrations/aiplex.md`** rewritten from Phase 0 survey
+  into a how-to guide reflecting what's shipped in PR 1 + PR 2. Linked
+  from `mkdocs.yml` and `how-to/index.md`.
+
 ### Added — AIPlex integration (PR 2: effect scope enforcement)
 - **`@tape.effect(scope=...)`** declares the authorization scope an effect
   requires (e.g. `"mcp:tools:bank_wire"`). The Python SDK refuses

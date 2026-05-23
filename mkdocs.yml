@@ -208,6 +208,7 @@ nav:
       - Run the outbox dispatcher (any language): how-to/outbox-daemon.md
       - Fan the journal out (sinks): how-to/sinks.md
       - Cross-SDK parity harness: how-to/cross-sdk-parity.md
+      - Plug in to AIPlex (identity & scopes): integrations/aiplex.md
 
   - Deploy:
       - deploy/index.md
