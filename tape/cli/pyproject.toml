@@ -11,7 +11,10 @@ requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
   "tape-py>=0.1.0",
-  "typer>=0.12",
+  # typer <0.16 calls Click's `Parameter.make_metavar()` without `ctx`,
+  # which Click 8.2+ tightened to require. The pair (typer 0.15, click
+  # 8.4) crashes on every `--help`. 0.16 added `ctx` to the call.
+  "typer>=0.16",
   "rich>=13.7",
   # textual powers `tape inspect <run>` — the full-screen journal TUI (decisions,
   # effects, leases, gates) with a scrollable timeline + detail pane. The other

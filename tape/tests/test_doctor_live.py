@@ -145,6 +145,12 @@ def test_doctor_help_lists_live_flag():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([str(SDK_PY), str(CLI),
                                           env.get("PYTHONPATH", "")])
+    # Force Rich/Typer to render --help as plain text. Without this, CI's
+    # FORCE_COLOR-style env makes Typer wrap each `--flag` in ANSI styles
+    # (e.g. `\x1b[1;36m-\x1b[0m\x1b[1;36m-live\x1b[0m`), so the substring
+    # "--live" no longer appears contiguously in stdout.
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
     p = subprocess.run(
         [sys.executable, "-m", "tape_cli.main", "doctor", "--help"],
         env=env, capture_output=True, text=True, timeout=10)

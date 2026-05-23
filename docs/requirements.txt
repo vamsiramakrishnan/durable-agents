@@ -13,7 +13,9 @@ mkdocs-autorefs==1.2.0
 pymdown-extensions==10.21.3
 
 # The CLI generator needs the CLI's runtime deps (Typer + pydantic + jinja2 + rich).
-typer==0.15.1
+# typer <0.16 is incompatible with click >=8.2 (Parameter.make_metavar
+# signature changed); 0.25.1 is current and works against click 8.4.
+typer==0.25.1
 rich==13.9.4
 pydantic==2.9.2
 pydantic-settings==2.6.1
