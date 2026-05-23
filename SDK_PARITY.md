@@ -60,6 +60,10 @@ embedded backend in the other languages.
 | ADK plugin (`NonIdempotentSafetyPlugin`) | ✅ + e2e vs real `Runner` | — *(no ADK-TS)* | ✅ `adkplugin.NewTapePlugin` + e2e vs real `Runner` | ✅ + e2e vs real `Runner` |
 | Reactor CLI (`python -m tape_adk`) | ✅ `tape-adk-reactors` | — *(call the funcs directly)* | — *(call the funcs directly)* | — *(call the funcs directly)* |
 | E2E test against a host framework's real runner | ✅ ADK `Runner` + `ResumabilityConfig` | — *(no host framework)* | ✅ ADK-Go `runner.Runner` + scripted `model.LLM` | ✅ ADK-Java `Runner` + scripted `BaseLlm` |
+| Embedded chaos (faults, invariants, scenarios) | ✅ `tape_adk.chaos` | ✅ `src/embedded/chaos.ts` | ✅ `embedded/chaos.go` | ✅ `dev.tape.embedded.chaos` |
+| Compactor reactor (5th — TTL + NOT EXISTS pinning) | ✅ `compact_once` | ✅ `compactOnce` | ✅ `CompactOnce` | ✅ `Compactor.compactOnce` |
+| `continue_as_new` (Temporal-pattern invocation reset) | ✅ | ✅ `continueAsNew` | ✅ `ContinueAsNew` | ✅ `continueAsNew` |
+| Effect-ledger snapshot rows (compaction-safe short-circuit) | ✅ `take_snapshot` + fallback in `begin_effect` | ✅ `takeSnapshot` + fallback in `beginEffect` | ✅ `TakeSnapshot` + fallback in `BeginEffect` | ✅ `takeSnapshot` + fallback in `beginEffect` |
 
 ✅ shipping · 🟡 design pending · — n/a by design
 
@@ -239,6 +243,58 @@ clone is `./setup.sh && make sdk-test-all`.
 
 ---
 
+### ~~G8. Compaction primitives — the 5-mechanism set~~ ✅ Shipped
+
+A long-running agent accumulates terminal rows. Without a forgetting
+mechanism the journal grows without bound; without the *right*
+forgetting mechanism, the idempotency-key short-circuit breaks and the
+agent re-dispatches confirmed effects. Five interlocking primitives,
+each shipped across all four embedded SDKs:
+
+1. **Terminal-state effect pruning** — `compact_once` deletes
+   CONFIRMED/FAILED effects older than `effect_ttl_ms`. One composite
+   SQL `DELETE`, not an application-level loop.
+2. **Session-level archival** — when the latest tape row is older
+   than `session_ttl_ms` AND there are no active obligations or
+   unfired timers, the whole session's tape rows go in one shot.
+3. **Effect-ledger snapshot rows** — `take_snapshot` captures
+   terminal effects into a cumulative per-session JSON blob.
+   `begin_effect` falls back to the snapshot when the live row is
+   gone, so the compactor is free to prune underlying rows without
+   breaking the idempotency contract.
+4. **`continue_as_new`** — atomically prune one invocation's
+   terminal+unpinned effects and write `carried_state` to the
+   `tape:continue-as-new:<session>` namespace. The next invocation
+   reads it on startup. Temporal's pattern, embedded-tier shape.
+5. **Compensable-window pinning** — encoded as a `NOT EXISTS`
+   subquery in the compactor's WHERE clause: an effect with an
+   ACTIVE obligation (PENDING or COMMITTED) referencing it is
+   NEVER pruned, regardless of TTL. The safety invariant lives in
+   the SQL predicate, not in language-level pre-checks.
+
+| | Python | TypeScript | Go | Java |
+|---|:--:|:--:|:--:|:--:|
+| Compactor reactor (`compact_once` + `CompactionPolicy`) | ✅ | ✅ | ✅ | ✅ |
+| Session archival | ✅ | ✅ | ✅ | ✅ |
+| Snapshot rows + `begin_effect` fallback | ✅ | ✅ | ✅ | ✅ |
+| `continue_as_new` atomic prune + state-carry | ✅ | ✅ | ✅ | ✅ |
+| `NOT EXISTS` pinning (verbatim across SDKs) | ✅ | ✅ | ✅ | ✅ |
+| Test count (chaos + compact + continue_as_new + snapshot) | ✅ 38 | ✅ 38 | ✅ 38 | ✅ 40 |
+
+The SQL pinning predicate is reproduced byte-for-byte across all four
+SDKs so the safety contract is *the same DELETE* on every backend.
+Cross-SDK SQLite-file compatibility extends to the snapshot table
+(`tape_effect_snapshots`) — a Python writer and a Go/TS/Java reader
+against the same file see the same short-circuit data.
+
+Reference commits on `claude/tape-inspector-6HE7j`:
+- Python (reference): `95ac335` chaos · `deaf050` compactor · `56b8951` continue_as_new · `def3097` snapshot
+- TS: `20823ff` (chaos/compact/can) · `2570b52` snapshot
+- Go: `39df32e` (chaos/compact/can) · `de813f5` snapshot
+- Java: `788641b` (chaos/compact/can) · `b31de54` snapshot
+
+---
+
 ### G7. CLI parity (deferred — see decision log)
 The Typer CLI (`tape init/dev/doctor/provision/deploy`) stays Python-only by
 design: it provisions cloud infrastructure and scaffolds projects, both
@@ -267,6 +323,7 @@ investment. The *agent process* can be in any of the four languages; the
 | **Cross-SDK parity harness (G3)** | none | `tape/tests/parity/` — `make sdk-parity` runs all four; CI `sdk-parity` job in `.github/workflows/sdk-tests.yml` |
 | **Java ADK adapter (G4)** | none | `dev.tape.adk.{TapePlugin,TapeSessionService,TapeAdkApp}` over `com.google.adk:google-adk:1.2.0` (provided scope) |
 | **Per-SDK README parity (G5)** | drifted | uniform 6-column reference table at the top of all four SDK READMEs |
+| **Compaction primitives (G8)** | none | All five (`compact_once`, snapshot, `continue_as_new`, session archival, NOT EXISTS pinning) shipped in all four embedded SDKs; SQL pinning predicate reproduced byte-for-byte |
 
 ---
 
