@@ -355,6 +355,23 @@ func (s *TapeSessionService) BeginEffect(ctx context.Context, o BeginEffectOpts)
 		return *existing, nil
 	}
 
+	// Snapshot fallback: the live row may have been pruned by the
+	// compactor. If we have a terminal-state snapshot for this key,
+	// synthesise the short-circuit EffectRecord from it so the caller
+	// sees the same idempotent behaviour they'd see with the row still
+	// present. No row is created here — the snapshot IS the durable
+	// record. The lookup is the SECOND check (live row first), so a
+	// disagreement between a still-present live row and a stale snapshot
+	// entry resolves in favour of the live row.
+	if rec, found, err := s.lookupSnapshotEntry(
+		ctx, o.AppName, o.UserID, o.SessionID, key,
+		o.ToolName, o.CallIndex, o.Semantics, o.DispatchMode,
+	); err != nil {
+		return EffectRecord{}, err
+	} else if found {
+		return rec, nil
+	}
+
 	now := nowMs()
 	q := s.rew(`INSERT INTO tape_effects (
   app_name, user_id, session_id, idempotency_key, invocation_id,

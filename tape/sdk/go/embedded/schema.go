@@ -219,5 +219,26 @@ func ddlStatements(o CreateAllOpts) []string {
   deleted %s NOT NULL DEFAULT 0,
   PRIMARY KEY (namespace, key)
 )`, jsonType, boolType),
+
+		// ── effect-ledger snapshot ────────────────────────────────────────
+		//
+		// One row per session. The cumulative JSON map captured here is the
+		// durable short-circuit that survives the compactor pruning the
+		// underlying `tape_effects` rows: `BeginEffect` reads the live row
+		// first, then falls back to this snapshot's map. Same column shape
+		// as `tape_adk.schemas.StorageEffectSnapshot` so a SQLite file
+		// written by one SDK is readable by another. No FK to
+		// `tape_effects` — the snapshot outlives the source rows by design.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS tape_effect_snapshots (
+  app_name VARCHAR(128) NOT NULL,
+  user_id VARCHAR(128) NOT NULL,
+  session_id VARCHAR(128) NOT NULL,
+  effects_json %s,
+  up_to_ts_ms BIGINT NOT NULL DEFAULT 0,
+  effects_count INTEGER NOT NULL DEFAULT 0,
+  created_at_ms BIGINT NOT NULL,
+  updated_at_ms BIGINT NOT NULL,
+  PRIMARY KEY (app_name, user_id, session_id)%s
+)`, jsonType, effectsFK),
 	}
 }
