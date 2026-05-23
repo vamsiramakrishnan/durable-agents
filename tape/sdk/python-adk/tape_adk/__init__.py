@@ -43,6 +43,7 @@ from .reactors import (
 from .decorators import effect, meta_of, outbox_tool
 from .plugin import AckLost, NonIdempotentSafetyPlugin
 from .compact import CompactionPolicy, CompactionResult, compact_once
+from .schemas import StorageEffectSnapshot
 from . import chaos
 
 __all__ = [
@@ -80,4 +81,6 @@ __all__ = [
     "CompactionPolicy",
     "CompactionResult",
     "compact_once",
+    # snapshot
+    "StorageEffectSnapshot",
 ]

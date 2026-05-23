@@ -30,7 +30,13 @@ from sqlalchemy.exc import IntegrityError
 
 from google.adk.sessions.database_session_service import DatabaseSessionService
 
-from .schemas import StorageEffect, StorageObligation, StorageTimer, StorageValue
+from .schemas import (
+    StorageEffect,
+    StorageEffectSnapshot,
+    StorageObligation,
+    StorageTimer,
+    StorageValue,
+)
 
 
 # A note about concurrent writes on SQLite + ADK's StaticPool:
@@ -314,6 +320,47 @@ class TapeSessionService(DatabaseSessionService):
                 ))).scalars().one_or_none()
             if existing is not None:
                 return EffectRecord.from_row(existing)
+
+            # Snapshot fallback: the live row may have been pruned by the
+            # compactor. If we have a terminal-state snapshot for this
+            # key, synthesise the short-circuit EffectRecord from it so
+            # the caller sees the same idempotent behaviour they'd see
+            # with the row still present. No row is created here — the
+            # snapshot IS the durable record.
+            snap = (await sql.execute(
+                select(StorageEffectSnapshot).where(
+                    StorageEffectSnapshot.app_name == app_name,
+                    StorageEffectSnapshot.user_id == user_id,
+                    StorageEffectSnapshot.session_id == session_id,
+                ))).scalars().one_or_none()
+            if snap is not None and snap.effects_json:
+                captured = snap.effects_json.get(key) if isinstance(
+                    snap.effects_json, dict) else None
+                if captured is not None:
+                    return EffectRecord(
+                        app_name=app_name, user_id=user_id,
+                        session_id=session_id, idempotency_key=key,
+                        invocation_id=captured.get("invocation_id", ""),
+                        decision_index=captured.get("decision_index", -1),
+                        tool_name=captured.get("tool_name", tool_name),
+                        call_index=captured.get("call_index", call_index),
+                        status=captured.get("status",
+                                            EffectStatus.CONFIRMED),
+                        semantics=captured.get("semantics", semantics),
+                        dispatch_mode=captured.get("dispatch_mode",
+                                                    dispatch_mode),
+                        business_key=captured.get("business_key"),
+                        connector=captured.get("connector"),
+                        external_ref=captured.get("external_ref"),
+                        dispatch_attempts=0, next_dispatch_at_ms=0,
+                        dispatch_claimed_by=None,
+                        dispatch_claim_expires_at_ms=0,
+                        last_dispatch_error=None,
+                        request_json=captured.get("request_json"),
+                        response_json=captured.get("response_json"),
+                        error_json=captured.get("error_json"),
+                        ts_ms=captured.get("ts_ms", 0),
+                    )
 
             now = _now_ms()
             row = StorageEffect(
@@ -929,6 +976,121 @@ class TapeSessionService(DatabaseSessionService):
             return existing
 
     # ── continue-as-new (mechanism #4 in the compaction roadmap) ────────
+
+    async def take_snapshot(
+        self,
+        *,
+        app_name: str, user_id: str, session_id: str,
+        up_to_ts_ms: int = 0,
+    ) -> dict:
+        """Capture terminal effects under this session into the per-session
+        snapshot row. Merges with the existing snapshot — re-calling this
+        is the cumulative way to keep the snapshot current as new effects
+        confirm.
+
+        After a snapshot, the compactor can safely prune the underlying
+        terminal effect rows: `begin_effect` falls back to the snapshot's
+        JSON map for the idempotency-key short-circuit, so re-dispatch is
+        prevented even when the source row is gone.
+
+        `up_to_ts_ms=0` (default) captures everything with a terminal
+        status. Pass an explicit watermark to bound the snapshot for
+        large sessions (the watermark goes into `up_to_ts_ms` on the row
+        so operators can see how fresh the snapshot is).
+
+        Returns `{captured: N, merged_total: M, up_to_ts_ms: T}`.
+        The snapshot row is read by `begin_effect` as a fallback when
+        the live effect row is gone — that's the *only* place the
+        snapshot is on the read path."""
+        await self._prepare_tables()
+        watermark = up_to_ts_ms or _now_ms()
+        async with self._write_lock(), \
+                self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+            # Read all terminal effects under this session up to the
+            # watermark. The set is bounded by the session's effect
+            # count — operators with very large sessions should pass a
+            # watermark to limit the read window.
+            q = select(StorageEffect).where(
+                StorageEffect.app_name == app_name,
+                StorageEffect.user_id == user_id,
+                StorageEffect.session_id == session_id,
+                StorageEffect.status.in_(
+                    (EffectStatus.CONFIRMED, EffectStatus.FAILED)),
+                StorageEffect.ts_ms <= watermark,
+            )
+            rows = (await sql.execute(q)).scalars().all()
+
+            # Map each effect to the minimum data the short-circuit needs.
+            # Keep the per-effect blob small — the snapshot row is one
+            # JSON column and we don't want it to balloon.
+            captured: dict[str, Any] = {}
+            for r in rows:
+                captured[r.idempotency_key] = {
+                    "status": r.status,
+                    "semantics": r.semantics,
+                    "dispatch_mode": r.dispatch_mode,
+                    "business_key": r.business_key,
+                    "connector": r.connector,
+                    "external_ref": r.external_ref,
+                    "request_json": r.request_json,
+                    "response_json": r.response_json,
+                    "error_json": r.error_json,
+                    "invocation_id": r.invocation_id,
+                    "decision_index": r.decision_index,
+                    "tool_name": r.tool_name,
+                    "call_index": r.call_index,
+                    "ts_ms": r.ts_ms,
+                }
+
+            now = _now_ms()
+            snap = (await sql.execute(
+                select(StorageEffectSnapshot).where(
+                    StorageEffectSnapshot.app_name == app_name,
+                    StorageEffectSnapshot.user_id == user_id,
+                    StorageEffectSnapshot.session_id == session_id,
+                ))).scalars().one_or_none()
+            if snap is None:
+                merged = dict(captured)
+                sql.add(StorageEffectSnapshot(
+                    app_name=app_name, user_id=user_id,
+                    session_id=session_id,
+                    effects_json=merged,
+                    up_to_ts_ms=watermark,
+                    effects_count=len(merged),
+                    created_at_ms=now, updated_at_ms=now,
+                ))
+            else:
+                # Set-union, last-write-wins: a later snapshot that has
+                # a different status for the same key (e.g. UNKNOWN that
+                # the reconciler later flipped to CONFIRMED) overwrites.
+                merged = dict(snap.effects_json or {})
+                merged.update(captured)
+                snap.effects_json = merged
+                snap.up_to_ts_ms = max(snap.up_to_ts_ms or 0, watermark)
+                snap.effects_count = len(merged)
+                snap.updated_at_ms = now
+
+            await sql.commit()
+            return {
+                "captured": len(captured),
+                "merged_total": len(merged),
+                "up_to_ts_ms": watermark,
+            }
+
+    async def get_snapshot(
+        self, *, app_name: str, user_id: str, session_id: str,
+    ) -> Optional["StorageEffectSnapshot"]:
+        """Read the snapshot row for inspection / debugging. Returns the
+        full ORM row (with `.effects_json` already a dict). `None` if no
+        snapshot has been taken for this session."""
+        await self._prepare_tables()
+        async with self._rollback_on_exception_session() as sql:  # type: ignore[attr-defined]
+            return (await sql.execute(
+                select(StorageEffectSnapshot).where(
+                    StorageEffectSnapshot.app_name == app_name,
+                    StorageEffectSnapshot.user_id == user_id,
+                    StorageEffectSnapshot.session_id == session_id,
+                ))).scalars().one_or_none()
 
     async def continue_as_new(
         self,

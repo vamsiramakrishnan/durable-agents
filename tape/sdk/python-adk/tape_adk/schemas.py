@@ -264,6 +264,85 @@ class StorageTimer(Base):
     )
 
 
+# ── effect-ledger snapshot (the "compactable, replayable short-circuit") ───
+
+
+class StorageEffectSnapshot(Base):
+    """One row per session: a cumulative JSON map of terminal-effect
+    short-circuit data keyed by idempotency_key.
+
+    Why this exists: the compactor prunes terminal effect rows past the TTL
+    so the journal doesn't grow without bound. But the idempotency-key
+    short-circuit in `begin_effect` reads `tape_effects` — once pruned,
+    `begin_effect` would create a fresh PENDING row for the same key and
+    re-dispatch the work. Double-spend.
+
+    The snapshot solves that by holding the *minimum data the short-circuit
+    needs* (status + response + the cross-run dedup fields) in one row.
+    `begin_effect` reads the live row first and falls back to the snapshot
+    when the live row is gone. The compactor is then free to delete the
+    underlying rows that were captured.
+
+    Shape choices:
+
+    * **One row per session, cumulative.** `take_snapshot` MERGES the latest
+      terminal effects into the existing JSON map. This keeps the schema
+      simple — `begin_effect` only ever reads one row per session — at the
+      cost of unbounded blob growth. Operators who don't want the blob to
+      grow should also run `continue_as_new` periodically (which zeros the
+      slate for a new invocation_id) or accept that the snapshot is the
+      durable record they're trading row count for.
+
+    * **Snapshot data is read-only.** No CAS, no version column. Two
+      concurrent `take_snapshot` calls just both succeed; the result is a
+      strict superset of either alone (the merge is set union on
+      idempotency_key, last-write-wins on duplicates).
+
+    * **No FK to `tape_effects`.** Snapshot data outlives the source rows
+      by design.
+    """
+
+    __tablename__ = "tape_effect_snapshots"
+
+    app_name: Mapped[str] = mapped_column(
+        String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+    )
+
+    # `{idempotency_key: {status, response_json, error_json, semantics,
+    #                     business_key, connector, external_ref, ts_ms}}`.
+    # Schema is open — keep it minimal so the blob doesn't bloat.
+    effects_json: Mapped[Optional[Any]] = mapped_column(
+        DynamicJSON, nullable=True
+    )
+
+    # Watermark: max ts_ms of any effect captured by this snapshot. A
+    # subsequent `take_snapshot(up_to_ts_ms=…)` uses this to know where to
+    # start from (terminal effects in [up_to_ts_ms, now] are the delta).
+    up_to_ts_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+
+    # Number of distinct idempotency_keys in the JSON blob — for the
+    # audit-log / sanity-check path so we don't have to deserialise the
+    # blob to size it.
+    effects_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at_ms: Mapped[int] = mapped_column(BigInteger)
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["app_name", "user_id", "session_id"],
+            ["sessions.app_name", "sessions.user_id", "sessions.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
 # ── reactive KV (the "coordinate through state" surface) ────────────────────
 
 
@@ -293,6 +372,7 @@ class StorageValue(Base):
 __all__ = [
     "Base",
     "StorageEffect",
+    "StorageEffectSnapshot",
     "StorageObligation",
     "StorageTimer",
     "StorageValue",
