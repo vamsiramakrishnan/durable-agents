@@ -205,6 +205,26 @@ class TapeClient:
     def list_runs_to_recover(self, *, limit=100, now_ms=0):
         return self.stub.ListRunsToRecover(pb.ListRunsToRecoverRequest(limit=limit, now_ms=now_ms))
 
+    # ── compaction (PR 13) ──────────────────────────────────────────────
+    #
+    # Tape's compactor reactor walks runs in TERMINAL/FAILED/STUCK/CANCELLED
+    # status whose `ended_at_ms` is older than `before_ms`, then calls
+    # `compact_run` per row. The compactor zeroes the bulky
+    # `request_json` / `response_json` payloads on decisions and effects
+    # while keeping the audit envelope (kind, seq, tool_name,
+    # idempotency_key, business_key, scope, status).
+    #
+    # AIPlex's retention policy (RuntimeConfig.retention.compact_after_days)
+    # drives the cutoff; the Tape SDK reactor + `aiplex runs compact`
+    # CLI both call these RPCs.
+
+    def list_compactable_runs(self, *, before_ms=0, limit=100):
+        return self.stub.ListCompactableRuns(
+            pb.ListCompactableRunsRequest(before_ms=before_ms, limit=limit))
+
+    def compact_run(self, run_id):
+        return self.stub.CompactRun(pb.CompactRunRequest(run_id=run_id))
+
     def subscribe_run(self, *, run_id, from_seq=0, timeout=None):
         """Stream this run's journal from `from_seq` onward. Pass `timeout=` to
         bound the call (the iterator will surface DEADLINE_EXCEEDED when the

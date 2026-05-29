@@ -76,6 +76,16 @@ service Tape {
   rpc CancelTimer     (CancelTimerRequest)     returns (CancelTimerResponse);
   rpc ListDueTimers   (ListDueTimersRequest)   returns (ListDueTimersResponse);    // claim=true => atomically mark fired
 
+  // ── compaction (PR 13) ───────────────────────────────────────────────────
+  // The compactor reactor zeroes payload bodies on settled runs older
+  // than the configured retention window, preserving the audit envelope
+  // (kind / seq / tool / scope / business_key / status). AIPlex's
+  // retention policy (RuntimeConfig.retention.compact_after_days) drives
+  // the cutoff; the Tape SDK reactor + tape-server admin clients
+  // (`aiplex runs compact <id>`) both call these.
+  rpc ListCompactableRuns (ListCompactableRunsRequest) returns (ListCompactableRunsResponse);
+  rpc CompactRun          (CompactRunRequest)          returns (CompactRunResponse);
+
   // ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
   // The legacy cross-run journal stream; preserved for back-compat.
   // `SubscribeEventsRequest` now also accepts `from_global_seq` and
@@ -663,6 +673,26 @@ message ListDueTimersRequest {
   bool   claim = 3;               // true => atomically mark the returned timers fired (so a peer reactor won't re-fire them)
 }
 message ListDueTimersResponse { repeated TimerRecord timers = 1; }
+
+// ── compaction (PR 13) ─────────────────────────────────────────────────────
+
+message ListCompactableRunsRequest {
+  int64 before_ms = 1;   // ended_at_ms < before_ms; 0 = no cutoff (test only)
+  int64 limit     = 2;   // 0 => server default (100)
+}
+message ListCompactableRunsResponse {
+  repeated RunState runs = 1;
+}
+
+message CompactRunRequest {
+  string run_id = 1;
+}
+message CompactRunResponse {
+  int64 decisions_zeroed = 1;
+  int64 effects_zeroed   = 2;
+  int64 bytes_saved      = 3;
+  bool  already_compacted = 4;  // true => no-op (a previous compaction already ran)
+}
 
 // ── the WAL → reactors feed ─────────────────────────────────────────────────
 

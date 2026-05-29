@@ -63,6 +63,19 @@ impl StoreError {
     }
 }
 
+/// CompactReport summarises what `compact_run` rewrote. Surfaced to
+/// the compactor reactor and observable in metrics: bytes saved,
+/// decision/effect/run rows touched. A zero-op compaction (already
+/// compacted, or no payloads to zero) returns counters of 0 with no
+/// error.
+#[derive(Debug, Default, Clone)]
+pub struct CompactReport {
+    pub decisions_zeroed: i64,
+    pub effects_zeroed: i64,
+    pub bytes_saved: i64,
+    pub already_compacted: bool,
+}
+
 /// Identity & authorization context attached to a run. Populated from
 /// `BeginRunRequest`'s identity fields and persisted on `tape_runs`. Empty
 /// strings / arrays / objects are valid (a non-AIPlex caller may pass
@@ -97,6 +110,26 @@ pub trait RunStore: Send + Sync {
     async fn get_run(&self, run_id: &str) -> StoreResult<Option<RunState>>;
     async fn list_runs_to_recover(&self, now_ms: i64, limit: i64) -> StoreResult<Vec<RunState>>;
     async fn journal_range(&self, run_id: &str, from_seq: i64) -> StoreResult<Vec<JournalEntry>>;
+
+    // ── compaction (PR 13) ─────────────────────────────────────────────────
+    //
+    // Two operations on different timescales:
+    //
+    //   list_compactable_runs returns terminal+settled runs older than
+    //     `before_ms`, capped at `limit`. The compactor reactor walks
+    //     these in batches.
+    //
+    //   compact_run zeroes the bulky JSON payloads on decisions/effects
+    //     (and the run-row's detail_json) while preserving the envelope
+    //     columns the audit trail needs. Records ts in `compacted_at_ms`
+    //     and emits a `run.compacted` journal entry so downstream sinks
+    //     (AIPlex audit ingestion) can mirror the state change.
+    //
+    // "Settled" = TERMINAL/FAILED/STUCK/CANCELLED with no open
+    // obligations and no UNKNOWN effects (the compactor verifies this
+    // per run before zeroing; the SQL filter is a coarse first cut).
+    async fn list_compactable_runs(&self, before_ms: i64, limit: i64) -> StoreResult<Vec<RunState>>;
+    async fn compact_run(&self, run_id: &str, now_ms: i64) -> StoreResult<CompactReport>;
 
     // ── decision ledger ─────────────────────────────────────────────────────
     async fn record_decision(&self, run_id: &str, decision_index: i64, model: &str,

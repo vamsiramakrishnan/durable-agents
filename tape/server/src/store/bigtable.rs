@@ -104,7 +104,7 @@ use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::{
     RowFilter, RowRange, RowSet,
 };
 
-use super::{derive_key, merge_json, now_ms, RunIdentity, RunStore, StoreError, StoreResult};
+use super::{derive_key, merge_json, now_ms, CompactReport, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::subjects;
 
@@ -765,6 +765,27 @@ impl RunStore for BigtableRunStore {
         }).collect();
         out.sort_by_key(|j| j.seq);
         Ok(out)
+    }
+
+    // ── compaction (PR 13) ─────────────────────────────────────────────────
+    //
+    // The Bigtable backend doesn't yet support compaction natively;
+    // the row-key layout (e#<key>, d#<run>#<idx>) makes ranged updates
+    // expensive without a per-run secondary index. Tracked as the
+    // backend's first follow-up — the wire contract + the SQL impl
+    // give the Helm-deployed Postgres/AlloyDB path everything needed.
+    //
+    // Returns Err so the compactor reactor logs + skips Bigtable
+    // backends cleanly instead of pretending to compact.
+    async fn list_compactable_runs(&self, _before_ms: i64, _limit: i64) -> StoreResult<Vec<RunState>> {
+        Err(StoreError::msg(
+            "Bigtable backend: compaction not implemented (use Postgres/AlloyDB \
+             for the Helm-deployed scale tier; Bigtable compaction tracked as the \
+             backend's next follow-up)"))
+    }
+
+    async fn compact_run(&self, _run_id: &str, _ts_ms: i64) -> StoreResult<CompactReport> {
+        Err(StoreError::msg("Bigtable backend: compaction not implemented"))
     }
 
     // ── decisions ───────────────────────────────────────────────────────────

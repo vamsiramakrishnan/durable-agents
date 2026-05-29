@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS tape_runs (
   gateway_route       TEXT NOT NULL DEFAULT '',
   scopes_json         TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
   labels_json         TEXT NOT NULL DEFAULT '{}',  -- JSON-encoded map<string,string>
+  -- Compaction (PR 13). NULL until the compactor reactor zeroes the
+  -- decision/effect payloads on this run. The envelope (seq/kind/
+  -- tool_name/idempotency_key/business_key/scope) and the projected
+  -- RunState are preserved — only the LLM-context-bearing JSON blobs
+  -- are dropped. Compacted runs are still queryable + auditable;
+  -- they just can't be replayed step-by-step.
+  compacted_at_ms     INTEGER NOT NULL DEFAULT 0,
   UNIQUE(app_name, user_id, session_id, invocation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_recover ON tape_runs(status, lease_expires_at_ms);
@@ -40,6 +47,10 @@ CREATE INDEX IF NOT EXISTS idx_runs_tenant ON tape_runs(tenant_id, agent_id, sta
 -- Operator queries: who acted, or which subject did this work for.
 CREATE INDEX IF NOT EXISTS idx_runs_actor   ON tape_runs(actor, started_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runs_subject ON tape_runs(subject, started_at_ms);
+-- Compactor's hot query: terminal+settled runs whose ended_at_ms is
+-- older than the (hot_window) cutoff and compacted_at_ms is still 0.
+CREATE INDEX IF NOT EXISTS idx_runs_compactable
+  ON tape_runs(status, compacted_at_ms, ended_at_ms);
 
 -- The journal: one row per durable step, in (run_id, seq) order. The decision,
 -- effect, and obligation projections below carry the typed detail; this table

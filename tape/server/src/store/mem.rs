@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use super::{RunIdentity, RunStore, StoreError, StoreResult};
+use super::{CompactReport, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::store::now_ms;
 
@@ -232,6 +232,77 @@ impl RunStore for MemRunStore {
             .map(|v| v.iter().filter(|e| e.seq >= from_seq).cloned().collect())
             .unwrap_or_default();
         Ok(entries)
+    }
+
+    // ── compaction (PR 13) — sim store impl ────────────────────────────────
+    //
+    // MemRunStore is a sim/test backend; compaction here zeroes payloads
+    // on decisions + effects in-place. Settlement check is identical to
+    // the SQL impl (no open obligations, no UNKNOWN effects).
+    async fn list_compactable_runs(&self, before_ms: i64, limit: i64) -> StoreResult<Vec<RunState>> {
+        let g = self.inner.lock().unwrap();
+        let mut out = Vec::new();
+        for r in g.runs.values() {
+            let settled = matches!(
+                RunStatus::try_from(r.status).unwrap_or(RunStatus::Unspecified),
+                RunStatus::Terminal | RunStatus::Failed
+                    | RunStatus::Cancelled | RunStatus::Stuck);
+            if !settled || r.ended_at_ms == 0 || r.ended_at_ms >= before_ms {
+                continue;
+            }
+            out.push(r.clone());
+            if limit > 0 && (out.len() as i64) >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn compact_run(&self, run_id: &str, _ts_ms: i64) -> StoreResult<CompactReport> {
+        let mut g = self.inner.lock().unwrap();
+        // Settlement check
+        let unknown = g.effects.values()
+            .filter(|e| e.run_id == run_id && e.status == EffectStatus::Unknown as i32)
+            .count();
+        if unknown > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {unknown} UNKNOWN effect(s); not settled")));
+        }
+        let open_oblig = g.obligations.values()
+            .filter(|o| o.run_id == run_id && matches!(
+                ObligationStatus::try_from(o.status).unwrap_or(ObligationStatus::Unspecified),
+                ObligationStatus::Pending | ObligationStatus::Committed))
+            .count();
+        if open_oblig > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {open_oblig} open obligation(s); not settled")));
+        }
+
+        let mut bytes_saved = 0i64;
+        let mut decisions_zeroed = 0i64;
+        for d in g.decisions.values_mut() {
+            if d.run_id == run_id && (!d.request_json.is_empty() || !d.response_json.is_empty()) {
+                bytes_saved += (d.request_json.len() + d.response_json.len() + d.rationale.len()) as i64;
+                d.request_json = String::new();
+                d.response_json = String::new();
+                d.rationale = String::new();
+                decisions_zeroed += 1;
+            }
+        }
+        let mut effects_zeroed = 0i64;
+        for e in g.effects.values_mut() {
+            if e.run_id == run_id && (!e.request_json.is_empty()
+                || !e.response_json.is_empty() || !e.error_json.is_empty()) {
+                bytes_saved += (e.request_json.len() + e.response_json.len() + e.error_json.len()) as i64;
+                e.request_json = String::new();
+                e.response_json = String::new();
+                e.error_json = String::new();
+                effects_zeroed += 1;
+            }
+        }
+        Ok(CompactReport {
+            decisions_zeroed, effects_zeroed, bytes_saved, already_compacted: false,
+        })
     }
 
     // ── decision ledger ─────────────────────────────────────────────────────

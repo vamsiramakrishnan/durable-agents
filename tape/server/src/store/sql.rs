@@ -25,7 +25,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::ToSql as SqliteToSql;
 
-use super::{derive_key, merge_json, now_ms, RunIdentity, RunStore, StoreError, StoreResult};
+use super::{derive_key, merge_json, now_ms, CompactReport, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::subjects;
 
@@ -601,6 +601,122 @@ impl RunStore for SqlRunStore {
             global_seq: r.i64(4), subject: r.str(5), schema_version: r.i32(6),
             trace_id: r.str(7), span_id: r.str(8), parent_span_id: r.str(9),
         }).collect())
+    }
+
+    // ── compaction (PR 13) ─────────────────────────────────────────────────
+
+    async fn list_compactable_runs(&self, before_ms: i64, limit: i64) -> StoreResult<Vec<RunState>> {
+        // Coarse filter: terminal-ish status, never compacted, ended
+        // before the cutoff. The reactor verifies "settled" (no open
+        // obligations, no UNKNOWN effects) per row before invoking
+        // compact_run on it.
+        let lim = if limit > 0 { limit } else { 100 };
+        let sql = format!(
+            "SELECT {RUN_COLS} FROM tape_runs \
+             WHERE status IN (?1, ?2, ?3, ?4) \
+               AND compacted_at_ms = 0 \
+               AND ended_at_ms > 0 AND ended_at_ms < ?5 \
+             ORDER BY ended_at_ms ASC LIMIT ?6"
+        );
+        let rows = self.d().query(&sql, vec![
+            (RunStatus::Terminal as i32).into(),
+            (RunStatus::Failed as i32).into(),
+            (RunStatus::Cancelled as i32).into(),
+            (RunStatus::Stuck as i32).into(),
+            before_ms.into(),
+            lim.into(),
+        ]).await?;
+        Ok(rows.iter().map(run_of).collect())
+    }
+
+    async fn compact_run(&self, run_id: &str, ts_ms: i64) -> StoreResult<CompactReport> {
+        // Idempotent: a second compaction of the same run is a no-op
+        // that returns the pre-existing compacted_at_ms (already_compacted
+        // = true). The reactor doesn't need to track which runs it's
+        // touched.
+        if let Some(row) = self.d().query_opt(
+            "SELECT compacted_at_ms FROM tape_runs WHERE run_id = ?1",
+            vec![run_id.into()]).await? {
+            if row.i64(0) > 0 {
+                return Ok(CompactReport { already_compacted: true, ..Default::default() });
+            }
+        } else {
+            return Err(StoreError::msg(format!("compact_run: run_id {run_id} not found")));
+        }
+
+        // Settlement check: bail out if there are unresolved obligations
+        // or UNKNOWN effects. Belt-and-braces against a misconfigured
+        // cutoff that lets a run slip through list_compactable_runs.
+        let open_obligations = self.d().query_opt(
+            "SELECT COUNT(*) FROM tape_obligations WHERE run_id=?1 AND status IN (?2, ?3)",
+            vec![
+                run_id.into(),
+                (ObligationStatus::Pending as i32).into(),
+                (ObligationStatus::Committed as i32).into(),
+            ]).await?.map(|r| r.i64(0)).unwrap_or(0);
+        if open_obligations > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {open_obligations} open obligation(s); not settled")));
+        }
+        let unknown_effects = self.d().query_opt(
+            "SELECT COUNT(*) FROM tape_effects WHERE run_id=?1 AND status=?2",
+            vec![run_id.into(), (EffectStatus::Unknown as i32).into()]).await?
+                .map(|r| r.i64(0)).unwrap_or(0);
+        if unknown_effects > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {unknown_effects} UNKNOWN effect(s); not settled")));
+        }
+
+        // Sum the bytes-saved for telemetry BEFORE zeroing.
+        let bytes_saved = self.d().query_opt(
+            "SELECT \
+                COALESCE(SUM(LENGTH(request_json) + LENGTH(response_json)), 0) \
+             FROM tape_decisions WHERE run_id=?1",
+            vec![run_id.into()]).await?.map(|r| r.i64(0)).unwrap_or(0) +
+            self.d().query_opt(
+            "SELECT \
+                COALESCE(SUM(LENGTH(request_json) + LENGTH(response_json) + LENGTH(error_json)), 0) \
+             FROM tape_effects WHERE run_id=?1",
+            vec![run_id.into()]).await?.map(|r| r.i64(0)).unwrap_or(0);
+
+        // Zero decision payloads — keep ts_ms / model / decision_index
+        // / policy_version (audit envelope), drop request_json /
+        // response_json / rationale (the LLM bodies).
+        let dec_n = self.d().exec(
+            "UPDATE tape_decisions SET request_json='', response_json='', rationale='' \
+             WHERE run_id=?1 AND (request_json != '' OR response_json != '' OR rationale != '')",
+            vec![run_id.into()]).await?;
+
+        // Zero effect payloads — keep tool_name / idempotency_key /
+        // business_key / connector / scope / status (audit envelope),
+        // drop request_json / response_json / error_json.
+        let eff_n = self.d().exec(
+            "UPDATE tape_effects SET request_json='', response_json='', error_json='' \
+             WHERE run_id=?1 AND (request_json != '' OR response_json != '' OR error_json != '')",
+            vec![run_id.into()]).await?;
+
+        // Stamp the run + emit a `run.compacted` journal entry. The
+        // entry rides the existing outbox / event-bus path so AIPlex
+        // sees the state change in its run timeline.
+        self.d().exec(
+            "UPDATE tape_runs SET compacted_at_ms=?2 WHERE run_id=?1",
+            vec![run_id.into(), ts_ms.into()]).await?;
+        let seq = self.next_seq(run_id).await.unwrap_or(0);
+        let payload = serde_json::json!({
+            "run_id": run_id,
+            "compacted_at_ms": ts_ms,
+            "decisions_zeroed": dec_n,
+            "effects_zeroed": eff_n,
+            "bytes_saved": bytes_saved,
+        }).to_string();
+        let _ = self.journal(run_id, seq, "run", &payload, ts_ms).await;
+
+        Ok(CompactReport {
+            decisions_zeroed: dec_n as i64,
+            effects_zeroed: eff_n as i64,
+            bytes_saved,
+            already_compacted: false,
+        })
     }
 
     // ── decisions ───────────────────────────────────────────────────────────

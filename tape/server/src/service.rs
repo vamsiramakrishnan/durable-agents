@@ -377,6 +377,28 @@ impl Tape for TapeService {
         Ok(Response::new(ListDueTimersResponse { timers }))
     }
 
+    // ── compaction (PR 13) ──────────────────────────────────────────────────
+    async fn list_compactable_runs(&self, req: Request<ListCompactableRunsRequest>)
+        -> Result<Response<ListCompactableRunsResponse>, Status> {
+        let r = req.into_inner();
+        let before = if r.before_ms > 0 { r.before_ms } else { now_ms() };
+        let limit  = if r.limit > 0 { r.limit } else { 100 };
+        let runs = self.store.list_compactable_runs(before, limit).await.map_err(db)?;
+        Ok(Response::new(ListCompactableRunsResponse { runs }))
+    }
+
+    async fn compact_run(&self, req: Request<CompactRunRequest>)
+        -> Result<Response<CompactRunResponse>, Status> {
+        let r = req.into_inner();
+        let report = self.store.compact_run(&r.run_id, now_ms()).await.map_err(db)?;
+        Ok(Response::new(CompactRunResponse {
+            decisions_zeroed:  report.decisions_zeroed,
+            effects_zeroed:    report.effects_zeroed,
+            bytes_saved:       report.bytes_saved,
+            already_compacted: report.already_compacted,
+        }))
+    }
+
     // ── reactive key-value store ────────────────────────────────────────────
     async fn write_value(&self, req: Request<WriteValueRequest>) -> Result<Response<ValueRecord>, Status> {
         let r = req.into_inner();

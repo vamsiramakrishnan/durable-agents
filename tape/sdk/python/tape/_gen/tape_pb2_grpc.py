@@ -189,6 +189,16 @@ class TapeStub(object):
                 request_serializer=tape__pb2.ListDueTimersRequest.SerializeToString,
                 response_deserializer=tape__pb2.ListDueTimersResponse.FromString,
                 _registered_method=True)
+        self.ListCompactableRuns = channel.unary_unary(
+                '/tape.v1.Tape/ListCompactableRuns',
+                request_serializer=tape__pb2.ListCompactableRunsRequest.SerializeToString,
+                response_deserializer=tape__pb2.ListCompactableRunsResponse.FromString,
+                _registered_method=True)
+        self.CompactRun = channel.unary_unary(
+                '/tape.v1.Tape/CompactRun',
+                request_serializer=tape__pb2.CompactRunRequest.SerializeToString,
+                response_deserializer=tape__pb2.CompactRunResponse.FromString,
+                _registered_method=True)
         self.SubscribeEvents = channel.unary_stream(
                 '/tape.v1.Tape/SubscribeEvents',
                 request_serializer=tape__pb2.SubscribeEventsRequest.SerializeToString,
@@ -499,6 +509,25 @@ class TapeServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListCompactableRuns(self, request, context):
+        """── compaction (PR 13) ───────────────────────────────────────────────────
+        The compactor reactor zeroes payload bodies on settled runs older
+        than the configured retention window, preserving the audit envelope
+        (kind / seq / tool / scope / business_key / status). AIPlex's
+        retention policy (RuntimeConfig.retention.compact_after_days) drives
+        the cutoff; the Tape SDK reactor + tape-server admin clients
+        (`aiplex runs compact <id>`) both call these.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CompactRun(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def SubscribeEvents(self, request, context):
         """── the WAL → reactors feed (cross-run journal tail) ──────────────────────
         The legacy cross-run journal stream; preserved for back-compat.
@@ -781,6 +810,16 @@ def add_TapeServicer_to_server(servicer, server):
                     servicer.ListDueTimers,
                     request_deserializer=tape__pb2.ListDueTimersRequest.FromString,
                     response_serializer=tape__pb2.ListDueTimersResponse.SerializeToString,
+            ),
+            'ListCompactableRuns': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListCompactableRuns,
+                    request_deserializer=tape__pb2.ListCompactableRunsRequest.FromString,
+                    response_serializer=tape__pb2.ListCompactableRunsResponse.SerializeToString,
+            ),
+            'CompactRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.CompactRun,
+                    request_deserializer=tape__pb2.CompactRunRequest.FromString,
+                    response_serializer=tape__pb2.CompactRunResponse.SerializeToString,
             ),
             'SubscribeEvents': grpc.unary_stream_rpc_method_handler(
                     servicer.SubscribeEvents,
@@ -1710,6 +1749,60 @@ class Tape(object):
             '/tape.v1.Tape/ListDueTimers',
             tape__pb2.ListDueTimersRequest.SerializeToString,
             tape__pb2.ListDueTimersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListCompactableRuns(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/ListCompactableRuns',
+            tape__pb2.ListCompactableRunsRequest.SerializeToString,
+            tape__pb2.ListCompactableRunsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CompactRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tape.v1.Tape/CompactRun',
+            tape__pb2.CompactRunRequest.SerializeToString,
+            tape__pb2.CompactRunResponse.FromString,
             options,
             channel_credentials,
             insecure,
