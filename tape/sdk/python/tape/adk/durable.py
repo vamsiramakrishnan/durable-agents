@@ -50,6 +50,7 @@ def durable_app(
     resumable: bool = True,
     check_cancellation: bool = True,
     identity: Optional[RunIdentity] = None,
+    require_identity: Optional[bool] = None,
     app_kwargs: Optional[dict] = None,
     runner_kwargs: Optional[dict] = None,
 ) -> Tuple[Any, Any]:
@@ -67,6 +68,13 @@ def durable_app(
       "for free" from the `AIPLEX_*` env vars without the user code having to
       know about them. Pass `identity=RunIdentity()` (empty) to opt out
       explicitly.
+
+      ``require_identity`` (default: read from `AIPLEX_REQUIRE_IDENTITY=1`)
+      makes the constructor refuse to build the app when the identity is
+      missing the AIPlex audit-anchor fields (tenant_id / actor / agent_id).
+      AIPlex's deploy engine sets this env var on every Tape-backed pod —
+      so a typo in the AIPLEX_* env vars crashes the pod loudly at boot
+      instead of writing headless runs the compactor will retain forever.
     """
     from google.adk.apps import App
     from google.adk.apps.app import ResumabilityConfig
@@ -74,7 +82,14 @@ def durable_app(
 
     url = _resolve_url(tape_url)
     if identity is None:
-        identity = RunIdentity.from_env()
+        identity = RunIdentity.from_env(strict=require_identity)
+    elif require_identity is True or (
+        require_identity is None and os.environ.get("AIPLEX_REQUIRE_IDENTITY") == "1"
+    ):
+        # Caller passed an explicit identity AND strict mode is on —
+        # still validate so a hand-rolled `RunIdentity(tenant_id="")`
+        # doesn't slip past the check.
+        identity.validate()
 
     plugins = []
     if app_kwargs and app_kwargs.get("plugins"):

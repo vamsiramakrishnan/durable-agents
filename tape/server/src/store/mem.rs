@@ -285,6 +285,13 @@ impl RunStore for MemRunStore {
             return Err(StoreError::msg(
                 "begin_effect: NON_IDEMPOTENT effects must use OUTBOX dispatch"));
         }
+        // PR 12 item B: non_idempotent + empty scope is refused on the
+        // wire, not just at SDK decoration time (matches SQL store).
+        if semantics == EffectSemantics::NonIdempotent as i32 && scope.is_empty() {
+            return Err(StoreError::denied(
+                "<required>",
+                "non_idempotent effects must declare an authorization scope on the wire"));
+        }
         // Authorization check (defence-in-depth). Mirrors the SQL store: empty
         // scope skips, non-empty scope must appear in the run's grants.
         if !scope.is_empty() {

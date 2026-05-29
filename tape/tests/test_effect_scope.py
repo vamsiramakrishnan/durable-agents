@@ -125,6 +125,46 @@ def test_server_skips_check_for_unscoped_effect(server_url):
         assert e.status == client_mod.EFFECT_STATUS_PENDING
 
 
+def test_server_refuses_non_idempotent_with_empty_scope(server_url):
+    """PR 12 item B: a custom client that bypasses the SDK's
+    decoration-time check (i.e. sends BeginEffectRequest directly with
+    semantics=NON_IDEMPOTENT, scope="") must still be denied by the
+    server. Defence-in-depth: the audit trail's `scope` column can't
+    end up empty for a side-effecting call."""
+    with client_mod.TapeClient(server_url) as c:
+        run_id = _make_run(c, scopes=["mcp:tools:bank_wire"])
+        # Bypass the @tape.effect decorator entirely — drive the wire.
+        with pytest.raises(grpc.RpcError) as ei:
+            c.begin_effect(
+                run_id=run_id, decision_index=0,
+                tool_name="bank_wire", call_index=0,
+                semantics=client_mod.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                dispatch_mode=client_mod.EFFECT_DISPATCH_MODE_OUTBOX,
+                connector="bank.wire",
+                business_key="bypass-attempt-1",
+                # No scope= here — that's the bug we're proving the
+                # server refuses to admit.
+            )
+        assert ei.value.code() == grpc.StatusCode.PERMISSION_DENIED
+        assert "scope" in ei.value.details().lower()
+
+
+def test_server_admits_non_idempotent_with_scope(server_url):
+    """Sanity check: with a real scope, the same call admits."""
+    with client_mod.TapeClient(server_url) as c:
+        run_id = _make_run(c, scopes=["mcp:tools:bank_wire"])
+        e = c.begin_effect(
+            run_id=run_id, decision_index=0,
+            tool_name="bank_wire", call_index=0,
+            semantics=client_mod.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+            dispatch_mode=client_mod.EFFECT_DISPATCH_MODE_OUTBOX,
+            connector="bank.wire",
+            business_key="legitimate-1",
+            scope="mcp:tools:bank_wire",
+        )
+        assert e.status == client_mod.EFFECT_STATUS_PENDING
+
+
 def test_denial_appends_policy_journal_entry(server_url):
     """A denial must leave an auditable record on the journal so AIPlex's
     run-timeline / audit ingestion can see what was attempted. Reads the

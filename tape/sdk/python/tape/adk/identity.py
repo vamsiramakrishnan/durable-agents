@@ -49,8 +49,16 @@ class RunIdentity:
     scopes: List[str] = field(default_factory=list)
     labels: Dict[str, str] = field(default_factory=dict)
 
+    # Fields the strict-mode validator requires non-empty for an
+    # AIPlex-managed deployment. The Tape SDK uses this list both at
+    # `from_env(strict=True)` and `validate()`. Subjects and labels are
+    # advisory; tenant/actor/agent_id are the audit-trail anchors and
+    # the compactor's retained columns — they must be present.
+    REQUIRED_FOR_AIPLEX: tuple = ("tenant_id", "actor", "agent_id")
+
     @classmethod
-    def from_env(cls, env: Optional[Dict[str, str]] = None) -> "RunIdentity":
+    def from_env(cls, env: Optional[Dict[str, str]] = None,
+                 *, strict: Optional[bool] = None) -> "RunIdentity":
         """Read identity from `AIPLEX_*` env vars.
 
         Returns a `RunIdentity` populated from:
@@ -63,24 +71,51 @@ class RunIdentity:
           AIPLEX_SCOPES           → scopes (comma- or whitespace-separated)
           AIPLEX_LABELS           → labels (comma-separated k=v pairs)
 
-        Missing vars become empty strings / empty lists. The result is always a
-        valid `RunIdentity`; pre-flight strictness (require non-empty
-        tenant_id/actor/agent_id) is a deploy-time concern that AIPlex applies
-        via a server-side `TAPE_REQUIRE_IDENTITY` flag — not the SDK's job.
+        Missing vars become empty strings / empty lists. The result is
+        always a valid `RunIdentity` unless ``strict`` is True, in which
+        case any field in `REQUIRED_FOR_AIPLEX` that's empty raises
+        `MissingIdentity` — locking the contract at process start
+        instead of letting headless runs slip into the audit trail.
+
+        ``strict`` defaults to True when the env var ``AIPLEX_REQUIRE_IDENTITY=1``
+        is set (the production posture AIPlex's deploy engine injects
+        in PR 11 item 11 / G8). Otherwise defaults to False.
         """
         e = env if env is not None else os.environ
-        scopes = _parse_scopes(e.get("AIPLEX_SCOPES", ""))
-        labels = _parse_labels(e.get("AIPLEX_LABELS", ""))
-        return cls(
+        if strict is None:
+            strict = e.get("AIPLEX_REQUIRE_IDENTITY", "") == "1"
+        ident = cls(
             tenant_id=e.get("AIPLEX_TENANT_ID", ""),
             actor=e.get("AIPLEX_ACTOR", ""),
             subject=e.get("AIPLEX_SUBJECT", ""),
             agent_id=e.get("AIPLEX_AGENT_ID", ""),
             aiplex_instance_id=e.get("AIPLEX_INSTANCE_ID", ""),
             gateway_route=e.get("AIPLEX_ROUTE", ""),
-            scopes=scopes,
-            labels=labels,
+            scopes=_parse_scopes(e.get("AIPLEX_SCOPES", "")),
+            labels=_parse_labels(e.get("AIPLEX_LABELS", "")),
         )
+        if strict:
+            ident.validate(cls.REQUIRED_FOR_AIPLEX)
+        return ident
+
+    def validate(self, required: tuple = ()) -> None:
+        """Raise `MissingIdentity` if any of `required` is empty on this
+        instance. The default required set is `REQUIRED_FOR_AIPLEX`;
+        callers can pass a tighter set (e.g. `("tenant_id",)`) for
+        less strict deployments.
+
+        Why fail at the SDK rather than just at the server: an
+        AIPlex-managed pod boots fast and may issue many BeginRun
+        calls before an operator notices the audit trail is going in
+        with empty identity. Failing at construction means the pod
+        crashloops loudly instead of writing headless runs the
+        compactor will later retain forever.
+        """
+        if not required:
+            required = self.REQUIRED_FOR_AIPLEX
+        missing = [f for f in required if not getattr(self, f, "")]
+        if missing:
+            raise MissingIdentity(missing)
 
     def is_empty(self) -> bool:
         """True iff every field is empty. Useful for local dev paths that want
@@ -88,6 +123,27 @@ class RunIdentity:
         return (not self.tenant_id and not self.actor and not self.subject
                 and not self.agent_id and not self.aiplex_instance_id
                 and not self.gateway_route and not self.scopes and not self.labels)
+
+
+class MissingIdentity(ValueError):
+    """Raised when `RunIdentity.validate()` finds a required field
+    empty. The error message names the missing field(s) so a deploy
+    config typo is easy to fix:
+
+        tape.adk.identity.MissingIdentity: required RunIdentity fields
+        missing: ['tenant_id', 'actor']. Set the AIPLEX_TENANT_ID and
+        AIPLEX_ACTOR env vars (or pass identity=... explicitly) before
+        calling durable_app().
+    """
+
+    def __init__(self, missing: List[str]):
+        self.missing = list(missing)
+        msg = (
+            "required RunIdentity fields missing: " + repr(self.missing) +
+            ". Set the AIPLEX_" + "/AIPLEX_".join(f.upper() for f in self.missing) +
+            " env vars (or pass identity=... explicitly) before calling durable_app()."
+        )
+        super().__init__(msg)
 
 
 def _parse_scopes(s: str) -> List[str]:
@@ -113,4 +169,4 @@ def _parse_labels(s: str) -> Dict[str, str]:
     return out
 
 
-__all__ = ["RunIdentity"]
+__all__ = ["RunIdentity", "MissingIdentity"]

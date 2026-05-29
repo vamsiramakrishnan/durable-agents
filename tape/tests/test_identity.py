@@ -90,6 +90,80 @@ def test_proto_round_trip():
     assert dict(parsed.labels) == ident.labels
 
 
+# ─── Strict-mode validation (PR 12 item A) ────────────────────────────────
+
+
+def test_validate_passes_when_required_fields_populated():
+    ident = RunIdentity(
+        tenant_id="acme",
+        actor="spiffe://acme/treasury",
+        agent_id="treasury-agent",
+    )
+    ident.validate()  # no raise
+
+
+def test_validate_raises_missing_identity_with_field_list():
+    from tape.adk.identity import MissingIdentity
+
+    ident = RunIdentity(tenant_id="acme")  # missing actor + agent_id
+    try:
+        ident.validate()
+    except MissingIdentity as ex:
+        assert ex.missing == ["actor", "agent_id"]
+        assert "AIPLEX_ACTOR" in str(ex)
+        assert "AIPLEX_AGENT_ID" in str(ex)
+    else:
+        raise AssertionError("expected MissingIdentity")
+
+
+def test_from_env_strict_raises_on_missing():
+    from tape.adk.identity import MissingIdentity
+
+    # No env at all → all three required fields missing → raise.
+    try:
+        RunIdentity.from_env(env={}, strict=True)
+    except MissingIdentity as ex:
+        assert set(ex.missing) >= {"tenant_id", "actor", "agent_id"}
+    else:
+        raise AssertionError("strict=True with empty env should raise")
+
+
+def test_from_env_strict_passes_when_aiplex_env_complete():
+    env = {
+        "AIPLEX_TENANT_ID": "acme",
+        "AIPLEX_ACTOR": "spiffe://acme/treasury",
+        "AIPLEX_AGENT_ID": "treasury-agent",
+    }
+    ident = RunIdentity.from_env(env=env, strict=True)
+    assert ident.tenant_id == "acme"
+
+
+def test_from_env_inherits_strict_from_require_identity_env_var():
+    """When AIPLEX_REQUIRE_IDENTITY=1 is set in the env, strict mode is
+    on by default (AIPlex's deploy engine sets this on every Tape-backed pod)."""
+    from tape.adk.identity import MissingIdentity
+
+    env = {"AIPLEX_REQUIRE_IDENTITY": "1"}  # no identity → should raise
+    try:
+        RunIdentity.from_env(env=env)
+    except MissingIdentity:
+        pass
+    else:
+        raise AssertionError("AIPLEX_REQUIRE_IDENTITY=1 should imply strict=True")
+
+    # Same env but explicit strict=False bypasses the auto-strict.
+    ident = RunIdentity.from_env(env=env, strict=False)
+    assert ident.is_empty()
+
+
+def test_validate_with_custom_required_set():
+    # Some deployments may only require tenant_id (e.g. dev with one
+    # actor). The override knob lets them relax without going full
+    # non-strict.
+    ident = RunIdentity(tenant_id="acme")  # no actor / agent_id
+    ident.validate(required=("tenant_id",))  # passes
+
+
 def test_run_state_carries_identity():
     """`RunState` exposes the same identity fields back to clients (the
     AIPlex run timeline reads from these)."""

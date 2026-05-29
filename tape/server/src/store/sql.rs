@@ -652,6 +652,25 @@ impl RunStore for SqlRunStore {
                 "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch \
                  (a non-idempotent counterparty cannot be safely re-driven inline)"));
         }
+        // PR 12 item B: server-side scope enforcement on the wire.
+        //
+        // The Python SDK's @tape.effect(semantics="non_idempotent") refuses
+        // at decoration time when scope is empty. A custom client or
+        // outdated SDK could bypass that and send BeginEffectRequest
+        // {semantics=NON_IDEMPOTENT, scope=""}. Without this server-side
+        // check, the audit trail would carry the side effect but the
+        // compactor's retained scope column would be empty — making
+        // "was this attempted with authorization?" unanswerable after
+        // archival.
+        //
+        // Failing on the wire instead of just at SDK construction is
+        // exactly the "safety invariants enforced at construction AND
+        // on the wire" principle from CLAUDE.md.
+        if sem == EffectSemantics::NonIdempotent as i32 && scope.is_empty() {
+            return Err(StoreError::denied(
+                "<required>",
+                "non_idempotent effects must declare an authorization scope on the wire"));
+        }
         // P2 fix: a non-empty business_key without a connector is a
         // misconfiguration — cross-run dedupe is per-(connector, business_key)
         // and the partial UNIQUE index is meaningless (and footgun-prone)

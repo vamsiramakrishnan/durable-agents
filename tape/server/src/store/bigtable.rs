@@ -801,6 +801,13 @@ impl RunStore for BigtableRunStore {
             return Err(StoreError::msg(
                 "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch"));
         }
+        // PR 12 item B: non_idempotent + empty scope is refused on the
+        // wire, not just at SDK decoration time (matches SQL store).
+        if sem == EffectSemantics::NonIdempotent as i32 && scope.is_empty() {
+            return Err(StoreError::denied(
+                "<required>",
+                "non_idempotent effects must declare an authorization scope on the wire"));
+        }
         // P2 fix: business_key requires connector — same reasoning as SQL.
         // On Bigtable the bk# pointer-row key is `bk#<connector>#<key>`, so
         // an empty connector would collapse all keyless effects into one
