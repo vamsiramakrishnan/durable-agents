@@ -54,6 +54,11 @@ that persona.
 - [**Configure tenancy**](../tenancy.md) — single, trusted-multi-app,
   hard-multi-tenant.
 
+- [**Plug in to AIPlex (identity & scopes)**](../integrations/aiplex.md) —
+  thread `AIPLEX_*` env vars onto every run via `RunIdentity.from_env()`;
+  declare `@tape.effect(scope=...)`; surface scope-denials as `policy`
+  journal entries for AIPlex audit ingestion.
+
 ## Test it
 
 - [**Cross-SDK parity harness**](cross-sdk-parity.md) — one scenario,

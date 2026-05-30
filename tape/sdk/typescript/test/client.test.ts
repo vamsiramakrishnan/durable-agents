@@ -131,7 +131,11 @@ test('TapeClient round-trips the outbox / non-idempotent contract', async () => 
   const c = new TapeClient(url);
   try {
     const begun: any = await c.beginRun({ appName: 'a', userId: 'u', sessionId: 'ts-outbox',
-      invocationId: 'inv-ts-outbox', leaseOwner: 'test', leaseTtlMs: 60_000 });
+      invocationId: 'inv-ts-outbox', leaseOwner: 'test', leaseTtlMs: 60_000,
+      // PR 12: the server's wire-level scope enforcement refuses
+      // non-idempotent effects without a declared scope. Grant the
+      // scope we'll declare on beginEffect below.
+      scopes: ['tape:tools:wire_money'] });
     const rid: string = begun.runId;
 
     // Server refuses NON_IDEMPOTENT + INLINE.
@@ -139,6 +143,7 @@ test('TapeClient round-trips the outbox / non-idempotent contract', async () => 
       runId: rid, decisionIndex: -1, toolName: 'wire_money',
       semantics: EffectSemantics.NON_IDEMPOTENT,
       dispatchMode: EffectDispatchMode.INLINE,
+      scope: 'tape:tools:wire_money',
     }));
 
     // NON_IDEMPOTENT + OUTBOX with a business key is accepted.
@@ -148,6 +153,7 @@ test('TapeClient round-trips the outbox / non-idempotent contract', async () => 
       semantics: EffectSemantics.NON_IDEMPOTENT,
       dispatchMode: EffectDispatchMode.OUTBOX,
       businessKey: 'ts:bk-1', connector: 'bank.wire',
+      scope: 'tape:tools:wire_money',
     });
     assert.equal(oe.status, EffectStatus.PENDING);
 

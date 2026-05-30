@@ -25,7 +25,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::ToSql as SqliteToSql;
 
-use super::{derive_key, merge_json, now_ms, RunIdentity, RunStore, StoreError, StoreResult};
+use super::{derive_key, merge_json, now_ms, CompactReport, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::subjects;
 
@@ -329,18 +329,35 @@ impl SqlBackend for PostgresBackend {
 pub struct SqlRunStore {
     db: Arc<dyn SqlBackend>,
     notify: Arc<tokio::sync::Notify>,
+    // Per-process scope cache. Scopes are set at `begin_run` and never
+    // mutated for the lifetime of the run, so we can cache the parsed
+    // grant set and skip the SELECT + JSON parse on every effect.
+    // Bounded with a coarse cap (clear-on-overflow) to keep memory
+    // bounded under pathological run-cardinality without pulling in
+    // an LRU dependency.
+    scope_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>>,
 }
+
+const SCOPE_CACHE_MAX: usize = 8192;
 
 impl SqlRunStore {
     pub async fn sqlite_file(path: &str) -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::file(path)?);
         db.migrate().await?;
-        Ok(Self { db, notify: Arc::new(tokio::sync::Notify::new()) })
+        Ok(Self {
+            db,
+            notify: Arc::new(tokio::sync::Notify::new()),
+            scope_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        })
     }
     pub async fn sqlite_memory() -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::memory()?);
         db.migrate().await?;
-        Ok(Self { db, notify: Arc::new(tokio::sync::Notify::new()) })
+        Ok(Self {
+            db,
+            notify: Arc::new(tokio::sync::Notify::new()),
+            scope_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        })
     }
     pub async fn postgres(url: &str) -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(PostgresBackend::connect(url)?);
@@ -352,7 +369,31 @@ impl SqlRunStore {
         // drops we reconnect with exponential backoff and the polling fallback
         // (1s in subscribe_*) keeps things moving in the meantime.
         spawn_pg_listener(url.to_string(), notify.clone());
-        Ok(Self { db, notify })
+        Ok(Self {
+            db,
+            notify,
+            scope_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        })
+    }
+
+    /// Insert a run's scopes into the cache. Called from `begin_run` so
+    /// the very first effect on a brand-new run hits the cache instead of
+    /// the SELECT path.
+    fn cache_scopes(&self, run_id: &str, scopes: Vec<String>) {
+        let mut g = self.scope_cache.lock().unwrap();
+        // Coarse cap: when full, drop the whole map. This is amortised
+        // because the steady state is "active runs" and active runs
+        // re-populate on the next effect lookup.
+        if g.len() >= SCOPE_CACHE_MAX {
+            g.clear();
+        }
+        g.insert(run_id.to_string(), scopes);
+    }
+
+    /// Evict a run from the scope cache. Called when a run reaches a
+    /// terminal state so we don't pin its scopes forever.
+    fn evict_scopes(&self, run_id: &str) {
+        let _ = self.scope_cache.lock().unwrap().remove(run_id);
     }
 
     fn d(&self) -> &dyn SqlBackend { self.db.as_ref() }
@@ -362,6 +403,27 @@ impl SqlRunStore {
                       vec![run_id.into()]).await?;
         Ok(self.d().query_opt("SELECT seq_cursor FROM tape_runs WHERE run_id = ?1", vec![run_id.into()])
             .await?.map(|r| r.i64(0)).unwrap_or(0))
+    }
+
+    /// Read the run's scope grant set. Consults the per-process cache
+    /// first (populated by `begin_run`) and falls back to a SELECT +
+    /// JSON parse if the entry has been evicted or the process is
+    /// cold. Used by `begin_effect` for the authz scope-membership
+    /// check. Returns an empty vector when the run has no scopes or
+    /// doesn't exist (callers handle the absent-row case via the scope
+    /// check itself — an empty grant set never satisfies a non-empty
+    /// required scope).
+    async fn run_scopes_for(&self, run_id: &str) -> StoreResult<Vec<String>> {
+        if let Some(cached) = self.scope_cache.lock().unwrap().get(run_id).cloned() {
+            return Ok(cached);
+        }
+        let row = self.d().query_opt(
+            "SELECT scopes_json FROM tape_runs WHERE run_id = ?1",
+            vec![run_id.into()]).await?;
+        let scopes = row.map(|r| parse_scopes(&r.str(0))).unwrap_or_default();
+        // Backfill the cache so subsequent effects skip the SELECT.
+        self.cache_scopes(run_id, scopes.clone());
+        Ok(scopes)
     }
 
     /// Append a journal row with the event-bus fields populated.
@@ -455,7 +517,7 @@ const EFFECT_COLS: &str = "run_id, seq, decision_index, tool_name, idempotency_k
     request_json, response_json, error_json, ts_ms, \
     semantics, dispatch_mode, business_key, connector, dispatch_attempts, \
     next_dispatch_at_ms, external_ref, dispatch_claimed_by, \
-    dispatch_claim_expires_at_ms, last_dispatch_error";
+    dispatch_claim_expires_at_ms, last_dispatch_error, scope";
 fn effect_of(r: &Row) -> EffectRecord {
     EffectRecord {
         run_id: r.str(0), seq: r.i64(1), decision_index: r.i64(2), tool_name: r.str(3),
@@ -466,7 +528,7 @@ fn effect_of(r: &Row) -> EffectRecord {
         dispatch_attempts: r.i32(14), next_dispatch_at_ms: r.i64(15),
         external_ref: r.str(16),
         dispatch_claimed_by: r.str(17), dispatch_claim_expires_at_ms: r.i64(18),
-        last_dispatch_error: r.str(19),
+        last_dispatch_error: r.str(19), scope: r.str(20),
     }
 }
 const DECISION_COLS: &str =
@@ -495,6 +557,14 @@ const DEFAULT_LEASE_MS: i64 = 60_000;
 
 #[async_trait]
 impl RunStore for SqlRunStore {
+    async fn ping(&self) -> StoreResult<()> {
+        // `SELECT 1` round-trips through the connection pool and confirms
+        // the backing database is reachable + responsive. SQLite returns
+        // instantly; Postgres exercises a real network hop so the
+        // readiness signal reflects DB health.
+        let _ = self.d().query_opt("SELECT 1", vec![]).await?;
+        Ok(())
+    }
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
                        identity: &RunIdentity<'_>,
@@ -525,6 +595,9 @@ impl RunStore for SqlRunStore {
                  identity.tenant_id.into(), identity.actor.into(), identity.subject.into(),
                  identity.agent_id.into(), identity.aiplex_instance_id.into(),
                  identity.gateway_route.into(), scopes_json.into(), labels_json.into()]).await?;
+        // Populate the scope cache while we have the parsed scope set in
+        // memory — the very first effect on this run hits the cache.
+        self.cache_scopes(&run_id, parse_scopes(scopes_json));
         // Run-lifecycle journal: /tape/run/running/<app>/<user>/<session>/<run_id>
         let seq = self.next_seq(&run_id).await.unwrap_or(0);
         let payload = serde_json::json!({
@@ -546,6 +619,9 @@ impl RunStore for SqlRunStore {
         let ts = now_ms();
         self.d().exec("UPDATE tape_runs SET status=?2, ended_at_ms=?3, detail_json=?4, lease_owner='' WHERE run_id=?1",
             vec![run_id.into(), status.into(), ts.into(), detail_json.into()]).await?;
+        // A terminal run won't accept more effects, so its scopes are
+        // dead weight in the cache.
+        self.evict_scopes(run_id);
         let cur = self.get_run(run_id).await?;
         if let Some(ref r) = cur {
             let status_str = match RunStatus::try_from(status) {
@@ -591,6 +667,134 @@ impl RunStore for SqlRunStore {
         }).collect())
     }
 
+    // ── compaction (PR 13) ─────────────────────────────────────────────────
+
+    async fn list_compactable_runs(&self, before_ms: i64, limit: i64) -> StoreResult<Vec<RunState>> {
+        // Coarse filter: terminal-ish status, never compacted, ended
+        // before the cutoff. The reactor verifies "settled" (no open
+        // obligations, no UNKNOWN effects) per row before invoking
+        // compact_run on it.
+        let lim = if limit > 0 { limit } else { 100 };
+        let sql = format!(
+            "SELECT {RUN_COLS} FROM tape_runs \
+             WHERE status IN (?1, ?2, ?3, ?4) \
+               AND compacted_at_ms = 0 \
+               AND ended_at_ms > 0 AND ended_at_ms < ?5 \
+             ORDER BY ended_at_ms ASC LIMIT ?6"
+        );
+        let rows = self.d().query(&sql, vec![
+            (RunStatus::Terminal as i32).into(),
+            (RunStatus::Failed as i32).into(),
+            (RunStatus::Cancelled as i32).into(),
+            (RunStatus::Stuck as i32).into(),
+            before_ms.into(),
+            lim.into(),
+        ]).await?;
+        Ok(rows.iter().map(run_of).collect())
+    }
+
+    async fn compact_run(&self, run_id: &str, ts_ms: i64) -> StoreResult<CompactReport> {
+        // CompactRun is an admin RPC; it doesn't have to come from
+        // `list_compactable_runs`, so the precondition has to live in
+        // the store, not in the reactor. We require the run to be
+        // terminal AND settled — zeroing decisions/effects on a
+        // RUNNING / WAITING run breaks replay/recovery for an active
+        // execution. Idempotent on a second call: a row with
+        // compacted_at_ms > 0 short-circuits to already_compacted.
+        let row = self.d().query_opt(
+            "SELECT status, ended_at_ms, compacted_at_ms FROM tape_runs WHERE run_id = ?1",
+            vec![run_id.into()]).await?
+            .ok_or_else(|| StoreError::msg(format!("compact_run: run_id {run_id} not found")))?;
+        let status = row.i64(0);
+        let ended_at_ms = row.i64(1);
+        let compacted_at_ms = row.i64(2);
+        if compacted_at_ms > 0 {
+            return Ok(CompactReport { already_compacted: true, ..Default::default() });
+        }
+        let terminal = matches!(
+            RunStatus::try_from(status as i32),
+            Ok(RunStatus::Terminal | RunStatus::Failed | RunStatus::Cancelled | RunStatus::Stuck),
+        );
+        if !terminal || ended_at_ms <= 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} is not terminal (status={status}, ended_at_ms={ended_at_ms}); refuse to zero live state")));
+        }
+
+        // Settlement check: bail out if there are unresolved obligations
+        // or UNKNOWN effects. Belt-and-braces against a terminal run
+        // that still has dangling external work.
+        let open_obligations = self.d().query_opt(
+            "SELECT COUNT(*) FROM tape_obligations WHERE run_id=?1 AND status IN (?2, ?3)",
+            vec![
+                run_id.into(),
+                (ObligationStatus::Pending as i32).into(),
+                (ObligationStatus::Committed as i32).into(),
+            ]).await?.map(|r| r.i64(0)).unwrap_or(0);
+        if open_obligations > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {open_obligations} open obligation(s); not settled")));
+        }
+        let unknown_effects = self.d().query_opt(
+            "SELECT COUNT(*) FROM tape_effects WHERE run_id=?1 AND status=?2",
+            vec![run_id.into(), (EffectStatus::Unknown as i32).into()]).await?
+                .map(|r| r.i64(0)).unwrap_or(0);
+        if unknown_effects > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {unknown_effects} UNKNOWN effect(s); not settled")));
+        }
+
+        // Sum the bytes-saved for telemetry BEFORE zeroing.
+        let bytes_saved = self.d().query_opt(
+            "SELECT \
+                COALESCE(SUM(LENGTH(request_json) + LENGTH(response_json)), 0) \
+             FROM tape_decisions WHERE run_id=?1",
+            vec![run_id.into()]).await?.map(|r| r.i64(0)).unwrap_or(0) +
+            self.d().query_opt(
+            "SELECT \
+                COALESCE(SUM(LENGTH(request_json) + LENGTH(response_json) + LENGTH(error_json)), 0) \
+             FROM tape_effects WHERE run_id=?1",
+            vec![run_id.into()]).await?.map(|r| r.i64(0)).unwrap_or(0);
+
+        // Zero decision payloads — keep ts_ms / model / decision_index
+        // / policy_version (audit envelope), drop request_json /
+        // response_json / rationale (the LLM bodies).
+        let dec_n = self.d().exec(
+            "UPDATE tape_decisions SET request_json='', response_json='', rationale='' \
+             WHERE run_id=?1 AND (request_json != '' OR response_json != '' OR rationale != '')",
+            vec![run_id.into()]).await?;
+
+        // Zero effect payloads — keep tool_name / idempotency_key /
+        // business_key / connector / scope / status (audit envelope),
+        // drop request_json / response_json / error_json.
+        let eff_n = self.d().exec(
+            "UPDATE tape_effects SET request_json='', response_json='', error_json='' \
+             WHERE run_id=?1 AND (request_json != '' OR response_json != '' OR error_json != '')",
+            vec![run_id.into()]).await?;
+
+        // Stamp the run + emit a `run.compacted` journal entry. The
+        // entry rides the existing outbox / event-bus path so AIPlex
+        // sees the state change in its run timeline.
+        self.d().exec(
+            "UPDATE tape_runs SET compacted_at_ms=?2 WHERE run_id=?1",
+            vec![run_id.into(), ts_ms.into()]).await?;
+        let seq = self.next_seq(run_id).await.unwrap_or(0);
+        let payload = serde_json::json!({
+            "run_id": run_id,
+            "compacted_at_ms": ts_ms,
+            "decisions_zeroed": dec_n,
+            "effects_zeroed": eff_n,
+            "bytes_saved": bytes_saved,
+        }).to_string();
+        let _ = self.journal(run_id, seq, "run", &payload, ts_ms).await;
+
+        Ok(CompactReport {
+            decisions_zeroed: dec_n as i64,
+            effects_zeroed: eff_n as i64,
+            bytes_saved,
+            already_compacted: false,
+        })
+    }
+
     // ── decisions ───────────────────────────────────────────────────────────
     async fn record_decision(&self, run_id: &str, decision_index: i64, model: &str, request_json: &str,
                              response_json: &str, rationale: &str, policy_version: &str) -> StoreResult<DecisionRecord> {
@@ -620,7 +824,8 @@ impl RunStore for SqlRunStore {
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord> {
         // Default semantics/dispatch_mode are IDEMPOTENT/INLINE — preserves the
         // original contract for callers that don't opt into the outbox model.
         let sem = if semantics == EffectSemantics::Unspecified as i32 {
@@ -639,6 +844,25 @@ impl RunStore for SqlRunStore {
                 "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch \
                  (a non-idempotent counterparty cannot be safely re-driven inline)"));
         }
+        // PR 12 item B: server-side scope enforcement on the wire.
+        //
+        // The Python SDK's @tape.effect(semantics="non_idempotent") refuses
+        // at decoration time when scope is empty. A custom client or
+        // outdated SDK could bypass that and send BeginEffectRequest
+        // {semantics=NON_IDEMPOTENT, scope=""}. Without this server-side
+        // check, the audit trail would carry the side effect but the
+        // compactor's retained scope column would be empty — making
+        // "was this attempted with authorization?" unanswerable after
+        // archival.
+        //
+        // Failing on the wire instead of just at SDK construction is
+        // exactly the "safety invariants enforced at construction AND
+        // on the wire" principle from CLAUDE.md.
+        if sem == EffectSemantics::NonIdempotent as i32 && scope.is_empty() {
+            return Err(StoreError::denied(
+                "<required>",
+                "non_idempotent effects must declare an authorization scope on the wire"));
+        }
         // P2 fix: a non-empty business_key without a connector is a
         // misconfiguration — cross-run dedupe is per-(connector, business_key)
         // and the partial UNIQUE index is meaningless (and footgun-prone)
@@ -649,6 +873,31 @@ impl RunStore for SqlRunStore {
             return Err(StoreError::msg(
                 "begin_effect: business_key requires connector \
                  (cross-run dedupe is per-(connector, business_key))"));
+        }
+        // Authorization (AIPlex integration PR 2). When the effect declares a
+        // scope, it must appear in the run's `scopes` array. Empty scope
+        // skips the check — idempotent effects can be unscoped. Defence-in-
+        // depth: the SDK checks before getting here; the server re-checks so
+        // an outdated or non-Python client can't bypass authz.
+        if !scope.is_empty() {
+            let run_scopes = self.run_scopes_for(run_id).await?;
+            if !run_scopes.iter().any(|s| s == scope) {
+                let ts = now_ms();
+                let seq = self.next_seq(run_id).await?;
+                let payload = serde_json::json!({
+                    "tool": tool_name,
+                    "decision_index": decision_index,
+                    "required_scope": scope,
+                    "granted_scopes": run_scopes,
+                    "violation": "scope_not_granted",
+                }).to_string();
+                // Best-effort: even if the journal write fails we still deny.
+                let _ = self.journal(run_id, seq, "policy", &payload, ts).await;
+                return Err(StoreError::denied(
+                    scope,
+                    format!("effect {tool_name} requires scope {scope:?} not present on run {run_id}"),
+                ));
+            }
         }
         let key = if custom_key.is_empty() {
             derive_key(run_id, decision_index, tool_name, call_index)
@@ -677,15 +926,16 @@ impl RunStore for SqlRunStore {
                  request_json, response_json, error_json, ts_ms, \
                  semantics, dispatch_mode, business_key, connector, dispatch_attempts, \
                  next_dispatch_at_ms, external_ref, dispatch_claimed_by, dispatch_claim_expires_at_ms, \
-                 last_dispatch_error) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8, ?9,?10,?11,?12,0,?13,'','',0,'')",
+                 last_dispatch_error, scope) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'','',?8, ?9,?10,?11,?12,0,?13,'','',0,'',?14)",
             vec![run_id.into(), seq.into(), decision_index.into(), tool_name.into(), key.clone().into(),
                  (EffectStatus::Pending as i32).into(), request_json.into(), ts.into(),
-                 sem.into(), dmode.into(), business_key.into(), connector.into(), next_dispatch.into()]).await?;
+                 sem.into(), dmode.into(), business_key.into(), connector.into(), next_dispatch.into(),
+                 scope.into()]).await?;
         let payload = serde_json::json!({
             "tool": tool_name, "decision_index": decision_index, "idempotency_key": key,
             "status": "pending", "semantics": sem, "dispatch_mode": dmode,
-            "business_key": business_key, "connector": connector,
+            "business_key": business_key, "connector": connector, "scope": scope,
         }).to_string();
         self.journal(run_id, seq, "effect", &payload, ts).await?;
         Ok(EffectRecord {
@@ -697,7 +947,7 @@ impl RunStore for SqlRunStore {
             dispatch_attempts: 0, next_dispatch_at_ms: next_dispatch,
             external_ref: String::new(),
             dispatch_claimed_by: String::new(), dispatch_claim_expires_at_ms: 0,
-            last_dispatch_error: String::new(),
+            last_dispatch_error: String::new(), scope: scope.into(),
         })
     }
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str, error_json: &str) -> StoreResult<Option<EffectRecord>> {

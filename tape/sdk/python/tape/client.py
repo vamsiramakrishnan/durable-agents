@@ -205,6 +205,26 @@ class TapeClient:
     def list_runs_to_recover(self, *, limit=100, now_ms=0):
         return self.stub.ListRunsToRecover(pb.ListRunsToRecoverRequest(limit=limit, now_ms=now_ms))
 
+    # ── compaction (PR 13) ──────────────────────────────────────────────
+    #
+    # Tape's compactor reactor walks runs in TERMINAL/FAILED/STUCK/CANCELLED
+    # status whose `ended_at_ms` is older than `before_ms`, then calls
+    # `compact_run` per row. The compactor zeroes the bulky
+    # `request_json` / `response_json` payloads on decisions and effects
+    # while keeping the audit envelope (kind, seq, tool_name,
+    # idempotency_key, business_key, scope, status).
+    #
+    # AIPlex's retention policy (RuntimeConfig.retention.compact_after_days)
+    # drives the cutoff; the Tape SDK reactor + `aiplex runs compact`
+    # CLI both call these RPCs.
+
+    def list_compactable_runs(self, *, before_ms=0, limit=100):
+        return self.stub.ListCompactableRuns(
+            pb.ListCompactableRunsRequest(before_ms=before_ms, limit=limit))
+
+    def compact_run(self, run_id):
+        return self.stub.CompactRun(pb.CompactRunRequest(run_id=run_id))
+
     def subscribe_run(self, *, run_id, from_seq=0, timeout=None):
         """Stream this run's journal from `from_seq` onward. Pass `timeout=` to
         bound the call (the iterator will surface DEADLINE_EXCEEDED when the
@@ -230,17 +250,19 @@ class TapeClient:
 
     def begin_effect(self, *, run_id, decision_index, tool_name, call_index=0,
                      request_json="", custom_key="",
-                     semantics=0, dispatch_mode=0, business_key="", connector=""):
+                     semantics=0, dispatch_mode=0, business_key="", connector="",
+                     scope=""):
         """Begin (or short-circuit) an effect. Defaults preserve the v1 contract
         (idempotent + inline). Pass `semantics=EFFECT_SEMANTICS_NON_IDEMPOTENT`
         and `dispatch_mode=EFFECT_DISPATCH_MODE_OUTBOX` to opt into the outbox
         path; `business_key` + `connector` declare the cross-run dedupe key the
-        counterparty would use."""
+        counterparty would use; `scope` declares the authorization scope the
+        server should check against the run's grant list."""
         return self.stub.BeginEffect(pb.BeginEffectRequest(
             run_id=run_id, decision_index=decision_index, tool_name=tool_name,
             call_index=call_index, request_json=request_json, custom_key=custom_key,
             semantics=semantics, dispatch_mode=dispatch_mode,
-            business_key=business_key, connector=connector))
+            business_key=business_key, connector=connector, scope=scope))
 
     def complete_effect(self, *, run_id, idempotency_key, status, response_json="", error_json=""):
         return self.stub.CompleteEffect(pb.CompleteEffectRequest(

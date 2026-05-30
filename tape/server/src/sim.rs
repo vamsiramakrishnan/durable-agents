@@ -227,6 +227,7 @@ async fn real_cas_against_tape_service_exactly_one_wins() {
         run_id: run_id.clone(), decision_index: 0, tool_name: "wire".into(),
         call_index: 0, request_json: "{}".into(), custom_key: "".into(),
         semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
+        ..Default::default()
     })).await.unwrap().into_inner();
     svc.complete_effect(tonic::Request::new(CompleteEffectRequest {
         run_id: run_id.clone(), idempotency_key: be.idempotency_key.clone(),
@@ -304,6 +305,7 @@ async fn lease_history_is_linearizable() {
         run_id: run_id_setup.clone(), decision_index: 0, tool_name: "wire".into(),
         call_index: 0, request_json: "{}".into(), custom_key: "".into(),
         semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
+        ..Default::default()
     })).await.unwrap().into_inner();
     svc.complete_effect(tonic::Request::new(CompleteEffectRequest {
         run_id: run_id_setup.clone(), idempotency_key: be.idempotency_key.clone(),

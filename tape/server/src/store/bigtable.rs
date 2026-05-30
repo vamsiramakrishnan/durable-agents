@@ -104,7 +104,7 @@ use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::{
     RowFilter, RowRange, RowSet,
 };
 
-use super::{derive_key, merge_json, now_ms, RunIdentity, RunStore, StoreError, StoreResult};
+use super::{derive_key, merge_json, now_ms, CompactReport, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::subjects;
 
@@ -522,6 +522,7 @@ fn effect_from(key: &str, m: &RowMap) -> EffectRecord {
         dispatch_claimed_by: m.gs("dispatch_claimed_by"),
         dispatch_claim_expires_at_ms: m.gi("dispatch_claim_expires_at_ms"),
         last_dispatch_error: m.gs("last_dispatch_error"),
+        scope: m.gs("scope"),
     }
 }
 fn decision_from(run_id: &str, idx: i64, m: &RowMap) -> DecisionRecord {
@@ -653,6 +654,15 @@ async fn check_and_mutate(
 impl RunStore for BigtableRunStore {
     fn journal_notify(&self) -> Arc<tokio::sync::Notify> { self.notify.clone() }
 
+    async fn ping(&self) -> StoreResult<()> {
+        // A read of a known-nonexistent row exercises the Bigtable
+        // client + admin path without touching production data. Returns
+        // Ok on a successful round-trip (None row is fine — the table
+        // exists and we got back a response).
+        let _ = self.read_row("__tape_probe__").await?;
+        Ok(())
+    }
+
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
                        identity: &RunIdentity<'_>,
@@ -766,6 +776,27 @@ impl RunStore for BigtableRunStore {
         Ok(out)
     }
 
+    // ── compaction (PR 13) ─────────────────────────────────────────────────
+    //
+    // The Bigtable backend doesn't yet support compaction natively;
+    // the row-key layout (e#<key>, d#<run>#<idx>) makes ranged updates
+    // expensive without a per-run secondary index. Tracked as the
+    // backend's first follow-up — the wire contract + the SQL impl
+    // give the Helm-deployed Postgres/AlloyDB path everything needed.
+    //
+    // Returns Err so the compactor reactor logs + skips Bigtable
+    // backends cleanly instead of pretending to compact.
+    async fn list_compactable_runs(&self, _before_ms: i64, _limit: i64) -> StoreResult<Vec<RunState>> {
+        Err(StoreError::msg(
+            "Bigtable backend: compaction not implemented (use Postgres/AlloyDB \
+             for the Helm-deployed scale tier; Bigtable compaction tracked as the \
+             backend's next follow-up)"))
+    }
+
+    async fn compact_run(&self, _run_id: &str, _ts_ms: i64) -> StoreResult<CompactReport> {
+        Err(StoreError::msg("Bigtable backend: compaction not implemented"))
+    }
+
     // ── decisions ───────────────────────────────────────────────────────────
     async fn record_decision(&self, run_id: &str, decision_index: i64, model: &str, request_json: &str, response_json: &str, rationale: &str, policy_version: &str) -> StoreResult<DecisionRecord> {
         if let Some(m) = self.read_row(&rk_decision(run_id, decision_index)).await? {
@@ -788,7 +819,8 @@ impl RunStore for BigtableRunStore {
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord> {
         let sem = if semantics == EffectSemantics::Unspecified as i32 {
             EffectSemantics::Idempotent as i32
         } else { semantics };
@@ -799,6 +831,13 @@ impl RunStore for BigtableRunStore {
             return Err(StoreError::msg(
                 "begin_effect: NON_IDEMPOTENT semantics requires OUTBOX dispatch"));
         }
+        // PR 12 item B: non_idempotent + empty scope is refused on the
+        // wire, not just at SDK decoration time (matches SQL store).
+        if sem == EffectSemantics::NonIdempotent as i32 && scope.is_empty() {
+            return Err(StoreError::denied(
+                "<required>",
+                "non_idempotent effects must declare an authorization scope on the wire"));
+        }
         // P2 fix: business_key requires connector — same reasoning as SQL.
         // On Bigtable the bk# pointer-row key is `bk#<connector>#<key>`, so
         // an empty connector would collapse all keyless effects into one
@@ -807,6 +846,29 @@ impl RunStore for BigtableRunStore {
             return Err(StoreError::msg(
                 "begin_effect: business_key requires connector \
                  (cross-run dedupe is per-(connector, business_key))"));
+        }
+        // Authorization (defence-in-depth, matches SQL store). Empty scope
+        // skips; non-empty must appear in the run's scopes_json grant set.
+        if !scope.is_empty() {
+            let granted = if let Some(rs) = self.run_state(run_id).await? {
+                rs.scopes
+            } else { Vec::new() };
+            if !granted.iter().any(|s| s == scope) {
+                let ts = now_ms();
+                let seq = self.next_seq(run_id).await.unwrap_or(0);
+                let payload = serde_json::json!({
+                    "tool": tool_name,
+                    "decision_index": decision_index,
+                    "required_scope": scope,
+                    "granted_scopes": granted,
+                    "violation": "scope_not_granted",
+                }).to_string();
+                let _ = self.journal(run_id, seq, "policy", &payload, ts).await;
+                return Err(StoreError::denied(
+                    scope,
+                    format!("effect {tool_name} requires scope {scope:?} not present on run {run_id}"),
+                ));
+            }
         }
         let key = if custom_key.is_empty() { derive_key(run_id, decision_index, tool_name, call_index) } else { custom_key.to_string() };
         if let Some(m) = self.read_row(&rk_effect(&key)).await? {
@@ -858,12 +920,14 @@ impl RunStore for BigtableRunStore {
             set("semantics", iv(sem as i64)), set("dispatch_mode", iv(dmode as i64)),
             set("business_key", sv(business_key)), set("connector", sv(connector)),
             set("next_dispatch_at_ms", iv(next_dispatch)),
+            set("scope", sv(scope)),
         ]).await?;
         self.journal(run_id, seq, "effect",
             &serde_json::json!({"tool": tool_name, "decision_index": decision_index,
                                 "idempotency_key": key, "status": "pending",
                                 "semantics": sem, "dispatch_mode": dmode,
-                                "business_key": business_key, "connector": connector}).to_string(), ts).await?;
+                                "business_key": business_key, "connector": connector,
+                                "scope": scope}).to_string(), ts).await?;
         Ok(EffectRecord {
             run_id: run_id.into(), seq, decision_index, tool_name: tool_name.into(),
             idempotency_key: key, status: EffectStatus::Pending as i32,
@@ -874,6 +938,7 @@ impl RunStore for BigtableRunStore {
             dispatch_attempts: 0, next_dispatch_at_ms: next_dispatch,
             external_ref: String::new(), dispatch_claimed_by: String::new(),
             dispatch_claim_expires_at_ms: 0, last_dispatch_error: String::new(),
+            scope: scope.into(),
         })
     }
 

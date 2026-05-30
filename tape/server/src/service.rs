@@ -23,7 +23,12 @@ impl TapeService {
 }
 
 fn db(e: StoreError) -> Status {
-    Status::internal(e.to_string())
+    // Map authorization denials to PermissionDenied so SDK clients can react
+    // to them as a typed error rather than a generic internal error.
+    match &e {
+        StoreError::Denied { .. } => Status::permission_denied(e.to_string()),
+        _ => Status::internal(e.to_string()),
+    }
 }
 
 const DEFAULT_LEASE_MS: i64 = 120_000;
@@ -134,6 +139,7 @@ impl Tape for TapeService {
             &r.run_id, r.decision_index, &r.tool_name, r.call_index,
             &r.request_json, &r.custom_key,
             r.semantics, r.dispatch_mode, &r.business_key, &r.connector,
+            &r.scope,
         ).await.map_err(db)?;
         // The headline injection site: the intent has been durably written,
         // the response has not been sent — exactly the window that resume
@@ -371,6 +377,28 @@ impl Tape for TapeService {
         Ok(Response::new(ListDueTimersResponse { timers }))
     }
 
+    // ── compaction (PR 13) ──────────────────────────────────────────────────
+    async fn list_compactable_runs(&self, req: Request<ListCompactableRunsRequest>)
+        -> Result<Response<ListCompactableRunsResponse>, Status> {
+        let r = req.into_inner();
+        let before = if r.before_ms > 0 { r.before_ms } else { now_ms() };
+        let limit  = if r.limit > 0 { r.limit } else { 100 };
+        let runs = self.store.list_compactable_runs(before, limit).await.map_err(db)?;
+        Ok(Response::new(ListCompactableRunsResponse { runs }))
+    }
+
+    async fn compact_run(&self, req: Request<CompactRunRequest>)
+        -> Result<Response<CompactRunResponse>, Status> {
+        let r = req.into_inner();
+        let report = self.store.compact_run(&r.run_id, now_ms()).await.map_err(db)?;
+        Ok(Response::new(CompactRunResponse {
+            decisions_zeroed:  report.decisions_zeroed,
+            effects_zeroed:    report.effects_zeroed,
+            bytes_saved:       report.bytes_saved,
+            already_compacted: report.already_compacted,
+        }))
+    }
+
     // ── reactive key-value store ────────────────────────────────────────────
     async fn write_value(&self, req: Request<WriteValueRequest>) -> Result<Response<ValueRecord>, Status> {
         let r = req.into_inner();
@@ -579,6 +607,7 @@ mod tests {
             run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
             call_index: 0, request_json: "{}".into(), custom_key: "".into(),
             semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
+            ..Default::default()
         })).await.unwrap().into_inner();
         assert_eq!(be.status, EffectStatus::Pending as i32);
         assert_eq!(be.idempotency_key, format!("{rid}/decision-0/execute_sweep/0"));
@@ -586,6 +615,7 @@ mod tests {
             run_id: rid.clone(), decision_index: 0, tool_name: "execute_sweep".into(),
             call_index: 0, request_json: "{}".into(), custom_key: "".into(),
             semantics: 0, dispatch_mode: 0, business_key: "".into(), connector: "".into(),
+            ..Default::default()
         })).await.unwrap().into_inner();
         assert_eq!(be2.status, EffectStatus::Pending as i32);
         svc.complete_effect(Request::new(CompleteEffectRequest {

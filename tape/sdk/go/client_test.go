@@ -205,6 +205,10 @@ func TestClientRoundTripsLifecycle(t *testing.T) {
 	r2, err := c.BeginRun(ctx, BeginRunOpts{
 		AppName: "a", UserID: "u", SessionID: "go-outbox",
 		InvocationID: "inv-go-outbox", LeaseOwner: "test", LeaseTTLMs: 60_000,
+		// PR 12: the server's wire-level scope enforcement now refuses
+		// non-idempotent effects without a declared scope. Grant the
+		// scope we'll declare on BeginEffect below.
+		Scopes: []string{"tape:tools:wire_money"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +217,7 @@ func TestClientRoundTripsLifecycle(t *testing.T) {
 	if _, err := c.BeginEffect(ctx, BeginEffectOpts{
 		RunID: r2.RunId, DecisionIndex: -1, ToolName: "wire_money",
 		Semantics: EffectSemanticsNonIdempotent, DispatchMode: EffectDispatchInline,
+		Scope: "tape:tools:wire_money",
 	}); err == nil {
 		t.Fatalf("expected NON_IDEMPOTENT+INLINE to be refused")
 	}
@@ -222,6 +227,7 @@ func TestClientRoundTripsLifecycle(t *testing.T) {
 		RequestJSON: `{"amount":100}`,
 		Semantics: EffectSemanticsNonIdempotent, DispatchMode: EffectDispatchOutbox,
 		BusinessKey: "go:bk-1", Connector: "bank.wire",
+		Scope: "tape:tools:wire_money",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -15,6 +15,7 @@ mod cel;
 mod chaos;
 #[cfg(test)]
 mod dst;
+mod healthz;
 #[cfg(test)]
 mod lin;
 mod matcher;
@@ -37,6 +38,10 @@ struct Args {
     /// Address to listen on.
     #[arg(long, env = "TAPE_LISTEN", default_value = "0.0.0.0:7878")]
     listen: String,
+    /// HTTP healthz listener address (for K8s liveness / readiness
+    /// probes). Set to empty to disable.
+    #[arg(long, env = "TAPE_HEALTHZ_LISTEN", default_value = "0.0.0.0:7879")]
+    healthz_listen: String,
     /// Store URL: sqlite:<path> | sqlite::memory: | postgres://… | memory.
     #[arg(long, env = "TAPE_STORE")]
     store: Option<String>,
@@ -74,6 +79,13 @@ async fn main() -> anyhow::Result<()> {
     // In-server matcher: tails the journal, produces tasks/runs for matching
     // reactions. See design-principles/tape-event-bus.md §2.3.
     matcher::spawn(store.clone());
+
+    // K8s probe surface (separate port, HTTP/1.1). Empty value disables.
+    if !args.healthz_listen.is_empty() {
+        if let Err(err) = healthz::spawn(&args.healthz_listen, store.clone()).await {
+            tracing::warn!(%err, "healthz listener failed to bind — probes disabled");
+        }
+    }
 
     let svc = TapeServer::new(TapeService::new(store));
     Server::builder()

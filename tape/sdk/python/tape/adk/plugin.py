@@ -23,13 +23,15 @@ import os
 import socket
 from typing import Any, Optional
 
+import grpc
 from google.adk.plugins.base_plugin import BasePlugin
 
 from ..client import TapeClient, DEFAULT_URL
 from .._gen import tape_pb2 as pb
 from ..budget import Budget, budget_from_run_config
 from ..effect import (effect_meta_of, tool_name_of, register_compensator,
-                      _semantics_to_pb, _dispatch_to_pb, _resolve_business_key)
+                      _semantics_to_pb, _dispatch_to_pb, _resolve_business_key,
+                      ScopeDenied)
 from ..gates import AckLost
 from .identity import RunIdentity
 
@@ -82,6 +84,11 @@ class TapePlugin(BasePlugin):
         self._dlast: dict[str, int] = {}          # invocation_id -> most recent decision index
         self._tcount: dict[tuple, int] = {}       # (invocation_id, decision_idx, tool) -> calls so far
         self._has_budget: set[str] = set()        # run_ids with a cap set
+        # Authorization grant set per run (AIPlex integration PR 2). Populated
+        # at before_run_callback time from the run's RunState.scopes — the
+        # server is the source of truth, so re-drives in a new process pick
+        # up the same grants.
+        self._run_scopes: dict[str, frozenset[str]] = {}  # run_id -> {scope, ...}
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -114,6 +121,19 @@ class TapePlugin(BasePlugin):
         # comes after the decisions already recorded. Count them so before_model
         # doesn't spuriously replay early decisions (which would re-fire tools).
         self._dnext[inv] = self._count_decisions(resp.run_id) if resp.resumed else 0
+        # Cache the run's authorization grants for the scoped-effect pre-check
+        # (see before_tool_callback). For a fresh run we already know the
+        # grants locally; for a re-drive in a new process we ask the server.
+        if resp.resumed:
+            try:
+                rs = self._client.get_run(resp.run_id)
+                self._run_scopes[resp.run_id] = frozenset(rs.scopes)
+            except Exception:
+                # If we can't fetch the grants, fall back to whatever we were
+                # told locally — the server still re-checks at BeginEffect.
+                self._run_scopes[resp.run_id] = frozenset(self._identity.scopes)
+        else:
+            self._run_scopes[resp.run_id] = frozenset(self._identity.scopes)
         b = self._resolve_budget(invocation_context)
         if b is not None and (b.usd_cap > 0 or b.token_cap > 0):
             self._client.set_budget(run_id=resp.run_id, usd_cap=b.usd_cap, token_cap=b.token_cap)
@@ -131,6 +151,8 @@ class TapePlugin(BasePlugin):
                     self._client.end_run(run_id=run_id, status=pb.RUN_STATUS_TERMINAL)
             except Exception:
                 pass
+        if run_id:
+            self._run_scopes.pop(run_id, None)
         self._run.pop(inv, None)
         self._dnext.pop(inv, None)
         self._dlast.pop(inv, None)
@@ -246,13 +268,37 @@ class TapePlugin(BasePlugin):
         dispatch_str = meta.get("dispatch") or "inline"
         connector = str(meta.get("connector") or "")
         bk = _resolve_business_key(meta.get("business_key"), tool_args, tool_context)
+        # Authorization (AIPlex integration PR 2). Pre-check the effect's
+        # declared scope against the run's granted scopes BEFORE issuing
+        # begin_effect — the tool body never runs on a denial. The server
+        # re-checks at BeginEffect so an outdated SDK can't bypass authz.
+        scope = str(meta.get("scope") or "")
+        if scope:
+            granted = self._run_scopes.get(run_id, frozenset())
+            if scope not in granted:
+                # Surface as a typed error so the agent loop can handle it
+                # uniformly. Return shape mirrors the budget-exhaustion path
+                # above (a dict the model sees as the tool result).
+                exc = ScopeDenied(scope=scope, tool=tname, granted=sorted(granted))
+                return {"error": str(exc), "scope_denied": True,
+                        "required_scope": scope, "tool": tname}
         try:
             resp = self._client.begin_effect(
                 run_id=run_id, decision_index=dec_idx, tool_name=tname, call_index=call_idx,
                 request_json=_safe_json(tool_args), custom_key=custom_key,
                 semantics=_semantics_to_pb(semantics_str),
                 dispatch_mode=_dispatch_to_pb(dispatch_str),
-                business_key=bk, connector=connector)
+                business_key=bk, connector=connector, scope=scope)
+        except grpc.RpcError as ex:
+            # Server-side scope denial — typed PermissionDenied. Treat the
+            # same way as the SDK pre-check so the tool body never runs.
+            if getattr(ex, "code", lambda: None)() == grpc.StatusCode.PERMISSION_DENIED:
+                return {"error": f"tape: begin_effect denied: {ex.details()}",
+                        "scope_denied": True, "required_scope": scope, "tool": tname}
+            # Other transport errors: keep the existing split.
+            if semantics_str == "non_idempotent" or dispatch_str == "outbox":
+                return {"error": f"tape: begin_effect refused: {ex}"}
+            return None
         except Exception as ex:
             # Split the failure handling by contract so the new strictness
             # doesn't reduce the v1 behaviour:

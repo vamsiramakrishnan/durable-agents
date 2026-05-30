@@ -5,6 +5,49 @@ this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — AIPlex integration (PR 3: docs + example)
+- **`tape/examples/standalone/aiplex-integration/`** — runnable worked
+  example with a treasury agent that has two scoped effects
+  (`read_balance` and the non-idempotent `bank_wire`). `run.py` drives
+  the gRPC primitives directly so the admit/deny paths are visible step
+  by step (no LLM API key needed). The default config grants only the
+  read scope so the demo lands on the **failure path** — the
+  `policy.violation` journal entry that AIPlex audit ingestion will
+  surface in the run timeline.
+- **`tape/docs/integrations/aiplex.md`** rewritten from Phase 0 survey
+  into a how-to guide reflecting what's shipped in PR 1 + PR 2. Linked
+  from `mkdocs.yml` and `how-to/index.md`.
+
+### Added — AIPlex integration (PR 2: effect scope enforcement)
+- **`@tape.effect(scope=...)`** declares the authorization scope an effect
+  requires (e.g. `"mcp:tools:bank_wire"`). The Python SDK refuses
+  `semantics="non_idempotent"` without a `scope` at **decoration time**;
+  `allow_unsafe=True` is the documented override.
+- **Runtime pre-check in `TapePlugin.before_tool_callback`**. The plugin
+  caches the run's `scopes` grant set at `before_run_callback` time
+  (fetched from `RunState` on re-drive so a fresh process picks up the
+  same grants). If the effect's declared scope isn't in the run's grants,
+  the plugin returns `{error, scope_denied: true}` and the tool body
+  never runs. A typed `tape.effect.ScopeDenied` exception is exposed for
+  callers that want to handle it explicitly.
+- **Server-side defence-in-depth.** `BeginEffectRequest` carries a `scope`
+  string; the Rust server verifies scope membership in the run's
+  `scopes_json` before any effect row is written, returns
+  `tonic::Status::permission_denied` on mismatch, and writes a
+  `kind="policy"` journal entry naming the violation (required_scope,
+  granted_scopes, tool) so AIPlex audit ingestion sees what was
+  attempted. An outdated SDK that doesn't pre-check still can't bypass.
+- **`tape_effects.scope`** column on SQLite + Postgres + Bigtable; rewritten
+  in place in `0001_init.*.sql` (no chained migration — pre-users).
+- **All four SDKs carry the wire field.** Python: typed kwarg + decoration
+  enforcement. Java: extended `beginEffect(...)` overload + legacy
+  no-scope overload preserved. Go: `BeginEffectOpts.Scope`. TypeScript:
+  optional `scope` on the `beginEffect({...})` argument shape.
+- **9 new Python tests** in `tape/tests/test_effect_scope.py` covering
+  decoration-time refusal, decoration-time scope passthrough, the
+  `allow_unsafe` bypass, server-side admit/deny/skip, and the
+  policy-violation journal entry shape.
+
 ### Added — AIPlex integration (PR 1: run identity)
 - **`BeginRunRequest` and `RunState` carry identity & authorization context.**
   Seven new fields: `tenant_id`, `actor` (SPIFFE workload identity), `subject`

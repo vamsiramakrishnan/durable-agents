@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use super::{RunIdentity, RunStore, StoreError, StoreResult};
+use super::{CompactReport, RunIdentity, RunStore, StoreError, StoreResult};
 use crate::pb::*;
 use crate::store::now_ms;
 
@@ -234,6 +234,77 @@ impl RunStore for MemRunStore {
         Ok(entries)
     }
 
+    // ── compaction (PR 13) — sim store impl ────────────────────────────────
+    //
+    // MemRunStore is a sim/test backend; compaction here zeroes payloads
+    // on decisions + effects in-place. Settlement check is identical to
+    // the SQL impl (no open obligations, no UNKNOWN effects).
+    async fn list_compactable_runs(&self, before_ms: i64, limit: i64) -> StoreResult<Vec<RunState>> {
+        let g = self.inner.lock().unwrap();
+        let mut out = Vec::new();
+        for r in g.runs.values() {
+            let settled = matches!(
+                RunStatus::try_from(r.status).unwrap_or(RunStatus::Unspecified),
+                RunStatus::Terminal | RunStatus::Failed
+                    | RunStatus::Cancelled | RunStatus::Stuck);
+            if !settled || r.ended_at_ms == 0 || r.ended_at_ms >= before_ms {
+                continue;
+            }
+            out.push(r.clone());
+            if limit > 0 && (out.len() as i64) >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn compact_run(&self, run_id: &str, _ts_ms: i64) -> StoreResult<CompactReport> {
+        let mut g = self.inner.lock().unwrap();
+        // Settlement check
+        let unknown = g.effects.values()
+            .filter(|e| e.run_id == run_id && e.status == EffectStatus::Unknown as i32)
+            .count();
+        if unknown > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {unknown} UNKNOWN effect(s); not settled")));
+        }
+        let open_oblig = g.obligations.values()
+            .filter(|o| o.run_id == run_id && matches!(
+                ObligationStatus::try_from(o.status).unwrap_or(ObligationStatus::Unspecified),
+                ObligationStatus::Pending | ObligationStatus::Committed))
+            .count();
+        if open_oblig > 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} has {open_oblig} open obligation(s); not settled")));
+        }
+
+        let mut bytes_saved = 0i64;
+        let mut decisions_zeroed = 0i64;
+        for d in g.decisions.values_mut() {
+            if d.run_id == run_id && (!d.request_json.is_empty() || !d.response_json.is_empty()) {
+                bytes_saved += (d.request_json.len() + d.response_json.len() + d.rationale.len()) as i64;
+                d.request_json = String::new();
+                d.response_json = String::new();
+                d.rationale = String::new();
+                decisions_zeroed += 1;
+            }
+        }
+        let mut effects_zeroed = 0i64;
+        for e in g.effects.values_mut() {
+            if e.run_id == run_id && (!e.request_json.is_empty()
+                || !e.response_json.is_empty() || !e.error_json.is_empty()) {
+                bytes_saved += (e.request_json.len() + e.response_json.len() + e.error_json.len()) as i64;
+                e.request_json = String::new();
+                e.response_json = String::new();
+                e.error_json = String::new();
+                effects_zeroed += 1;
+            }
+        }
+        Ok(CompactReport {
+            decisions_zeroed, effects_zeroed, bytes_saved, already_compacted: false,
+        })
+    }
+
     // ── decision ledger ─────────────────────────────────────────────────────
 
     async fn record_decision(&self, run_id: &str, decision_index: i64, model: &str,
@@ -277,12 +348,34 @@ impl RunStore for MemRunStore {
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord> {
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord> {
         // Server-side safety: NON_IDEMPOTENT + INLINE is refused (matches SQL store).
         if semantics == EffectSemantics::NonIdempotent as i32
             && dispatch_mode == EffectDispatchMode::Inline as i32 {
             return Err(StoreError::msg(
                 "begin_effect: NON_IDEMPOTENT effects must use OUTBOX dispatch"));
+        }
+        // PR 12 item B: non_idempotent + empty scope is refused on the
+        // wire, not just at SDK decoration time (matches SQL store).
+        if semantics == EffectSemantics::NonIdempotent as i32 && scope.is_empty() {
+            return Err(StoreError::denied(
+                "<required>",
+                "non_idempotent effects must declare an authorization scope on the wire"));
+        }
+        // Authorization check (defence-in-depth). Mirrors the SQL store: empty
+        // scope skips, non-empty scope must appear in the run's grants.
+        if !scope.is_empty() {
+            let granted: Vec<String> = {
+                let g = self.inner.lock().unwrap();
+                g.runs.get(run_id).map(|r| r.scopes.clone()).unwrap_or_default()
+            };
+            if !granted.iter().any(|s| s == scope) {
+                return Err(StoreError::denied(
+                    scope,
+                    format!("effect {tool_name} requires scope {scope:?} not present on run {run_id}"),
+                ));
+            }
         }
         let key = if !custom_key.is_empty() {
             custom_key.to_string()
@@ -313,14 +406,15 @@ impl RunStore for MemRunStore {
             dispatch_claimed_by: String::new(),
             dispatch_claim_expires_at_ms: 0,
             last_dispatch_error: String::new(),
+            scope: scope.into(),
         };
         g.effects.insert((run_id.into(), key.clone()), rec.clone());
         let entry = JournalEntry {
             seq, kind: "effect".into(),
             payload_json: format!(
-                r#"{{"run_id":"{}","status":"pending","tool":"{}","idempotency_key":"{}","decision_index":{},"semantics":{},"dispatch_mode":{},"business_key":"{}","connector":"{}"}}"#,
+                r#"{{"run_id":"{}","status":"pending","tool":"{}","idempotency_key":"{}","decision_index":{},"semantics":{},"dispatch_mode":{},"business_key":"{}","connector":"{}","scope":"{}"}}"#,
                 esc(run_id), esc(tool_name), esc(&key), decision_index,
-                semantics, dispatch_mode, esc(business_key), esc(connector)),
+                semantics, dispatch_mode, esc(business_key), esc(connector), esc(scope)),
             ts_ms: now_ms(),
             global_seq: 0, subject: String::new(), schema_version: 1,
             trace_id: String::new(), span_id: String::new(), parent_span_id: String::new(),

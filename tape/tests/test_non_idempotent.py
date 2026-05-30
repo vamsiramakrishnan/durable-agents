@@ -31,22 +31,35 @@ from tape.reactors import reconcile_once
 
 # ── small helpers ──────────────────────────────────────────────────────────
 
-def _begin_run(c, *, app="test", user="u", session=None, invocation=None):
+# PR 12: the server's wire-level scope enforcement refuses non-idempotent
+# effects without a declared scope, even when the dispatch path would have
+# refused them anyway (INLINE / outbox missing connector / etc.). All the
+# test helpers below grant this scope on BeginRun and declare it on
+# BeginEffect so the wire-level check passes and the test gets to assert
+# the *downstream* behaviour it actually cares about.
+_DEFAULT_SCOPE = "tape:tools:wire_money"
+
+
+def _begin_run(c, *, app="test", user="u", session=None, invocation=None,
+               scopes=None):
     s = session or f"sess-{uuid.uuid4().hex[:8]}"
     inv = invocation or f"inv-{uuid.uuid4().hex[:8]}"
     return c.begin_run(app_name=app, user_id=user, session_id=s, invocation_id=inv,
-                       lease_owner="test", lease_ttl_ms=60_000)
+                       lease_owner="test", lease_ttl_ms=60_000,
+                       scopes=scopes if scopes is not None else [_DEFAULT_SCOPE])
 
 
 def _begin_outbox_effect(c, run_id, *, tool="wire_money", business_key="",
                          connector="bank.wire",
-                         semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT):
+                         semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
+                         scope=_DEFAULT_SCOPE):
     return c.begin_effect(
         run_id=run_id, decision_index=0, tool_name=tool, call_index=0,
         request_json='{"amount": 100}',
         semantics=semantics,
         dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
-        business_key=business_key, connector=connector)
+        business_key=business_key, connector=connector,
+        scope=scope)
 
 
 # ── core safety: NON_IDEMPOTENT + INLINE is refused ─────────────────────────
@@ -62,7 +75,8 @@ def test_non_idempotent_inline_is_refused(tape_server):
                 run_id=run.run_id, decision_index=0, tool_name="wire_money",
                 call_index=0, request_json="{}",
                 semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
-                dispatch_mode=tape.EFFECT_DISPATCH_MODE_INLINE)
+                dispatch_mode=tape.EFFECT_DISPATCH_MODE_INLINE,
+                scope=_DEFAULT_SCOPE)
         assert "NON_IDEMPOTENT" in ex.value.details()
 
 
@@ -541,6 +555,7 @@ def test_outbox_confirmed_registers_compensation_by_tool(tape_server):
         connector="bank.outbox-comp",
         business_key=lambda account, amount: f"{account}:{amount}",
         compensate=reverse_wire,
+        scope=_DEFAULT_SCOPE,
     )
     def wire_money(account, amount):
         return {"account": account, "amount": amount}
@@ -567,7 +582,8 @@ def test_outbox_confirmed_registers_compensation_by_tool(tape_server):
             request_json='{"account":"a","amount":100}',
             semantics=tape.EFFECT_SEMANTICS_NON_IDEMPOTENT,
             dispatch_mode=tape.EFFECT_DISPATCH_MODE_OUTBOX,
-            business_key="a:100", connector="bank.outbox-comp")
+            business_key="a:100", connector="bank.outbox-comp",
+            scope=_DEFAULT_SCOPE)
         results = outbox_reactor.outbox_dispatch_once(tape_server["url"])
         ours = [r for r in results if r["connector"] == "bank.outbox-comp"]
         assert ours and ours[0]["status"] == "confirmed", results

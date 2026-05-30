@@ -121,6 +121,30 @@ trip.
 
 ## Open gaps (the roadmap)
 
+### G10. Effect scope enforcement (AIPlex integration PR 2) — partial
+
+Python is the reference. The wire contract (`BeginEffectRequest.scope`,
+`EffectRecord.scope`) is plumbed in every SDK; the **decoration-time
+refusal** ("non_idempotent without scope is a config error") only ships
+in Python. Other SDKs leave the safety check to the server's
+`PermissionDenied` at `BeginEffect` time — defence-in-depth, but the
+mistake surfaces at run time instead of code-review time.
+
+| SDK        | Wire field on BeginEffect | Server defence-in-depth | Decoration-time refusal |
+| ---------- | :-----------------------: | :---------------------: | :---------------------: |
+| Python     |             ✅             |            ✅            |  ✅ `@tape.effect(scope=)` |
+| Java       |             ✅             |            ✅            |  ✖ (planned)              |
+| Go         |             ✅             |            ✅            |  ✖ (planned)              |
+| TypeScript |             ✅             |            ✅            |  ✖ (planned)              |
+
+**To close:** mirror the Python `_validate_semantics` rule into the
+Java `Effect`/`OutboxTool` builders, the Go `effect.New` / `outbox.New`
+constructors, and the TS `effect()` factory. Each refuses
+`semantics=NON_IDEMPOTENT` without a `scope` at construction unless
+`allowUnsafe=true`.
+
+---
+
 ### G8. Run identity (AIPlex integration PR 1) — partial
 `BeginRunRequest` and `RunState` gained seven identity fields (`tenant_id`,
 `actor`, `subject`, `agent_id`, `aiplex_instance_id`, `gateway_route`,

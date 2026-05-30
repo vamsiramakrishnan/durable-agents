@@ -64,6 +64,8 @@ const (
 	Tape_SetTimer_FullMethodName                  = "/tape.v1.Tape/SetTimer"
 	Tape_CancelTimer_FullMethodName               = "/tape.v1.Tape/CancelTimer"
 	Tape_ListDueTimers_FullMethodName             = "/tape.v1.Tape/ListDueTimers"
+	Tape_ListCompactableRuns_FullMethodName       = "/tape.v1.Tape/ListCompactableRuns"
+	Tape_CompactRun_FullMethodName                = "/tape.v1.Tape/CompactRun"
 	Tape_SubscribeEvents_FullMethodName           = "/tape.v1.Tape/SubscribeEvents"
 	Tape_SubscribeBySubject_FullMethodName        = "/tape.v1.Tape/SubscribeBySubject"
 	Tape_RegisterReaction_FullMethodName          = "/tape.v1.Tape/RegisterReaction"
@@ -133,6 +135,15 @@ type TapeClient interface {
 	SetTimer(ctx context.Context, in *SetTimerRequest, opts ...grpc.CallOption) (*TimerRecord, error)
 	CancelTimer(ctx context.Context, in *CancelTimerRequest, opts ...grpc.CallOption) (*CancelTimerResponse, error)
 	ListDueTimers(ctx context.Context, in *ListDueTimersRequest, opts ...grpc.CallOption) (*ListDueTimersResponse, error)
+	// ── compaction (PR 13) ───────────────────────────────────────────────────
+	// The compactor reactor zeroes payload bodies on settled runs older
+	// than the configured retention window, preserving the audit envelope
+	// (kind / seq / tool / scope / business_key / status). AIPlex's
+	// retention policy (RuntimeConfig.retention.compact_after_days) drives
+	// the cutoff; the Tape SDK reactor + tape-server admin clients
+	// (`aiplex runs compact <id>`) both call these.
+	ListCompactableRuns(ctx context.Context, in *ListCompactableRunsRequest, opts ...grpc.CallOption) (*ListCompactableRunsResponse, error)
+	CompactRun(ctx context.Context, in *CompactRunRequest, opts ...grpc.CallOption) (*CompactRunResponse, error)
 	// ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
 	// The legacy cross-run journal stream; preserved for back-compat.
 	// `SubscribeEventsRequest` now also accepts `from_global_seq` and
@@ -496,6 +507,26 @@ func (c *tapeClient) ListDueTimers(ctx context.Context, in *ListDueTimersRequest
 	return out, nil
 }
 
+func (c *tapeClient) ListCompactableRuns(ctx context.Context, in *ListCompactableRunsRequest, opts ...grpc.CallOption) (*ListCompactableRunsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCompactableRunsResponse)
+	err := c.cc.Invoke(ctx, Tape_ListCompactableRuns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tapeClient) CompactRun(ctx context.Context, in *CompactRunRequest, opts ...grpc.CallOption) (*CompactRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompactRunResponse)
+	err := c.cc.Invoke(ctx, Tape_CompactRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *tapeClient) SubscribeEvents(ctx context.Context, in *SubscribeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[EventEntry], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &Tape_ServiceDesc.Streams[1], Tape_SubscribeEvents_FullMethodName, cOpts...)
@@ -752,6 +783,15 @@ type TapeServer interface {
 	SetTimer(context.Context, *SetTimerRequest) (*TimerRecord, error)
 	CancelTimer(context.Context, *CancelTimerRequest) (*CancelTimerResponse, error)
 	ListDueTimers(context.Context, *ListDueTimersRequest) (*ListDueTimersResponse, error)
+	// ── compaction (PR 13) ───────────────────────────────────────────────────
+	// The compactor reactor zeroes payload bodies on settled runs older
+	// than the configured retention window, preserving the audit envelope
+	// (kind / seq / tool / scope / business_key / status). AIPlex's
+	// retention policy (RuntimeConfig.retention.compact_after_days) drives
+	// the cutoff; the Tape SDK reactor + tape-server admin clients
+	// (`aiplex runs compact <id>`) both call these.
+	ListCompactableRuns(context.Context, *ListCompactableRunsRequest) (*ListCompactableRunsResponse, error)
+	CompactRun(context.Context, *CompactRunRequest) (*CompactRunResponse, error)
 	// ── the WAL → reactors feed (cross-run journal tail) ──────────────────────
 	// The legacy cross-run journal stream; preserved for back-compat.
 	// `SubscribeEventsRequest` now also accepts `from_global_seq` and
@@ -888,6 +928,12 @@ func (UnimplementedTapeServer) CancelTimer(context.Context, *CancelTimerRequest)
 }
 func (UnimplementedTapeServer) ListDueTimers(context.Context, *ListDueTimersRequest) (*ListDueTimersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListDueTimers not implemented")
+}
+func (UnimplementedTapeServer) ListCompactableRuns(context.Context, *ListCompactableRunsRequest) (*ListCompactableRunsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCompactableRuns not implemented")
+}
+func (UnimplementedTapeServer) CompactRun(context.Context, *CompactRunRequest) (*CompactRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompactRun not implemented")
 }
 func (UnimplementedTapeServer) SubscribeEvents(*SubscribeEventsRequest, grpc.ServerStreamingServer[EventEntry]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeEvents not implemented")
@@ -1515,6 +1561,42 @@ func _Tape_ListDueTimers_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Tape_ListCompactableRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCompactableRunsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).ListCompactableRuns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_ListCompactableRuns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).ListCompactableRuns(ctx, req.(*ListCompactableRunsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Tape_CompactRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompactRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TapeServer).CompactRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tape_CompactRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TapeServer).CompactRun(ctx, req.(*CompactRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Tape_SubscribeEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SubscribeEventsRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -1944,6 +2026,14 @@ var Tape_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListDueTimers",
 			Handler:    _Tape_ListDueTimers_Handler,
+		},
+		{
+			MethodName: "ListCompactableRuns",
+			Handler:    _Tape_ListCompactableRuns_Handler,
+		},
+		{
+			MethodName: "CompactRun",
+			Handler:    _Tape_CompactRun_Handler,
 		},
 		{
 			MethodName: "RegisterReaction",

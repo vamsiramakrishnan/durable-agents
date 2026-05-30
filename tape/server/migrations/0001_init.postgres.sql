@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS tape_runs (
   gateway_route       TEXT NOT NULL DEFAULT '',
   scopes_json         TEXT NOT NULL DEFAULT '[]',
   labels_json         TEXT NOT NULL DEFAULT '{}',
+  -- Compaction (PR 13). 0 until the compactor zeroes the run's payloads.
+  compacted_at_ms     BIGINT  NOT NULL DEFAULT 0,
   UNIQUE(app_name, user_id, session_id, invocation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_recover ON tape_runs(status, lease_expires_at_ms);
@@ -32,6 +34,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_route ON tape_runs(app_name, user_id, sessio
 CREATE INDEX IF NOT EXISTS idx_runs_tenant  ON tape_runs(tenant_id, agent_id, started_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runs_actor   ON tape_runs(actor, started_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runs_subject ON tape_runs(subject, started_at_ms);
+CREATE INDEX IF NOT EXISTS idx_runs_compactable
+  ON tape_runs(status, compacted_at_ms, ended_at_ms);
 
 CREATE TABLE IF NOT EXISTS tape_journal (
   run_id       TEXT NOT NULL,
@@ -77,6 +81,8 @@ CREATE TABLE IF NOT EXISTS tape_effects (
   dispatch_claimed_by             TEXT    NOT NULL DEFAULT '',
   dispatch_claim_expires_at_ms    BIGINT  NOT NULL DEFAULT 0,
   last_dispatch_error             TEXT    NOT NULL DEFAULT '',
+  -- Authorization (see proto: BeginEffectRequest.scope).
+  scope                           TEXT    NOT NULL DEFAULT '',
   PRIMARY KEY (run_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_effects_status ON tape_effects(status);

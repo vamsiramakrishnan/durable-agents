@@ -46,11 +46,34 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub enum StoreError {
     #[error("tape store: {0}")]
     Msg(String),
+    /// Authorization denial — the caller asked for an action whose required
+    /// scope is not present on the run. The service layer maps this to
+    /// `tonic::Status::permission_denied`. Carries the required scope and
+    /// (optionally) the effect / tool the denial applied to so the journal
+    /// and the wire error agree.
+    #[error("tape store: policy violation — scope {scope:?} not granted to run")]
+    Denied { scope: String, detail: String },
 }
 impl StoreError {
     pub fn msg(s: impl Into<String>) -> Self {
         StoreError::Msg(s.into())
     }
+    pub fn denied(scope: impl Into<String>, detail: impl Into<String>) -> Self {
+        StoreError::Denied { scope: scope.into(), detail: detail.into() }
+    }
+}
+
+/// CompactReport summarises what `compact_run` rewrote. Surfaced to
+/// the compactor reactor and observable in metrics: bytes saved,
+/// decision/effect/run rows touched. A zero-op compaction (already
+/// compacted, or no payloads to zero) returns counters of 0 with no
+/// error.
+#[derive(Debug, Default, Clone)]
+pub struct CompactReport {
+    pub decisions_zeroed: i64,
+    pub effects_zeroed: i64,
+    pub bytes_saved: i64,
+    pub already_compacted: bool,
 }
 
 /// Identity & authorization context attached to a run. Populated from
@@ -77,6 +100,17 @@ pub struct RunIdentity<'a> {
 /// implementation — the gRPC layer above is pure plumbing.
 #[async_trait]
 pub trait RunStore: Send + Sync {
+    // ── health ─────────────────────────────────────────────────────────────
+    //
+    // Lightweight liveness check. Implementations should issue a no-op
+    // round-trip to the underlying backend (e.g. `SELECT 1` for SQL, a
+    // CheckAndMutateRow for Bigtable) so the answer reflects the data
+    // path's actual state, not just the process being up. The `mem`
+    // backend can return Ok immediately.
+    async fn ping(&self) -> StoreResult<()> {
+        Ok(())
+    }
+
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
                        identity: &RunIdentity<'_>,
@@ -87,6 +121,26 @@ pub trait RunStore: Send + Sync {
     async fn get_run(&self, run_id: &str) -> StoreResult<Option<RunState>>;
     async fn list_runs_to_recover(&self, now_ms: i64, limit: i64) -> StoreResult<Vec<RunState>>;
     async fn journal_range(&self, run_id: &str, from_seq: i64) -> StoreResult<Vec<JournalEntry>>;
+
+    // ── compaction (PR 13) ─────────────────────────────────────────────────
+    //
+    // Two operations on different timescales:
+    //
+    //   list_compactable_runs returns terminal+settled runs older than
+    //     `before_ms`, capped at `limit`. The compactor reactor walks
+    //     these in batches.
+    //
+    //   compact_run zeroes the bulky JSON payloads on decisions/effects
+    //     (and the run-row's detail_json) while preserving the envelope
+    //     columns the audit trail needs. Records ts in `compacted_at_ms`
+    //     and emits a `run.compacted` journal entry so downstream sinks
+    //     (AIPlex audit ingestion) can mirror the state change.
+    //
+    // "Settled" = TERMINAL/FAILED/STUCK/CANCELLED with no open
+    // obligations and no UNKNOWN effects (the compactor verifies this
+    // per run before zeroing; the SQL filter is a coarse first cut).
+    async fn list_compactable_runs(&self, before_ms: i64, limit: i64) -> StoreResult<Vec<RunState>>;
+    async fn compact_run(&self, run_id: &str, now_ms: i64) -> StoreResult<CompactReport>;
 
     // ── decision ledger ─────────────────────────────────────────────────────
     async fn record_decision(&self, run_id: &str, decision_index: i64, model: &str,
@@ -112,10 +166,17 @@ pub trait RunStore: Send + Sync {
     /// When `business_key` is non-empty, uniqueness on `(connector,
     /// business_key)` is enforced — a second begin_effect with the same
     /// business key returns the existing row instead of inserting a duplicate.
+    ///
+    /// `scope` (when non-empty) is checked for membership in the run's
+    /// `scopes_json` before any row is written. On mismatch the call returns
+    /// `StoreError::Denied` and a `policy` journal entry is appended; no
+    /// effect row is created. Empty `scope` skips the check (idempotent
+    /// effects can be unscoped).
     async fn begin_effect(&self, run_id: &str, decision_index: i64, tool_name: &str, call_index: i32,
                           request_json: &str, custom_key: &str,
                           semantics: i32, dispatch_mode: i32,
-                          business_key: &str, connector: &str) -> StoreResult<EffectRecord>;
+                          business_key: &str, connector: &str,
+                          scope: &str) -> StoreResult<EffectRecord>;
     async fn complete_effect(&self, run_id: &str, key: &str, status: i32, response_json: &str,
                              error_json: &str) -> StoreResult<Option<EffectRecord>>;
     async fn get_effect(&self, run_id: &str, key: &str) -> StoreResult<Option<EffectRecord>>;

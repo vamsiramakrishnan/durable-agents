@@ -341,6 +341,108 @@ def run_compensations_event_driven(url: str = DEFAULT_URL, *, claimer: str = "",
         c.close()
 
 
+# ── compaction (PR 13) ────────────────────────────────────────────────────
+#
+# The compactor zeroes the bulky `request_json`/`response_json` payloads
+# on settled, retention-aged runs. The envelope columns the audit trail
+# needs (kind, seq, tool_name, idempotency_key, business_key, scope,
+# status, tenant_id, actor, agent_id) survive. The run is still
+# queryable + auditable; it just can't be replayed step-by-step.
+#
+# "Settled" = TERMINAL/FAILED/STUCK/CANCELLED, no open obligations,
+# no UNKNOWN effects. The server's `compact_run` re-verifies this
+# per row — the SDK reactor uses `list_compactable_runs` as a coarse
+# first cut and lets the server make the final call.
+#
+# Trigger:
+#   compact_once(url, before_ms=ts) walks one batch and returns the
+#   per-run reports. Operators run it manually (`aiplex runs compact`)
+#   or AIPlex's RuntimeRetention loop calls it on a schedule.
+
+
+def compact_once(url: str = DEFAULT_URL, *, before_ms: int = 0, limit: int = 100,
+                 client: Optional[TapeClient] = None) -> list[dict]:
+    """Compact one batch of settled, retention-aged runs.
+
+    `before_ms` is the cutoff (Unix ms): runs whose `ended_at_ms` is
+    older than this are eligible. Default 0 = ``now - 24h``, which
+    matches AIPlex's default `compact_after_days` retention setting.
+    Pass a smaller cutoff to be more aggressive (test setups) or a
+    larger one for a more conservative policy.
+
+    Returns a list of `{run_id, decisions_zeroed, effects_zeroed,
+    bytes_saved, already_compacted, error}` dicts — one per run the
+    batch attempted. A run that wasn't actually settled (the server
+    rejected) surfaces `error: ...` instead of zero counts.
+    """
+    if before_ms <= 0:
+        before_ms = int(time.time() * 1000) - 24 * 60 * 60 * 1000
+
+    c = client or TapeClient(url)
+    out: list[dict] = []
+    try:
+        runs = c.list_compactable_runs(before_ms=before_ms, limit=limit).runs
+        for r in runs:
+            try:
+                rep = c.compact_run(r.run_id)
+                out.append({
+                    "run_id": r.run_id,
+                    "decisions_zeroed": rep.decisions_zeroed,
+                    "effects_zeroed": rep.effects_zeroed,
+                    "bytes_saved": rep.bytes_saved,
+                    "already_compacted": rep.already_compacted,
+                })
+            except Exception as ex:  # noqa: BLE001
+                # Settlement failure or transient store error — surface
+                # the run id so the operator can investigate without
+                # halting the rest of the batch.
+                out.append({"run_id": r.run_id, "error": str(ex)})
+    finally:
+        if client is None:
+            c.close()
+    return out
+
+
+def run_compactor(url: str = DEFAULT_URL, *, interval_s: float = 300.0,
+                  hot_window_s: float = 24 * 60 * 60.0,
+                  batch_limit: int = 100,
+                  once: bool = False,
+                  on_tick: Optional[Callable[[dict], None]] = None) -> None:
+    """Loop the compactor on `interval_s` (default 5 minutes).
+
+    `hot_window_s` (default 24 hours) is the per-tick cutoff — runs whose
+    ``ended_at_ms`` is older than ``now - hot_window_s`` become eligible.
+    AIPlex's `RuntimeConfig.retention.compact_after_days` should map to
+    this seconds-valued knob via the deploy engine.
+
+    Returns after one batch if `once=True`. The `on_tick` callback gets
+    one summary dict per tick — useful for surfacing compactor health
+    to the AIPlex dashboard via the existing event-bus subscription.
+    """
+    c = TapeClient(url)
+    try:
+        while True:
+            before = int(time.time() * 1000) - int(hot_window_s * 1000)
+            try:
+                reports = compact_once(url, before_ms=before, limit=batch_limit, client=c)
+            except Exception as ex:  # noqa: BLE001
+                reports = [{"error": str(ex), "tick": "compactor"}]
+            tick = {"compactor": True, "reports": reports, "count": len(reports)}
+            if on_tick is not None:
+                on_tick(tick)
+            if once:
+                return
+            time.sleep(interval_s)
+    finally:
+        c.close()
+
+
+# Tracks the last compact tick wall-clock so run_reactors can skip
+# compaction passes that fall within the cooldown window. List-cell
+# so the closure inside run_reactors can mutate it.
+_last_compact_at: list[float] = [0.0]
+
+
 # ── recovery (re-exported from _recover for one-stop-shopping) ───────────────
 
 from .._recover import recover_once  # noqa: E402,F401
@@ -351,6 +453,9 @@ from .._recover import recover_once  # noqa: E402,F401
 def run_reactors(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAULT_URL,
                  recover: bool = True, reconcile: bool = True, timers: bool = True,
                  compensations: bool = True,
+                 compact: bool = False,
+                 compact_hot_window_s: float = 24 * 60 * 60.0,
+                 compact_interval_s: float = 300.0,
                  interval_s: float = 2.0, reconcile_pending_after_s: float = 0.0,
                  claimer: str = "",
                  once: bool = False, on_tick: Optional[Callable[[dict], None]] = None) -> None:
@@ -388,6 +493,20 @@ def run_reactors(*, runner: Any = None, redrive_fn: Any = None, url: str = DEFAU
                     tick["compensations"] = compensate_once(url, claimer=claimer, client=client)
                 except Exception as ex:  # noqa: BLE001
                     tick["compensation_error"] = str(ex)
+            # The compactor runs on its OWN interval (compact_interval_s,
+            # default 5 minutes) not the main reactor tick — payload-zero
+            # updates are expensive in aggregate and don't need to fire
+            # every 2 seconds. We track the last-run timestamp and skip
+            # ticks where the cooldown hasn't elapsed.
+            if compact:
+                now_s = time.time()
+                if now_s - _last_compact_at[0] >= compact_interval_s:
+                    _last_compact_at[0] = now_s
+                    try:
+                        before = int(now_s * 1000) - int(compact_hot_window_s * 1000)
+                        tick["compactions"] = compact_once(url, before_ms=before, client=client)
+                    except Exception as ex:  # noqa: BLE001
+                        tick["compaction_error"] = str(ex)
             if on_tick is not None:
                 on_tick(tick)
             if once:
@@ -581,6 +700,15 @@ def _main(argv=None) -> int:
     p.add_argument("--no-reconcile", action="store_true")
     p.add_argument("--no-timers", action="store_true")
     p.add_argument("--no-compensations", action="store_true")
+    p.add_argument("--compact", action="store_true",
+                   help="enable the compactor reactor (PR 13). Zeroes "
+                        "request_json/response_json payloads on settled, "
+                        "retention-aged runs; preserves the audit envelope.")
+    p.add_argument("--compact-hot-window-s", type=float, default=24 * 60 * 60.0,
+                   help="runs whose ended_at_ms is older than (now - hot_window_s) "
+                        "are eligible for compaction (default 24h)")
+    p.add_argument("--compact-interval-s", type=float, default=300.0,
+                   help="cooldown between compactor passes (default 5min)")
     p.add_argument("--reconcile-pending-after", type=float, default=0.0, help="also reconcile PENDING effects older than N seconds")
     p.add_argument("--interval", type=float, default=2.0)
     p.add_argument("--claimer", default="", help="identity recorded as `claimed_by` on obligations this reactor drains")
@@ -615,6 +743,8 @@ def _main(argv=None) -> int:
 
     run_reactors(runner=runner, url=args.url, recover=not args.no_recover, reconcile=not args.no_reconcile,
                  timers=not args.no_timers, compensations=not args.no_compensations,
+                 compact=args.compact, compact_hot_window_s=args.compact_hot_window_s,
+                 compact_interval_s=args.compact_interval_s,
                  interval_s=args.interval, reconcile_pending_after_s=args.reconcile_pending_after,
                  claimer=args.claimer, once=args.once,
                  on_tick=lambda t: print(json.dumps({"tick": t}, default=str)))

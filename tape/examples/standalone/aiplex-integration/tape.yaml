@@ -1,0 +1,24 @@
+apiVersion: tape.dev/v1
+kind: TapeProject
+project: { name: aiplex-integration, environment: dev }
+agent:
+  framework: adk
+  app_name: aiplex_treasury
+  entrypoint: app.agent:root_agent
+  runner_factory: app.agent:build_runner
+  deployment_target: local
+tape:
+  url: ${TAPE_URL:-tape://localhost:7878}
+  store: { kind: sqlite, url: sqlite:./.tape/dev.db }
+  events: { kind: none }
+  reactors:
+    recovery:     {enabled: true}
+    reconciler:   {enabled: true}
+    outbox:       {enabled: true}   # bank_wire goes through the outbox
+    timers:       {enabled: true}
+    compensation: {enabled: true}
+gcp: { project_id: "", region: us-central1 }
+# In an AIPlex deployment the controller sets these via the pod's env;
+# `tenancy.mode: aiplex` is a forward-looking placeholder — single-tenant
+# is the actual code path today.
+tenancy: { mode: single, tenant_id: ${AIPLEX_TENANT_ID:-default} }

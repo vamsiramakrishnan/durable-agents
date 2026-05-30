@@ -67,10 +67,13 @@ def make_pending_outbox_effect(url: str, *, language_tag: str) -> Scenario:
     business = f"bk-{tag}"
     tool = "log_dispatch"
 
+    scope = "tape:tools:log_dispatch"
     with TapeClient(url) as c:
         run = c.begin_run(app_name=app, user_id=user, session_id=session,
                           invocation_id=invocation, lease_owner=tag,
-                          lease_ttl_ms=60_000)
+                          lease_ttl_ms=60_000,
+                          # PR 12: non-idempotent effects need a granted scope.
+                          scopes=[scope])
         run_id = run.run_id
 
         c.record_decision(run_id=run_id, decision_index=0,
@@ -83,6 +86,7 @@ def make_pending_outbox_effect(url: str, *, language_tag: str) -> Scenario:
             dispatch_mode=EFFECT_DISPATCH_MODE_OUTBOX,
             business_key=business,
             connector="log",
+            scope=scope,
         )
         assert be.status == EFFECT_STATUS_PENDING, (
             f"expected new effect to be PENDING, got {be.status}")
