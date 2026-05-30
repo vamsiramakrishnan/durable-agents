@@ -5,8 +5,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `design-principles/chaos.md`). Register it so the unexpected-cfg
     // lint stays quiet under `RUSTFLAGS='--cfg madsim'`.
     println!("cargo:rustc-check-cfg=cfg(madsim)");
-    tonic_build::configure()
-        .build_server(true)
+    // tonic 0.14 split proto compilation out of tonic-build into
+    // tonic-prost-build. build_server defaults to true; we only need to
+    // disable the client side.
+    tonic_prost_build::configure()
         .build_client(false)
         .compile_protos(&["../proto/tape.proto"], &["../proto"])?;
     Ok(())

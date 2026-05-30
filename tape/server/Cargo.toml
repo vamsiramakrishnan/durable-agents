@@ -23,9 +23,14 @@ chaos = ["fail/failpoints"]
 sim = []
 
 [dependencies]
-tonic = "0.12"
+tonic = "0.14"
+# tonic 0.14 moved the prost codec into its own crate (tonic-prost).
+# The generated code in OUT_DIR references tonic_prost::ProstCodec, so
+# the codec crate needs to be a direct dependency even though we don't
+# import it ourselves.
+tonic-prost = "0.14"
 fail = { version = "0.5", default-features = false }
-prost = "0.13"
+prost = "0.14"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait = "0.1"
@@ -38,7 +43,7 @@ r2d2_postgres = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -50,10 +55,20 @@ tokio-postgres = "0.7"
 futures-util = "0.3"
 # Cloud Bigtable backend (ring TLS — lighter to build; the emulator path is plaintext).
 bigtable_rs = { version = "0.3", default-features = false, features = ["tonic-tls-ring"] }
+# Pinned to the version bigtable_rs 0.3.0 itself depends on; bumping
+# this past 0.36 produces two parallel versions of every Bigtable proto
+# type (one for bigtable_rs's internal use, one for our direct calls)
+# and the type-graph stops resolving. Re-evaluate when bigtable_rs cuts
+# a release that bumps its pin.
 googleapis-tonic-google-bigtable-v2 = "0.36"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"
+# tonic 0.14 split proto compilation out of tonic-build proper. The
+# build script now drives tonic-prost-build (Tonic with Prost as the
+# proto runtime), which is the upgrade path for the old
+# `tonic_build::configure()` entry point.
+tonic-prost-build = "0.14"
 
 # Deterministic simulation testing — Phase 2.5 of TapeChaos. Madsim provides
 # a tokio-compatible deterministic runtime with virtualised time and seeded
