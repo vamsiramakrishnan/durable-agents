@@ -694,23 +694,35 @@ impl RunStore for SqlRunStore {
     }
 
     async fn compact_run(&self, run_id: &str, ts_ms: i64) -> StoreResult<CompactReport> {
-        // Idempotent: a second compaction of the same run is a no-op
-        // that returns the pre-existing compacted_at_ms (already_compacted
-        // = true). The reactor doesn't need to track which runs it's
-        // touched.
-        if let Some(row) = self.d().query_opt(
-            "SELECT compacted_at_ms FROM tape_runs WHERE run_id = ?1",
-            vec![run_id.into()]).await? {
-            if row.i64(0) > 0 {
-                return Ok(CompactReport { already_compacted: true, ..Default::default() });
-            }
-        } else {
-            return Err(StoreError::msg(format!("compact_run: run_id {run_id} not found")));
+        // CompactRun is an admin RPC; it doesn't have to come from
+        // `list_compactable_runs`, so the precondition has to live in
+        // the store, not in the reactor. We require the run to be
+        // terminal AND settled — zeroing decisions/effects on a
+        // RUNNING / WAITING run breaks replay/recovery for an active
+        // execution. Idempotent on a second call: a row with
+        // compacted_at_ms > 0 short-circuits to already_compacted.
+        let row = self.d().query_opt(
+            "SELECT status, ended_at_ms, compacted_at_ms FROM tape_runs WHERE run_id = ?1",
+            vec![run_id.into()]).await?
+            .ok_or_else(|| StoreError::msg(format!("compact_run: run_id {run_id} not found")))?;
+        let status = row.i64(0);
+        let ended_at_ms = row.i64(1);
+        let compacted_at_ms = row.i64(2);
+        if compacted_at_ms > 0 {
+            return Ok(CompactReport { already_compacted: true, ..Default::default() });
+        }
+        let terminal = matches!(
+            RunStatus::try_from(status as i32),
+            Ok(RunStatus::Terminal | RunStatus::Failed | RunStatus::Cancelled | RunStatus::Stuck),
+        );
+        if !terminal || ended_at_ms <= 0 {
+            return Err(StoreError::msg(format!(
+                "compact_run: run {run_id} is not terminal (status={status}, ended_at_ms={ended_at_ms}); refuse to zero live state")));
         }
 
         // Settlement check: bail out if there are unresolved obligations
-        // or UNKNOWN effects. Belt-and-braces against a misconfigured
-        // cutoff that lets a run slip through list_compactable_runs.
+        // or UNKNOWN effects. Belt-and-braces against a terminal run
+        // that still has dangling external work.
         let open_obligations = self.d().query_opt(
             "SELECT COUNT(*) FROM tape_obligations WHERE run_id=?1 AND status IN (?2, ?3)",
             vec![

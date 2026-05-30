@@ -205,6 +205,32 @@ def test_compact_refuses_run_with_unknown_effects(server_url):
         assert "not settled" in ei.value.details().lower()
 
 
+def test_compact_refuses_non_terminal_run(server_url):
+    """CompactRun is an admin RPC — operators can call it directly.
+    The store must refuse to zero a RUNNING run's state even when
+    there are no obligations and no UNKNOWN effects (a brand-new run
+    satisfies both conditions). Recovery would break if we silently
+    archived live decisions.
+    """
+    with client_mod.TapeClient(server_url) as c:
+        invocation = f"inv-{uuid.uuid4().hex[:8]}"
+        resp = c.begin_run(
+            app_name="compact-test", user_id="u",
+            session_id=f"sess-{uuid.uuid4().hex[:8]}",
+            invocation_id=invocation,
+            lease_owner="t", lease_ttl_ms=60_000,
+            tenant_id="acme", actor="spiffe://test/treasury",
+            agent_id="compact-agent",
+            scopes=["mcp:tools:something"],
+        )
+        run_id = resp.run_id
+        # Don't end the run — it's still RUNNING. No obligations, no
+        # UNKNOWN effects, but compaction must still refuse.
+        with pytest.raises(grpc.RpcError) as ei:
+            c.compact_run(run_id)
+        assert "not terminal" in ei.value.details().lower()
+
+
 def test_compact_once_returns_per_run_reports(server_url):
     """The `compact_once` reactor helper batches multiple runs and
     surfaces per-run reports — including errors from runs that can't
