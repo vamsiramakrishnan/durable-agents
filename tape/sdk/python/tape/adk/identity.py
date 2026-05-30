@@ -24,11 +24,42 @@ from typing import Dict, List, Optional
 class RunIdentity:
     """Identity & authorization context for a Tape run.
 
+    ## ``subject`` vs ADK's ``user_id`` — they are not the same field
+
+    ADK ships its own ``user_id`` on every session: it is the *session
+    owner* — the human (or service account) the ADK agent is acting on
+    behalf of, used as a sharding key by ``SessionService`` and as the
+    primary-key tuple on ``tape_sessions``. Tape preserves it verbatim
+    because the ADK plugin reads it back when resuming.
+
+    ``subject`` is something different: it's the **RFC 8693 subject**
+    of the authorization context — typically an OIDC ``sub`` or a
+    SPIFFE-style principal label (``spiffe://.../user/alice``,
+    ``mailto:alice@acme.com``). It anchors the audit trail to a
+    governance identity even when ADK's ``user_id`` is an opaque
+    session token. Roughly:
+
+    * ``actor``    — *workload* identity (the SPIFFE-style service principal
+                     the gateway authenticated).
+    * ``subject``  — *governance* identity (the human / customer the
+                     workload is acting for).
+    * ``user_id``  — *session-owner* identity (the ADK / ``SessionService``
+                     key — usually equal to ``subject``, but allowed to differ
+                     for headless or service-account flows).
+
+    A correctly-configured AIPlex deployment passes the same value for
+    ``subject`` and ``user_id``; standalone Tape deployments often only
+    set ``user_id`` (and leave ``subject`` empty). The journal records
+    both so a downstream audit consumer can tell them apart.
+
     Fields:
       tenant_id:           Tenant identifier (AIPlex tenant, organisation, …).
-      actor:               SPIFFE-style workload identity — *who is acting*.
-      subject:             Human principal label, distinct from ADK's user_id
-                           (e.g. "spiffe://.../user/alice", an OIDC sub, etc.).
+      actor:               SPIFFE-style *workload* identity — the service
+                           principal authenticated by the gateway.
+      subject:             RFC 8693 *governance* identity — the human or
+                           customer the workload is acting for. Distinct
+                           from ADK's ``user_id`` (the session-owner key).
+                           See the class docstring above.
       agent_id:            Stable agent kind id (the AIPlex catalog id).
       aiplex_instance_id:  AIPlex Instance.ID — joins back to AIPlex's deploy
                            record. Empty when not AIPlex-managed.
@@ -38,6 +69,11 @@ class RunIdentity:
                            effects; in PR 1 it's a free-form list.
       labels:              Free-form key/value labels. Conventional AIPlex keys
                            are "aiplex.plane", "aiplex.client_id", etc.
+                           Identity keys with dedicated columns (``aiplex.tenant``,
+                           ``aiplex.actor``, ``aiplex.subject``, ``aiplex.agent``,
+                           ``aiplex.instance``, ``aiplex.route``) should NOT
+                           be duplicated in ``labels``; AIPlex's deploy engine
+                           strips them before serialising ``AIPLEX_LABELS``.
     """
 
     tenant_id: str = ""
@@ -123,6 +159,15 @@ class RunIdentity:
         return (not self.tenant_id and not self.actor and not self.subject
                 and not self.agent_id and not self.aiplex_instance_id
                 and not self.gateway_route and not self.scopes and not self.labels)
+
+    def subject_or(self, fallback_user_id: str) -> str:
+        """Return ``subject`` when set, otherwise the supplied ADK
+        ``user_id``. Use this whenever you need a single audit anchor
+        and don't care which of the two carried it — typical for
+        log lines and metric labels. Keeps the journal honest while
+        not requiring every standalone Tape deployment to mint a
+        synthetic ``subject``."""
+        return self.subject or fallback_user_id
 
 
 class MissingIdentity(ValueError):

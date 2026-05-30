@@ -164,6 +164,20 @@ def test_validate_with_custom_required_set():
     ident.validate(required=("tenant_id",))  # passes
 
 
+def test_subject_or_falls_back_to_user_id():
+    """`subject_or(user_id)` returns the RFC 8693 subject when set, and
+    the ADK ``user_id`` when not — for the common standalone-Tape case
+    where governance identity wasn't separately threaded through."""
+    # Subject set: governance identity wins.
+    ident = RunIdentity(subject="vamsi@example.com")
+    assert ident.subject_or("session-key-xyz") == "vamsi@example.com"
+    # Subject empty: fall back to the ADK user_id.
+    ident = RunIdentity()
+    assert ident.subject_or("session-key-xyz") == "session-key-xyz"
+    # Both empty: empty string (callers can log a warning).
+    assert RunIdentity().subject_or("") == ""
+
+
 def test_run_state_carries_identity():
     """`RunState` exposes the same identity fields back to clients (the
     AIPlex run timeline reads from these)."""

@@ -329,18 +329,35 @@ impl SqlBackend for PostgresBackend {
 pub struct SqlRunStore {
     db: Arc<dyn SqlBackend>,
     notify: Arc<tokio::sync::Notify>,
+    // Per-process scope cache. Scopes are set at `begin_run` and never
+    // mutated for the lifetime of the run, so we can cache the parsed
+    // grant set and skip the SELECT + JSON parse on every effect.
+    // Bounded with a coarse cap (clear-on-overflow) to keep memory
+    // bounded under pathological run-cardinality without pulling in
+    // an LRU dependency.
+    scope_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>>,
 }
+
+const SCOPE_CACHE_MAX: usize = 8192;
 
 impl SqlRunStore {
     pub async fn sqlite_file(path: &str) -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::file(path)?);
         db.migrate().await?;
-        Ok(Self { db, notify: Arc::new(tokio::sync::Notify::new()) })
+        Ok(Self {
+            db,
+            notify: Arc::new(tokio::sync::Notify::new()),
+            scope_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        })
     }
     pub async fn sqlite_memory() -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::memory()?);
         db.migrate().await?;
-        Ok(Self { db, notify: Arc::new(tokio::sync::Notify::new()) })
+        Ok(Self {
+            db,
+            notify: Arc::new(tokio::sync::Notify::new()),
+            scope_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        })
     }
     pub async fn postgres(url: &str) -> StoreResult<Self> {
         let db: Arc<dyn SqlBackend> = Arc::new(PostgresBackend::connect(url)?);
@@ -352,7 +369,31 @@ impl SqlRunStore {
         // drops we reconnect with exponential backoff and the polling fallback
         // (1s in subscribe_*) keeps things moving in the meantime.
         spawn_pg_listener(url.to_string(), notify.clone());
-        Ok(Self { db, notify })
+        Ok(Self {
+            db,
+            notify,
+            scope_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        })
+    }
+
+    /// Insert a run's scopes into the cache. Called from `begin_run` so
+    /// the very first effect on a brand-new run hits the cache instead of
+    /// the SELECT path.
+    fn cache_scopes(&self, run_id: &str, scopes: Vec<String>) {
+        let mut g = self.scope_cache.lock().unwrap();
+        // Coarse cap: when full, drop the whole map. This is amortised
+        // because the steady state is "active runs" and active runs
+        // re-populate on the next effect lookup.
+        if g.len() >= SCOPE_CACHE_MAX {
+            g.clear();
+        }
+        g.insert(run_id.to_string(), scopes);
+    }
+
+    /// Evict a run from the scope cache. Called when a run reaches a
+    /// terminal state so we don't pin its scopes forever.
+    fn evict_scopes(&self, run_id: &str) {
+        let _ = self.scope_cache.lock().unwrap().remove(run_id);
     }
 
     fn d(&self) -> &dyn SqlBackend { self.db.as_ref() }
@@ -364,16 +405,25 @@ impl SqlRunStore {
             .await?.map(|r| r.i64(0)).unwrap_or(0))
     }
 
-    /// Read just the run's `scopes_json` column and decode it. Used by
-    /// `begin_effect` for the authz scope-membership check. Returns an empty
-    /// vector when the run has no scopes or doesn't exist (callers handle
-    /// the absent-row case via the scope check itself — an empty grant set
-    /// never satisfies a non-empty required scope).
+    /// Read the run's scope grant set. Consults the per-process cache
+    /// first (populated by `begin_run`) and falls back to a SELECT +
+    /// JSON parse if the entry has been evicted or the process is
+    /// cold. Used by `begin_effect` for the authz scope-membership
+    /// check. Returns an empty vector when the run has no scopes or
+    /// doesn't exist (callers handle the absent-row case via the scope
+    /// check itself — an empty grant set never satisfies a non-empty
+    /// required scope).
     async fn run_scopes_for(&self, run_id: &str) -> StoreResult<Vec<String>> {
+        if let Some(cached) = self.scope_cache.lock().unwrap().get(run_id).cloned() {
+            return Ok(cached);
+        }
         let row = self.d().query_opt(
             "SELECT scopes_json FROM tape_runs WHERE run_id = ?1",
             vec![run_id.into()]).await?;
-        Ok(row.map(|r| parse_scopes(&r.str(0))).unwrap_or_default())
+        let scopes = row.map(|r| parse_scopes(&r.str(0))).unwrap_or_default();
+        // Backfill the cache so subsequent effects skip the SELECT.
+        self.cache_scopes(run_id, scopes.clone());
+        Ok(scopes)
     }
 
     /// Append a journal row with the event-bus fields populated.
@@ -507,6 +557,14 @@ const DEFAULT_LEASE_MS: i64 = 60_000;
 
 #[async_trait]
 impl RunStore for SqlRunStore {
+    async fn ping(&self) -> StoreResult<()> {
+        // `SELECT 1` round-trips through the connection pool and confirms
+        // the backing database is reachable + responsive. SQLite returns
+        // instantly; Postgres exercises a real network hop so the
+        // readiness signal reflects DB health.
+        let _ = self.d().query_opt("SELECT 1", vec![]).await?;
+        Ok(())
+    }
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
                        identity: &RunIdentity<'_>,
@@ -537,6 +595,9 @@ impl RunStore for SqlRunStore {
                  identity.tenant_id.into(), identity.actor.into(), identity.subject.into(),
                  identity.agent_id.into(), identity.aiplex_instance_id.into(),
                  identity.gateway_route.into(), scopes_json.into(), labels_json.into()]).await?;
+        // Populate the scope cache while we have the parsed scope set in
+        // memory — the very first effect on this run hits the cache.
+        self.cache_scopes(&run_id, parse_scopes(scopes_json));
         // Run-lifecycle journal: /tape/run/running/<app>/<user>/<session>/<run_id>
         let seq = self.next_seq(&run_id).await.unwrap_or(0);
         let payload = serde_json::json!({
@@ -558,6 +619,9 @@ impl RunStore for SqlRunStore {
         let ts = now_ms();
         self.d().exec("UPDATE tape_runs SET status=?2, ended_at_ms=?3, detail_json=?4, lease_owner='' WHERE run_id=?1",
             vec![run_id.into(), status.into(), ts.into(), detail_json.into()]).await?;
+        // A terminal run won't accept more effects, so its scopes are
+        // dead weight in the cache.
+        self.evict_scopes(run_id);
         let cur = self.get_run(run_id).await?;
         if let Some(ref r) = cur {
             let status_str = match RunStatus::try_from(status) {

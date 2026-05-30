@@ -654,6 +654,15 @@ async fn check_and_mutate(
 impl RunStore for BigtableRunStore {
     fn journal_notify(&self) -> Arc<tokio::sync::Notify> { self.notify.clone() }
 
+    async fn ping(&self) -> StoreResult<()> {
+        // A read of a known-nonexistent row exercises the Bigtable
+        // client + admin path without touching production data. Returns
+        // Ok on a successful round-trip (None row is fine — the table
+        // exists and we got back a response).
+        let _ = self.read_row("__tape_probe__").await?;
+        Ok(())
+    }
+
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
                        identity: &RunIdentity<'_>,

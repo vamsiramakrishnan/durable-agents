@@ -100,6 +100,17 @@ pub struct RunIdentity<'a> {
 /// implementation — the gRPC layer above is pure plumbing.
 #[async_trait]
 pub trait RunStore: Send + Sync {
+    // ── health ─────────────────────────────────────────────────────────────
+    //
+    // Lightweight liveness check. Implementations should issue a no-op
+    // round-trip to the underlying backend (e.g. `SELECT 1` for SQL, a
+    // CheckAndMutateRow for Bigtable) so the answer reflects the data
+    // path's actual state, not just the process being up. The `mem`
+    // backend can return Ok immediately.
+    async fn ping(&self) -> StoreResult<()> {
+        Ok(())
+    }
+
     // ── run lifecycle ───────────────────────────────────────────────────────
     async fn begin_run(&self, app: &str, user: &str, session: &str, invocation: &str,
                        identity: &RunIdentity<'_>,
