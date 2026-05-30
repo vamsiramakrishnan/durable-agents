@@ -48,7 +48,9 @@ def seeded_run(tape_server):
         r = c.begin_run(
             app_name="treasury", user_id="cfo",
             session_id=f"sess-{uuid.uuid4().hex[:6]}",
-            invocation_id=invocation_id, lease_owner="test-runner")
+            invocation_id=invocation_id, lease_owner="test-runner",
+            # PR 12: non-idempotent effects need a granted scope.
+            scopes=["mcp:tools:bank.wire"])
         run_id = r.run_id
 
         # 2. one decision
@@ -64,7 +66,8 @@ def seeded_run(tape_server):
             semantics=EFFECT_SEMANTICS_NON_IDEMPOTENT,
             dispatch_mode=EFFECT_DISPATCH_MODE_OUTBOX,
             business_key="acct1:2m:2026-05-18",
-            connector="bank.wire")
+            connector="bank.wire",
+            scope="mcp:tools:bank.wire")
         c.complete_effect(run_id=run_id, idempotency_key=eff.idempotency_key,
                           status=EFFECT_STATUS_CONFIRMED,
                           response_json='{"wire_id":"abc123"}')

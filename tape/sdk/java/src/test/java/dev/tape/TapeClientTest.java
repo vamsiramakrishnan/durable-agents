@@ -109,21 +109,30 @@ public class TapeClientTest {
     @Test
     void roundTripsOutboxContract() throws Exception {
         try (TapeClient c = new TapeClient(url)) {
-            BeginRunResponse r = c.beginRun("a", "u", "java-outbox", "inv-java-outbox", "test", 60_000);
+            // PR 12: the server's wire-level scope enforcement refuses
+            // non-idempotent effects without a declared scope. Grant
+            // the scope on BeginRun and declare it on BeginEffect.
+            RunIdentity ident = new RunIdentity("", "", "", "", "", "",
+                    java.util.List.of("tape:tools:wire_money"),
+                    java.util.Collections.emptyMap());
+            BeginRunResponse r = c.beginRun("a", "u", "java-outbox", "inv-java-outbox",
+                    "test", 60_000, ident);
             String rid = r.getRunId();
 
             // Server refuses NON_IDEMPOTENT + INLINE.
             assertThrows(io.grpc.StatusRuntimeException.class, () ->
                 c.beginEffect(rid, -1, "wire_money", 0, "{}", "",
                         EffectSemantics.EFFECT_SEMANTICS_NON_IDEMPOTENT,
-                        EffectDispatchMode.EFFECT_DISPATCH_MODE_INLINE, "", ""));
+                        EffectDispatchMode.EFFECT_DISPATCH_MODE_INLINE, "", "",
+                        "tape:tools:wire_money"));
 
             // NON_IDEMPOTENT + OUTBOX + business_key is accepted.
             BeginEffectResponse oe = c.beginEffect(rid, -1, "wire_money", 0,
                     "{\"amount\":100}", "",
                     EffectSemantics.EFFECT_SEMANTICS_NON_IDEMPOTENT,
                     EffectDispatchMode.EFFECT_DISPATCH_MODE_OUTBOX,
-                    "java:bk-1", "bank.wire");
+                    "java:bk-1", "bank.wire",
+                    "tape:tools:wire_money");
             assertEquals(EffectStatus.EFFECT_STATUS_PENDING, oe.getStatus());
 
             // Visible to the outbox dispatcher.

@@ -285,7 +285,8 @@ def effect(*, compensate: Optional[Callable] = None, status_check: Optional[Call
 def outbox_tool(*, connector: str, semantics: str = "non_idempotent",
                 business_key: Any = None, compensate: Optional[Callable] = None,
                 status_check: Optional[Callable] = None,
-                max_attempts: int = 0, allow_unsafe: bool = False) -> Callable:
+                max_attempts: int = 0, allow_unsafe: bool = False,
+                scope: str = "") -> Callable:
     """Sugar for the non-idempotent + outbox pattern.
 
         @tape.outbox_tool(connector="bank.wire", semantics="non_idempotent",
@@ -309,6 +310,7 @@ def outbox_tool(*, connector: str, semantics: str = "non_idempotent",
         status_check=status_check,
         max_attempts=max_attempts,
         allow_unsafe=allow_unsafe,
+        scope=scope,
     )
 
 

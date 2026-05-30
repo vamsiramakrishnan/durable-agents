@@ -900,7 +900,9 @@ def _run_unknown_reconcile_scenario(*, url: str, ledger_path: Path,
         r = c.begin_run(
             app_name="treasury-demo-unknown", user_id="cfo",
             session_id=session_id, invocation_id=invocation_id,
-            lease_owner=f"demo-pid-{os.getpid()}", lease_ttl_ms=30_000)
+            lease_owner=f"demo-pid-{os.getpid()}", lease_ttl_ms=30_000,
+            # PR 12: non-idempotent effects need a granted scope.
+            scopes=["mcp:tools:bank.wire"])
         run_id = r.run_id
         ui.attach_run(run_id)
         # Give the streamer a beat to subscribe before we start writing.
@@ -923,7 +925,8 @@ def _run_unknown_reconcile_scenario(*, url: str, ledger_path: Path,
             semantics=EFFECT_SEMANTICS_NON_IDEMPOTENT,
             dispatch_mode=EFFECT_DISPATCH_MODE_OUTBOX,
             business_key=business_key,
-            connector="bank.wire")
+            connector="bank.wire",
+            scope="mcp:tools:bank.wire")
         ui.finish_phase(2,
                         detail=f"effect#0 PENDING — intent only; bank NOT yet called  "
                                f"(business_key={business_key})")
