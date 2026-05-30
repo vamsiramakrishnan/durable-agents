@@ -279,7 +279,7 @@ checksum = "1a29342e29d6c2da697006e70050d3fca529c8c111c6e587cf1d9aec0c658f4a"
 dependencies = [
  "futures-util",
  "gcp_auth",
- "googleapis-tonic-google-bigtable-v2",
+ "googleapis-tonic-google-bigtable-v2 0.36.0",
  "http",
  "hyper-util",
  "log",
@@ -838,14 +838,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "googleapis-tonic-google-api"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4411485f14b532ed4a23fa143a355e9ff148def1727c18d262eceb0ceccea90"
+dependencies = [
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "tonic 0.14.6",
+ "tonic-prost",
+]
+
+[[package]]
 name = "googleapis-tonic-google-bigtable-v2"
 version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4416eb033bc8daa9e41b69d43b9b5d6db0fc160ac9a010b2e08f0b9ef89ac284"
 dependencies = [
- "googleapis-tonic-google-api",
- "googleapis-tonic-google-rpc",
- "googleapis-tonic-google-type",
+ "googleapis-tonic-google-api 0.27.0",
+ "googleapis-tonic-google-rpc 0.23.0",
+ "googleapis-tonic-google-type 0.21.0",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "tonic 0.14.6",
+ "tonic-prost",
+]
+
+[[package]]
+name = "googleapis-tonic-google-bigtable-v2"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a18c5c00569b5ea5ab8997e68bd4e88e77a32fe54b12f1a0df00f1d44bea2353"
+dependencies = [
+ "googleapis-tonic-google-api 0.29.0",
+ "googleapis-tonic-google-rpc 0.24.0",
+ "googleapis-tonic-google-type 0.23.0",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "tonic 0.14.6",
@@ -865,10 +892,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "googleapis-tonic-google-rpc"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f48f43a381f9a1b6dab85d87635a255602a516a2d691fa372c5bb340a3659d6"
+dependencies = [
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "tonic 0.14.6",
+ "tonic-prost",
+]
+
+[[package]]
 name = "googleapis-tonic-google-type"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "691c4dca3f36ca693f2644556d0be8303c2f92a9675b1a0cbc17951687e979db"
+dependencies = [
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "tonic 0.14.6",
+ "tonic-prost",
+]
+
+[[package]]
+name = "googleapis-tonic-google-type"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2e3893709d3cca36dfc480a3f1d75e40872779d202514a41dc6b0415757381"
 dependencies = [
  "prost 0.14.3",
  "prost-types 0.14.3",
@@ -2373,7 +2424,7 @@ dependencies = [
  "clap",
  "fail",
  "futures-util",
- "googleapis-tonic-google-bigtable-v2",
+ "googleapis-tonic-google-bigtable-v2 0.38.0",
  "madsim",
  "postgres",
  "prost 0.13.5",
