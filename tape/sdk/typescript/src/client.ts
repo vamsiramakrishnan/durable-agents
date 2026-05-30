@@ -82,12 +82,15 @@ function makeIdTokenCallCreds(audience: string): grpc.CallCredentials {
         const { GoogleAuth } = await import('google-auth-library');
         const auth = new GoogleAuth();
         const client = await auth.getIdTokenClient(audience);
-        // google-auth-library 10.x returns a Fetch-style Headers instance
-        // instead of a plain Record<string, string>. Both pre-9 and 10+
-        // expose `Authorization` (capitalised) on the wire, but Headers
-        // normalises to lowercase, so we read both via .get().
-        const headers = await client.getRequestHeaders(audience);
-        const bearer = headers.get('Authorization') ?? headers.get('authorization');
+        // google-auth-library 10.x returns a Fetch-style `Headers` instance;
+        // 9.x returned a plain `Record<string, string>`. Tape's package.json
+        // pins ^10.6.2 but a downstream may override back to 9 (or the
+        // optional dep may resolve from an existing lockfile). Read both
+        // shapes so authentication doesn't silently fall through on v9.
+        const headers: any = await client.getRequestHeaders(audience);
+        const bearer = typeof headers?.get === 'function'
+          ? (headers.get('Authorization') ?? headers.get('authorization'))
+          : (headers['Authorization'] ?? headers['authorization']);
         if (typeof bearer === 'string' && bearer.startsWith('Bearer ')) {
           token = bearer.slice('Bearer '.length);
           try {
