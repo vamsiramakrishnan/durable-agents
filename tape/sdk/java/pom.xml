@@ -110,7 +110,7 @@
       </plugin>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
+        <version>3.15.0</version>
         <configuration>
           <!-- -parameters keeps method parameter names in the bytecode so
                ADK-Java's FunctionTool reflection (used by the embedded
