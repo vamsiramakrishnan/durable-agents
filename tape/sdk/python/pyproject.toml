@@ -16,7 +16,7 @@ dependencies = [
   # (`after_run_callback` no longer fires, so `EndRun(TERMINAL)` never
   # lands and resume re-drives effects with fresh ids). Holding at 1.x
   # until the plugin is ported to 2.x. tape-adk (embedded) is unaffected.
-  "google-adk>=1.30,<2.0",
+  "google-adk>=1.30,<3.0",
 ]
 
 [project.optional-dependencies]
