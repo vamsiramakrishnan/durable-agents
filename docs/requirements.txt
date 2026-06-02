@@ -19,5 +19,5 @@ typer==0.25.1
 rich==13.9.4
 pydantic==2.9.2
 pydantic-settings==2.6.1
-PyYAML==6.0.2
+PyYAML==6.0.3
 Jinja2==3.1.4
