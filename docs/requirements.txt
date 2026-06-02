@@ -3,7 +3,7 @@
 mkdocs==1.6.1
 mkdocs-material==9.5.49
 mkdocstrings[python]==0.27.0
-mkdocs-autorefs==1.2.0
+mkdocs-autorefs==1.4.4
 # pymdown-extensions <10.21 + Pygments >=2.20 crashes with `AttributeError:
 # 'NoneType' object has no attribute 'replace'` when rendering code blocks
 # without a `title=`. The CLI now pulls in Textual (for `tape inspect`),
