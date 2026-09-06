@@ -1,5 +1,7 @@
 # Durable Agents — *Tape*
 
+**Resume an acting agent with a record of the decisions and effects that preceded the interruption.**
+
 [![sdk-tests](https://github.com/vamsiramakrishnan/durable-agents/actions/workflows/sdk-tests.yml/badge.svg)](https://github.com/vamsiramakrishnan/durable-agents/actions/workflows/sdk-tests.yml)
 [![docs](https://github.com/vamsiramakrishnan/durable-agents/actions/workflows/docs.yml/badge.svg)](https://vamsiramakrishnan.github.io/durable-agents/)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -13,6 +15,20 @@ must look like a runtime, and the **substrate** that makes it look like
 one.
 
 ---
+
+## Evaluate recovery first
+
+| Question | Local path | Inspect |
+|---|---|---|
+| Does the example finish? | `make demo` after setup | The treasury workflow's result |
+| What happens after interruption? | `make demo-resume` | Recovery and the example's effect record |
+| Can an application use another language? | `make quickstart-all` | The same scenario through four SDKs |
+
+The recovery demo is the first useful proof. It is an example with a defined
+effect protocol, not a blanket exactly-once guarantee for arbitrary APIs.
+Review [SDK parity](SDK_PARITY.md) and the [runtime](tape/README.md) before
+choosing which effects to put behind it.
+
 
 ## Get started in one command
 
